@@ -1,4 +1,3 @@
-@"
 # bmahOS
 
 An experimental operating system project.
@@ -23,4 +22,3 @@ Primary target hardware:
 - IoT and robotics support
 - System and network monitoring
 - Open source
-"@ | Set-Content README.md
