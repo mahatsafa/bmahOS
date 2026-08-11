@@ -59,7 +59,7 @@ void kmain(void)
 {
     serial_init();
 
-    serial_write("ABC");
+    serial_write("bmahOS booted!\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");
