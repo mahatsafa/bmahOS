@@ -55,11 +55,27 @@ static void serial_write(const char *s)
     }
 }
 
+static void serial_write_hex(uint64_t value)
+{
+    static const char hex[] = "0123456789ABCDEF";
+
+    serial_write("0x");
+
+    for (int i = 15; i >= 0; i--)
+    {
+        uint8_t digit = (value >> (i * 4)) & 0xF;
+        serial_putc(hex[digit]);
+    }
+}
+
 void kmain(void)
 {
     serial_init();
 
     serial_write("bmahOS booted!\r\n");
+    serial_write("kernel: ");
+    serial_write_hex(0xFFFFFFFF80000000ULL);
+    serial_write("\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");
