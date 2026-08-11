@@ -39,14 +39,19 @@ static void serial_init(void)
     outb(COM1 + 4, 0x0B);
 }
 
+static void serial_putc(char c)
+{
+    while (!(inb(COM1 + 5) & 0x20))
+        ;
+
+    outb(COM1, (uint8_t)c);
+}
+
 static void serial_write(const char *s)
 {
     while (*s)
     {
-        while (!(inb(COM1 + 5) & 0x20))
-            ;
-
-        outb(COM1, (uint8_t)*s++);
+        serial_putc(*s++);
     }
 }
 
