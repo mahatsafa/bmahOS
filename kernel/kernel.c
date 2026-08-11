@@ -54,7 +54,7 @@ void kmain(void)
 {
     serial_init();
 
-    outb(COM1, 'A');
+    serial_write("ABC");
 
     for (;;) {
         __asm__ volatile ("hlt");
