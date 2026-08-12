@@ -79,7 +79,32 @@ struct gdt_entry
     uint8_t  base_high;
 } __attribute__((packed));
 
-static struct gdt_entry bmahOS_gdt[3];
+struct tss
+{
+    uint32_t reserved0;
+    uint64_t rsp0;
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint32_t reserved1;
+    uint64_t ist1;
+    uint64_t ist2;
+    uint64_t ist3;
+    uint64_t ist4;
+    uint64_t ist5;
+    uint64_t ist6;
+    uint64_t ist7;
+    uint32_t reserved2;
+    uint32_t reserved3;
+    uint16_t iopb_offset;
+    uint8_t  reserved4[6];
+} __attribute__((packed));
+
+static struct gdt_entry bmahOS_gdt[5];
+static struct tss bmahOS_tss;
+
+_Static_assert(sizeof(struct tss) == 0x68, "TSS size is wrong");
+_Static_assert(sizeof(struct gdt_entry) == 8, "GDT entry size is wrong");
+_Static_assert(sizeof(bmahOS_gdt) == 40, "GDT size is wrong");
 
 static void gdt_set_entry(
     int index,
@@ -95,18 +120,52 @@ static void gdt_set_entry(
     bmahOS_gdt[index].base_high = 0x00;
 }
 
+static void tss_set_descriptor(int index, uint64_t base, uint32_t limit)
+{
+    uint8_t *descriptor = (uint8_t *)&bmahOS_gdt[index];
+
+    descriptor[0] = (uint8_t)(limit >> 0);
+    descriptor[1] = (uint8_t)(limit >> 8);
+
+    descriptor[2] = (uint8_t)(base >> 0);
+    descriptor[3] = (uint8_t)(base >> 8);
+    descriptor[4] = (uint8_t)(base >> 16);
+
+    descriptor[5] = 0x89;
+
+    descriptor[6] = (uint8_t)((limit >> 16) & 0x0F);
+
+    descriptor[7] = (uint8_t)(base >> 24);
+
+    descriptor[8]  = (uint8_t)(base >> 32);
+    descriptor[9]  = (uint8_t)(base >> 40);
+    descriptor[10] = (uint8_t)(base >> 48);
+    descriptor[11] = (uint8_t)(base >> 56);
+
+    descriptor[12] = 0x00;
+    descriptor[13] = 0x00;
+    descriptor[14] = 0x00;
+    descriptor[15] = 0x00;
+}
+
 static void gdt_init(void)
 {
     gdt_set_entry(0, 0x00, 0x00);
     gdt_set_entry(1, 0x9B, 0x20);
     gdt_set_entry(2, 0x93, 0x00);
+
+    tss_set_descriptor(
+        3,
+        (uint64_t)&bmahOS_tss,
+        sizeof(bmahOS_tss) - 1
+    );
 }
 
 static void print_bmahOS_gdt(void)
 {
     serial_write("bmahOS GDT entries:\r\n");
 
-    for (uint64_t i = 0; i < 3; i++)
+    for (uint64_t i = 0; i < 5; i++)
     {
         uint64_t descriptor =
             *(volatile uint64_t *)&bmahOS_gdt[i];
@@ -120,6 +179,8 @@ static void print_bmahOS_gdt(void)
 }
 
 extern void gdt_load_and_reload_asm(const void *gdtr);
+extern void tss_load_asm(void);
+extern uint64_t tss_read_asm(void);
 
 static void gdt_load_and_reload(void)
 {
@@ -227,6 +288,14 @@ void kmain(void)
 
     gdt_init();
     gdt_load_and_reload();
+
+    tss_load_asm();
+
+    uint64_t tr = tss_read_asm();
+
+    serial_write("TR: ");
+    serial_write_hex(tr);
+    serial_write("\r\n");
 
     serial_write("bmahOS booted!\r\n");
     serial_write("kernel: ");
