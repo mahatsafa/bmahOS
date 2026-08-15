@@ -287,6 +287,9 @@ void kmain(void)
     serial_init();
 
     gdt_init();
+
+    serial_write("TSS descriptor BEFORE LTR:\r\n");
+    print_bmahOS_gdt();
     gdt_load_and_reload();
 
     tss_load_asm();
@@ -295,6 +298,10 @@ void kmain(void)
 
     serial_write("TR: ");
     serial_write_hex(tr);
+    serial_write("\r\n");
+
+    serial_write("TSS descriptor AFTER LTR:\r\n");
+    print_bmahOS_gdt();
     serial_write("\r\n");
 
     serial_write("bmahOS booted!\r\n");
@@ -307,7 +314,6 @@ void kmain(void)
     read_gdt_entries();
 
     read_bmahOS_gdtr();
-    print_bmahOS_gdt();
 
     for (;;) {
         __asm__ volatile ("hlt");
