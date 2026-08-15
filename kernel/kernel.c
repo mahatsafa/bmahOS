@@ -71,6 +71,80 @@ static void serial_write_hex(uint64_t value)
 }
 
 
+struct exception_context
+{
+    uint64_t r15;
+    uint64_t r14;
+    uint64_t r13;
+    uint64_t r12;
+    uint64_t r11;
+    uint64_t r10;
+    uint64_t r9;
+    uint64_t r8;
+    uint64_t rbp;
+    uint64_t rdi;
+    uint64_t rsi;
+    uint64_t rdx;
+    uint64_t rcx;
+    uint64_t rbx;
+    uint64_t rax;
+
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t rflags;
+};
+
+_Static_assert(
+    sizeof(struct exception_context) == 18 * sizeof(uint64_t),
+    "exception_context size is wrong"
+);
+
+static uint64_t read_ss(void)
+{
+    uint16_t ss;
+
+    __asm__ volatile (
+        "mov %%ss, %0"
+        : "=r"(ss)
+    );
+
+    return ss;
+}
+
+void exception_handler(struct exception_context *context)
+{
+    serial_write("\r\n");
+    serial_write("=== EXCEPTION HANDLER ===\r\n");
+
+    serial_write("vector:  ");
+    serial_write_hex(0);
+    serial_write("\r\n");
+
+    serial_write("RIP:     ");
+    serial_write_hex(context->rip);
+    serial_write("\r\n");
+
+    serial_write("CS:      ");
+    serial_write_hex(context->cs);
+    serial_write("\r\n");
+
+    serial_write("RFLAGS:  ");
+    serial_write_hex(context->rflags);
+    serial_write("\r\n");
+
+    serial_write("SS:      ");
+    serial_write_hex(read_ss());
+    serial_write("\r\n");
+
+    serial_write("=== END EXCEPTION ===\r\n");
+
+    for (;;)
+    {
+        __asm__ volatile ("hlt");
+    }
+}
+
+
 struct gdt_entry
 {
     uint16_t limit_low;
@@ -399,6 +473,21 @@ static void read_gdt_entries(void)
     }
 }
 
+
+static void trigger_divide_error(void)
+{
+    uint64_t dividend = 1;
+    uint64_t divisor = 0;
+    uint64_t result;
+
+    __asm__ volatile (
+        "divq %2"
+        : "=a"(result)
+        : "a"(dividend), "r"(divisor)
+        : "rdx"
+    );
+}
+
 void kmain(void)
 {
     serial_init();
@@ -443,6 +532,12 @@ void kmain(void)
     read_gdt_entries();
 
     read_bmahOS_gdtr();
+
+    serial_write("ABOUT TO TRIGGER #DE\r\n");
+
+    trigger_divide_error();
+
+    serial_write("ERROR: #DE DID NOT OCCUR\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");
