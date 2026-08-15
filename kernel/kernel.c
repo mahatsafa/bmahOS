@@ -2,6 +2,8 @@
 #include <stddef.h>
 #include <limine.h>
 
+extern void isr0(void);
+
 void kmain(void);
 
 static inline void outb(uint16_t port, uint8_t value)
@@ -102,6 +104,89 @@ struct tss
 static struct gdt_entry bmahOS_gdt[5];
 static struct tss bmahOS_tss;
 
+struct idt_entry
+{
+    uint16_t offset_low;
+    uint16_t selector;
+    uint8_t  ist;
+    uint8_t  type_attr;
+    uint16_t offset_mid;
+    uint32_t offset_high;
+    uint32_t reserved;
+} __attribute__((packed));
+
+static struct idt_entry bmahOS_idt[256];
+
+_Static_assert(sizeof(struct idt_entry) == 16, "IDT entry size is wrong");
+_Static_assert(sizeof(bmahOS_idt) == 4096, "IDT size is wrong");
+
+static void idt_set_entry(
+    uint8_t vector,
+    uint64_t handler,
+    uint16_t selector,
+    uint8_t type_attr
+)
+{
+    bmahOS_idt[vector].offset_low =
+        (uint16_t)(handler & 0xFFFF);
+
+    bmahOS_idt[vector].selector = selector;
+    bmahOS_idt[vector].ist = 0;
+
+    bmahOS_idt[vector].type_attr = type_attr;
+
+    bmahOS_idt[vector].offset_mid =
+        (uint16_t)((handler >> 16) & 0xFFFF);
+
+    bmahOS_idt[vector].offset_high =
+        (uint32_t)((handler >> 32) & 0xFFFFFFFF);
+
+    bmahOS_idt[vector].reserved = 0;
+}
+
+static void idt_init(void)
+{
+    for (uint64_t i = 0; i < 256; i++)
+    {
+        bmahOS_idt[i].offset_low = 0;
+        bmahOS_idt[i].selector = 0;
+        bmahOS_idt[i].ist = 0;
+        bmahOS_idt[i].type_attr = 0;
+        bmahOS_idt[i].offset_mid = 0;
+        bmahOS_idt[i].offset_high = 0;
+        bmahOS_idt[i].reserved = 0;
+    }
+
+    idt_set_entry(
+        0,
+        (uint64_t)isr0,
+        0x08,
+        0x8E
+    );
+}
+
+
+
+static void print_idt_entry0(void)
+{
+    uint64_t handler =
+        ((uint64_t)bmahOS_idt[0].offset_low) |
+        ((uint64_t)bmahOS_idt[0].offset_mid << 16) |
+        ((uint64_t)bmahOS_idt[0].offset_high << 32);
+
+    serial_write("IDT[0] handler: ");
+    serial_write_hex(handler);
+    serial_write("\r\n");
+
+    serial_write("IDT[0] selector: ");
+    serial_write_hex(bmahOS_idt[0].selector);
+    serial_write("\r\n");
+
+    serial_write("IDT[0] type_attr: ");
+    serial_write_hex(bmahOS_idt[0].type_attr);
+    serial_write("\r\n");
+}
+
 _Static_assert(sizeof(struct tss) == 0x68, "TSS size is wrong");
 _Static_assert(sizeof(struct gdt_entry) == 8, "GDT entry size is wrong");
 _Static_assert(sizeof(bmahOS_gdt) == 40, "GDT size is wrong");
@@ -181,6 +266,38 @@ static void print_bmahOS_gdt(void)
 extern void gdt_load_and_reload_asm(const void *gdtr);
 extern void tss_load_asm(void);
 extern uint64_t tss_read_asm(void);
+extern void idt_load_asm(const void *idtr);
+
+static void idt_load(void)
+{
+    struct {
+        uint16_t limit;
+        uint64_t base;
+    } __attribute__((packed)) idtr;
+
+    idtr.limit = sizeof(bmahOS_idt) - 1;
+    idtr.base = (uint64_t)&bmahOS_idt[0];
+
+    idt_load_asm(&idtr);
+}
+
+static void read_idtr(void)
+{
+    struct {
+        uint16_t limit;
+        uint64_t base;
+    } __attribute__((packed)) idtr;
+
+    __asm__ volatile ("sidt %0" : "=m"(idtr));
+
+    serial_write("IDT limit: ");
+    serial_write_hex(idtr.limit);
+    serial_write("\r\n");
+
+    serial_write("IDT base: ");
+    serial_write_hex(idtr.base);
+    serial_write("\r\n");
+}
 
 static void gdt_load_and_reload(void)
 {
@@ -302,6 +419,18 @@ void kmain(void)
 
     serial_write("TSS descriptor AFTER LTR:\r\n");
     print_bmahOS_gdt();
+    serial_write("\r\n");
+
+    idt_init();
+
+    print_idt_entry0();
+
+    serial_write("Loading IDT...\r\n");
+
+    idt_load();
+
+    read_idtr();
+
     serial_write("\r\n");
 
     serial_write("bmahOS booted!\r\n");
