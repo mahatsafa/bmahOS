@@ -3,6 +3,7 @@
 #include <limine.h>
 
 extern void isr0(void);
+extern void isr13(void);
 
 void kmain(void);
 
@@ -89,13 +90,16 @@ struct exception_context
     uint64_t rbx;
     uint64_t rax;
 
+    uint64_t vector;
+    uint64_t error_code;
+
     uint64_t rip;
     uint64_t cs;
     uint64_t rflags;
 };
 
 _Static_assert(
-    sizeof(struct exception_context) == 18 * sizeof(uint64_t),
+    sizeof(struct exception_context) == 20 * sizeof(uint64_t),
     "exception_context size is wrong"
 );
 
@@ -111,13 +115,17 @@ static uint64_t read_ss(void)
     return ss;
 }
 
-void exception_handler(struct exception_context *context)
+void exception_dispatcher(struct exception_context *context)
 {
     serial_write("\r\n");
-    serial_write("=== EXCEPTION HANDLER ===\r\n");
+    serial_write("=== EXCEPTION DISPATCHER ===\r\n");
 
     serial_write("vector:  ");
-    serial_write_hex(0);
+    serial_write_hex(context->vector);
+    serial_write("\r\n");
+
+    serial_write("error:   ");
+    serial_write_hex(context->error_code);
     serial_write("\r\n");
 
     serial_write("RIP:     ");
@@ -137,11 +145,7 @@ void exception_handler(struct exception_context *context)
     serial_write("\r\n");
 
     serial_write("=== END EXCEPTION ===\r\n");
-
-    for (;;)
-    {
-        __asm__ volatile ("hlt");
-    }
+    for (;;) { __asm__ volatile ("hlt"); }
 }
 
 
@@ -234,6 +238,13 @@ static void idt_init(void)
     idt_set_entry(
         0,
         (uint64_t)isr0,
+        0x08,
+        0x8E
+    );
+
+    idt_set_entry(
+        13,
+        (uint64_t)isr13,
         0x08,
         0x8E
     );
@@ -488,6 +499,17 @@ static void trigger_divide_error(void)
     );
 }
 
+static void trigger_general_protection_fault(void)
+{
+    __asm__ volatile (
+        "movw $0x28, %%ax\n\t"
+        "movw %%ax, %%ds"
+        :
+        :
+        : "ax", "memory"
+    );
+}
+
 void kmain(void)
 {
     serial_init();
@@ -535,7 +557,7 @@ void kmain(void)
 
     serial_write("ABOUT TO TRIGGER #DE\r\n");
 
-    trigger_divide_error();
+    trigger_general_protection_fault();
 
     serial_write("ERROR: #DE DID NOT OCCUR\r\n");
 
