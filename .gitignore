@@ -1,1 +1,9 @@
 build/
+tools/
+audit-backup/
+*.before-*
+*.broken-*
+kernel/*.current-broken
+kernel/*.serial-*
+linker.ld.backup
+kernel/*.pmm-working
