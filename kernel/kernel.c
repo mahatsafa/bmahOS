@@ -703,6 +703,24 @@ static void trigger_general_protection_fault(void)
     );
 }
 
+static void trigger_double_fault(void)
+{
+    // Matikan present bit (bit 7) pada IDT[0] (#DE handler).
+    // 0x8E = 1000 1110 -> 0x0E = 0000 1110
+    // Saat #DE terjadi, CPU akan gagal masuk handler karena
+    // entry-nya "not present", memicu fault kedua -> #DF.
+    bmahOS_idt[0].type_attr &= 0x7F;
+
+    trigger_divide_error();
+}
+
+static void trigger_invalid_opcode(void)
+{
+    // ud2 adalah instruksi resmi x86 yang memang didesain
+    // untuk sengaja memicu #UD (Invalid Opcode).
+    __asm__ volatile ("ud2");
+}
+
 void kmain(void)
 {
     serial_init();
@@ -781,11 +799,11 @@ void kmain(void)
         serial_write("PMM: MEMMAP response NULL, skip init\r\n");
     }
 
-    serial_write("ABOUT TO TRIGGER #GP\r\n");
+    serial_write("ABOUT TO TRIGGER #UD\r\n");
 
-    trigger_general_protection_fault();
+    trigger_invalid_opcode();
 
-    serial_write("ERROR: #GP DID NOT OCCUR\r\n");
+    serial_write("ERROR: #UD DID NOT OCCUR\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");
