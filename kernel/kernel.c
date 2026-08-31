@@ -2,10 +2,134 @@
 #include <stddef.h>
 #include <limine.h>
 
+__attribute__((used, section(".limine_requests")))
+static volatile uint64_t limine_base_revision[] =
+    LIMINE_BASE_REVISION(6);
+
+__attribute__((used, section(".limine_requests_start_marker")))
+static volatile uint64_t limine_requests_start_marker[] =
+    LIMINE_REQUESTS_START_MARKER;
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST_ID,
+};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST_ID,
+};
+
 extern void isr0(void);
 extern void isr13(void);
 
 void kmain(void);
+
+#define PMM_PAGE_SIZE          0x1000ULL
+#define PMM_MAX_PHYS_ADDR      0x100000000ULL
+#define PMM_MAX_FRAMES         (PMM_MAX_PHYS_ADDR / PMM_PAGE_SIZE)
+#define PMM_BITMAP_SIZE        (PMM_MAX_FRAMES / 8ULL)
+
+static uint8_t pmm_bitmap[PMM_BITMAP_SIZE];
+
+static uint64_t pmm_usable_memory = 0;
+static uint64_t pmm_usable_frames = 0;
+static uint64_t pmm_next_frame = 0;
+
+static void pmm_bitmap_set(uint64_t frame)
+{
+    pmm_bitmap[frame / 8] |= (uint8_t)(1U << (frame % 8));
+}
+
+static void pmm_bitmap_clear(uint64_t frame)
+{
+    pmm_bitmap[frame / 8] &= (uint8_t)~(1U << (frame % 8));
+}
+
+static int pmm_bitmap_test(uint64_t frame)
+{
+    return (pmm_bitmap[frame / 8] &
+            (uint8_t)(1U << (frame % 8))) != 0;
+}
+
+static uint64_t pmm_align_up(uint64_t value)
+{
+    return (value + PMM_PAGE_SIZE - 1) &
+           ~(PMM_PAGE_SIZE - 1);
+}
+
+static uint64_t pmm_align_down(uint64_t value)
+{
+    return value & ~(PMM_PAGE_SIZE - 1);
+}
+
+static void pmm_init(struct limine_memmap_response *response)
+{
+    for (uint64_t i = 0; i < PMM_BITMAP_SIZE; i++) {
+        pmm_bitmap[i] = 0xFF;
+    }
+
+    pmm_usable_memory = 0;
+    pmm_usable_frames = 0;
+    pmm_next_frame = 0;
+
+    for (uint64_t i = 0; i < response->entry_count; i++) {
+        struct limine_memmap_entry *entry = response->entries[i];
+
+        if (entry->type != LIMINE_MEMMAP_USABLE) {
+            continue;
+        }
+
+        uint64_t start = pmm_align_up(entry->base);
+        uint64_t end = pmm_align_down(entry->base + entry->length);
+
+        if (end <= start) {
+            continue;
+        }
+
+        if (start >= PMM_MAX_PHYS_ADDR) {
+            continue;
+        }
+
+        if (end > PMM_MAX_PHYS_ADDR) {
+            end = PMM_MAX_PHYS_ADDR;
+        }
+
+        uint64_t length = end - start;
+        uint64_t first_frame = start / PMM_PAGE_SIZE;
+        uint64_t last_frame = end / PMM_PAGE_SIZE;
+
+        pmm_usable_memory += length;
+        pmm_usable_frames += last_frame - first_frame;
+
+        for (uint64_t frame = first_frame;
+             frame < last_frame;
+             frame++) {
+            pmm_bitmap_clear(frame);
+        }
+    }
+}
+
+static uint64_t pmm_alloc(void)
+{
+    for (uint64_t frame = pmm_next_frame;
+         frame < PMM_MAX_FRAMES;
+         frame++) {
+
+        if (!pmm_bitmap_test(frame)) {
+            pmm_bitmap_set(frame);
+            pmm_next_frame = frame + 1;
+
+            return frame * PMM_PAGE_SIZE;
+        }
+    }
+
+    return 0;
+}
+
+__attribute__((used, section(".limine_requests_end_marker")))
+static volatile uint64_t limine_requests_end_marker[] =
+    LIMINE_REQUESTS_END_MARKER;
 
 static inline void outb(uint16_t port, uint8_t value)
 {
@@ -554,6 +678,21 @@ void kmain(void)
     read_gdt_entries();
 
     read_bmahOS_gdtr();
+
+    if (memmap_request.response != NULL) {
+        pmm_init(memmap_request.response);
+        serial_write("PMM: initialized\r\n");
+        serial_write("PMM usable memory: ");
+        serial_write_hex(pmm_usable_memory);
+        serial_write("\r\n");
+
+        uint64_t test_frame = pmm_alloc();
+        serial_write("PMM allocate test frame: ");
+        serial_write_hex(test_frame);
+        serial_write("\r\n");
+    } else {
+        serial_write("PMM: MEMMAP response NULL, skip init\r\n");
+    }
 
     serial_write("ABOUT TO TRIGGER #DE\r\n");
 
