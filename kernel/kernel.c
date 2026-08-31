@@ -127,6 +127,31 @@ static uint64_t pmm_alloc(void)
     return 0;
 }
 
+static void pmm_free(uint64_t phys_addr)
+{
+    if (phys_addr == 0) {
+        return;
+    }
+
+    if ((phys_addr & (PMM_PAGE_SIZE - 1)) != 0) {
+        return;
+    }
+
+    uint64_t frame = phys_addr / PMM_PAGE_SIZE;
+
+    if (frame >= PMM_MAX_FRAMES) {
+        return;
+    }
+
+    if (pmm_bitmap_test(frame)) {
+        pmm_bitmap_clear(frame);
+
+        if (frame < pmm_next_frame) {
+            pmm_next_frame = frame;
+        }
+    }
+}
+
 __attribute__((used, section(".limine_requests_end_marker")))
 static volatile uint64_t limine_requests_end_marker[] =
     LIMINE_REQUESTS_END_MARKER;
@@ -689,6 +714,24 @@ void kmain(void)
         uint64_t test_frame = pmm_alloc();
         serial_write("PMM allocate test frame: ");
         serial_write_hex(test_frame);
+        serial_write("\r\n");
+
+        serial_write("PMM: freeing test frame\r\n");
+        pmm_free(test_frame);
+
+        serial_write("PMM: double-free (should be no-op)\r\n");
+        pmm_free(test_frame);
+
+        uint64_t test_frame2 = pmm_alloc();
+        serial_write("PMM allocate after free: ");
+        serial_write_hex(test_frame2);
+        serial_write("\r\n");
+
+        if (test_frame2 == test_frame) {
+            serial_write("PMM free/realloc test: PASS (frame reused)\r\n");
+        } else {
+            serial_write("PMM free/realloc test: FAIL (frame not reused)\r\n");
+        }
         serial_write("\r\n");
     } else {
         serial_write("PMM: MEMMAP response NULL, skip init\r\n");
