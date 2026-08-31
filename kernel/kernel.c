@@ -22,6 +22,23 @@ static volatile struct limine_memmap_request memmap_request = {
 
 extern void isr0(void);
 extern void isr13(void);
+extern void isr1(void);
+extern void isr2(void);
+extern void isr3(void);
+extern void isr4(void);
+extern void isr5(void);
+extern void isr6(void);
+extern void isr7(void);
+extern void isr8(void);
+extern void isr9(void);
+extern void isr10(void);
+extern void isr11(void);
+extern void isr12(void);
+extern void isr14(void);
+extern void isr16(void);
+extern void isr17(void);
+extern void isr18(void);
+extern void isr19(void);
 
 void kmain(void);
 
@@ -371,6 +388,37 @@ static void idt_set_entry(
     bmahOS_idt[vector].reserved = 0;
 }
 
+typedef struct
+{
+    uint8_t  vector;
+    uint64_t handler;
+} idt_vector_entry_t;
+
+static const idt_vector_entry_t bmahOS_idt_vectors[] = {
+    { 0,  (uint64_t)isr0  },
+    { 1,  (uint64_t)isr1  },
+    { 2,  (uint64_t)isr2  },
+    { 3,  (uint64_t)isr3  },
+    { 4,  (uint64_t)isr4  },
+    { 5,  (uint64_t)isr5  },
+    { 6,  (uint64_t)isr6  },
+    { 7,  (uint64_t)isr7  },
+    { 8,  (uint64_t)isr8  },
+    { 9,  (uint64_t)isr9  },
+    { 10, (uint64_t)isr10 },
+    { 11, (uint64_t)isr11 },
+    { 12, (uint64_t)isr12 },
+    { 13, (uint64_t)isr13 },
+    { 14, (uint64_t)isr14 },
+    { 16, (uint64_t)isr16 },
+    { 17, (uint64_t)isr17 },
+    { 18, (uint64_t)isr18 },
+    { 19, (uint64_t)isr19 },
+};
+
+static const uint64_t bmahOS_idt_vector_count =
+    sizeof(bmahOS_idt_vectors) / sizeof(bmahOS_idt_vectors[0]);
+
 static void idt_init(void)
 {
     for (uint64_t i = 0; i < 256; i++)
@@ -384,19 +432,15 @@ static void idt_init(void)
         bmahOS_idt[i].reserved = 0;
     }
 
-    idt_set_entry(
-        0,
-        (uint64_t)isr0,
-        0x08,
-        0x8E
-    );
-
-    idt_set_entry(
-        13,
-        (uint64_t)isr13,
-        0x08,
-        0x8E
-    );
+    for (uint64_t i = 0; i < bmahOS_idt_vector_count; i++)
+    {
+        idt_set_entry(
+            bmahOS_idt_vectors[i].vector,
+            bmahOS_idt_vectors[i].handler,
+            0x08,
+            0x8E
+        );
+    }
 }
 
 
@@ -737,11 +781,11 @@ void kmain(void)
         serial_write("PMM: MEMMAP response NULL, skip init\r\n");
     }
 
-    serial_write("ABOUT TO TRIGGER #DE\r\n");
+    serial_write("ABOUT TO TRIGGER #GP\r\n");
 
     trigger_general_protection_fault();
 
-    serial_write("ERROR: #DE DID NOT OCCUR\r\n");
+    serial_write("ERROR: #GP DID NOT OCCUR\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");

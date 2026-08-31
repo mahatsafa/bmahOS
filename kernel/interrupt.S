@@ -134,3 +134,37 @@ ISR_NOERR 0
 
 # #GP — General Protection — CPU DOES push error code
 ISR_ERR 13
+# #DB — Debug — no error code
+ISR_NOERR 1
+# NMI — Non-Maskable Interrupt — no error code
+ISR_NOERR 2
+# #BP — Breakpoint — no error code
+ISR_NOERR 3
+# #OF — Overflow — no error code
+ISR_NOERR 4
+# #BR — Bound Range Exceeded — no error code
+ISR_NOERR 5
+# #UD — Invalid Opcode — no error code
+ISR_NOERR 6
+# #NM — Device Not Available — no error code
+ISR_NOERR 7
+# #DF — Double Fault — CPU DOES push error code
+ISR_ERR 8
+# Vector 9 — legacy, unused on modern CPUs, no error code
+ISR_NOERR 9
+# #TS — Invalid TSS — CPU DOES push error code
+ISR_ERR 10
+# #NP — Segment Not Present — CPU DOES push error code
+ISR_ERR 11
+# #SS — Stack-Segment Fault — CPU DOES push error code
+ISR_ERR 12
+# #PF — Page Fault — CPU DOES push error code
+ISR_ERR 14
+# #MF — x87 Floating-Point Error — no error code
+ISR_NOERR 16
+# #AC — Alignment Check — CPU DOES push error code
+ISR_ERR 17
+# #MC — Machine Check — no error code
+ISR_NOERR 18
+# #XM — SIMD Floating-Point Exception — no error code
+ISR_NOERR 19
