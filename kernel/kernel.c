@@ -310,6 +310,14 @@ void exception_dispatcher(struct exception_context *context)
     serial_write_hex(read_ss());
     serial_write("\r\n");
 
+        {
+        uint64_t cr2;
+        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+        serial_write("CR2 (fault addr, relevan utk #PF): ");
+        serial_write_hex(cr2);
+        serial_write("\r\n");
+    }
+
     serial_write("=== END EXCEPTION ===\r\n");
     for (;;) { __asm__ volatile ("hlt"); }
 }
@@ -721,6 +729,31 @@ static void trigger_invalid_opcode(void)
     __asm__ volatile ("ud2");
 }
 
+static void trigger_invalid_tss(void)
+{
+    // ltr dengan selector 0x08 (code segment kita, bukan TSS
+    // descriptor). CPU cek tipe descriptor yang ditunjuk,
+    // ternyata bukan TSS valid -> #TS.
+    __asm__ volatile (
+        "movw $0x08, %%ax\n\t"
+        "ltr %%ax"
+        :
+        :
+        : "ax"
+    );
+}
+
+static void trigger_page_fault(void)
+{
+    // Dereference NULL pointer (alamat virtual 0x0).
+    // Tidak dipetakan di ruang alamat kernel manapun (bukan
+    // higher-half kernel, bukan HHDM Limine) -> MMU gagal
+    // translate -> #PF. CPU simpan alamat gagal ini di CR2.
+    volatile uint64_t *null_ptr = (volatile uint64_t *)0x0;
+    volatile uint64_t value = *null_ptr;
+    (void)value;
+}
+
 void kmain(void)
 {
     serial_init();
@@ -799,11 +832,9 @@ void kmain(void)
         serial_write("PMM: MEMMAP response NULL, skip init\r\n");
     }
 
-    serial_write("ABOUT TO TRIGGER #UD\r\n");
-
-    trigger_invalid_opcode();
-
-    serial_write("ERROR: #UD DID NOT OCCUR\r\n");
+    serial_write("ABOUT TO TRIGGER #PF\r\n");
+    trigger_page_fault();
+    serial_write("ERROR: #PF DID NOT OCCUR\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");
