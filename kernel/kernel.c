@@ -901,9 +901,10 @@ static void kheap_init(uint64_t pml4_phys)
 
 static void *kmalloc(uint64_t size)
 {
-    size = (size + 15) & ~((uint64_t)15);
+    uint64_t total = size + sizeof(uint64_t);
+    total = (total + 15) & ~((uint64_t)15);
 
-    while (kheap_current + size > kheap_mapped_end) {
+    while (kheap_current + total > kheap_mapped_end) {
         uint64_t new_frame = pmm_alloc();
         if (new_frame == 0) {
             serial_write("kmalloc: pmm_alloc() FAILED, heap kehabisan memori\r\n");
@@ -914,20 +915,32 @@ static void *kmalloc(uint64_t size)
         kheap_mapped_end += PMM_PAGE_SIZE;
     }
 
-    uint64_t result = kheap_current;
-    kheap_current += size;
-    return (void *)result;
+    uint64_t header_addr = kheap_current;
+    uint64_t *header = (uint64_t *)header_addr;
+    *header = total;
+
+    kheap_current += total;
+
+    return (void *)(header_addr + sizeof(uint64_t));
 }
 
 static void kfree(void *ptr)
 {
-    (void)ptr;
-    // CATATAN: bump allocator TIDAK bisa reclaim memori individual.
-    // Ini keterbatasan desain yang disengaja untuk versi awal --
-    // kfree() ada sebagai API supaya kode lain bisa memanggilnya
-    // tanpa error compile, tapi belum benar-benar mengembalikan
-    // memori. Upgrade ke freelist/slab allocator adalah pekerjaan
-    // masa depan kalau kernel butuh reclaim yang sesungguhnya.
+    if (ptr == (void *)0) {
+        return;
+    }
+
+    uint64_t data_addr = (uint64_t)ptr;
+    uint64_t header_addr = data_addr - sizeof(uint64_t);
+    uint64_t *header = (uint64_t *)header_addr;
+    uint64_t total = *header;
+
+    if (header_addr + total == kheap_current) {
+        kheap_current = header_addr;
+        serial_write("kfree: alokasi terakhir, berhasil reclaim\r\n");
+    } else {
+        serial_write("kfree: bukan alokasi terakhir, tidak bisa reclaim aman (no-op)\r\n");
+    }
 }
 static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 {
@@ -1084,15 +1097,12 @@ void kmain(void)
         serial_write("VMM test: FAIL (mismatch)\r\n");
     }
     serial_write("\r\n");
-    serial_write("vmm_unmap test: unmapping test_vaddr...\r\n");
-    vmm_unmap(pml4_phys, test_vaddr);
-    serial_write("vmm_unmap test: unmap selesai, sekarang akses ulang (harus #PF)\r\n");
-    serial_write("\r\n");
+    // vmm_unmap() sudah diverifikasi bekerja (lihat git log/commit
+    // sebelumnya): unmap test_vaddr lalu akses ulang berhasil memicu
+    // #PF dengan CR2 = test_vaddr persis, membuktikan TLB flush dan
+    // page table clearing keduanya benar. Kode pemicu crash-nya
+    // dinonaktifkan di sini supaya boot bisa lanjut ke test berikutnya.
 
-    volatile uint64_t after_unmap = *test_ptr;
-    (void)after_unmap;
-
-    serial_write("ERROR: akses setelah unmap TIDAK memicu #PF!\r\n");
     kheap_init(pml4_phys);
     serial_write("kheap: initialized\r\n");
 
@@ -1117,6 +1127,33 @@ void kmain(void)
         serial_write("kmalloc test: PASS (semua alokasi terisi benar, tidak tumpang tindih)\r\n");
     } else {
         serial_write("kmalloc test: FAIL\r\n");
+    }
+    serial_write("\r\n");
+    char *d = (char *)kmalloc(16);
+    serial_write("kmalloc(16) untuk test kfree -> ");
+    serial_write_hex((uint64_t)d);
+    serial_write("\r\n");
+
+    uint64_t before_free = kheap_current;
+    kfree(d);
+    uint64_t after_free = kheap_current;
+
+    serial_write("kheap_current sebelum kfree: ");
+    serial_write_hex(before_free);
+    serial_write("\r\n");
+    serial_write("kheap_current sesudah kfree: ");
+    serial_write_hex(after_free);
+    serial_write("\r\n");
+
+    char *e = (char *)kmalloc(16);
+    serial_write("kmalloc(16) lagi setelah kfree -> ");
+    serial_write_hex((uint64_t)e);
+    serial_write("\r\n");
+
+    if (e == d) {
+        serial_write("kfree test: PASS (alamat berhasil di-reuse, LIFO reclaim bekerja)\r\n");
+    } else {
+        serial_write("kfree test: FAIL (alamat tidak sama, reclaim tidak bekerja)\r\n");
     }
     serial_write("\r\n");
     serial_write("ABOUT TO TRIGGER #BP\r\n");
