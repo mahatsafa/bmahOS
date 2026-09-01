@@ -885,9 +885,9 @@ void kmain(void)
         serial_write("PMM: MEMMAP response NULL, skip init\r\n");
     }
 
-    serial_write("ABOUT TO TRIGGER #SS\r\n");
-    trigger_stack_fault();
-    serial_write("ERROR: #SS DID NOT OCCUR\r\n");
+    serial_write("ABOUT TO TRIGGER #BP\r\n");
+    trigger_breakpoint();
+    serial_write("ERROR: #BP DID NOT OCCUR\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");
