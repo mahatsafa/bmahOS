@@ -15,6 +15,8 @@ static volatile struct limine_hhdm_request hhdm_request = {
     .id = LIMINE_HHDM_REQUEST_ID,
 };
 
+static uint64_t hhdm_offset = 0;
+
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_memmap_request memmap_request = {
     .id = LIMINE_MEMMAP_REQUEST_ID,
@@ -807,6 +809,13 @@ static void trigger_overflow(void)
     // memicunya di long mode.
 }
 
+static uint64_t read_cr3(void)
+{
+    uint64_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    return cr3;
+}
+
 void kmain(void)
 {
     serial_init();
@@ -884,6 +893,21 @@ void kmain(void)
     } else {
         serial_write("PMM: MEMMAP response NULL, skip init\r\n");
     }
+
+    // ===== VMM foundation: HHDM offset + CR3 (PML4 physical addr) =====
+    if (hhdm_request.response != NULL) {
+        hhdm_offset = hhdm_request.response->offset;
+        serial_write("HHDM offset: ");
+        serial_write_hex(hhdm_offset);
+        serial_write("\r\n");
+    } else {
+        serial_write("HHDM: response NULL, VMM cannot proceed safely\r\n");
+    }
+
+    uint64_t pml4_phys = read_cr3();
+    serial_write("CR3 (PML4 physical addr): ");
+    serial_write_hex(pml4_phys);
+    serial_write("\r\n");
 
     serial_write("ABOUT TO TRIGGER #BP\r\n");
     trigger_breakpoint();
