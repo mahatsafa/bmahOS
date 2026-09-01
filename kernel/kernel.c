@@ -816,6 +816,33 @@ static uint64_t read_cr3(void)
     return cr3;
 }
 
+static void vmm_dump_pml4(uint64_t pml4_phys)
+{
+    // Konversi physical -> virtual lewat HHDM, supaya CPU
+    // bisa baca isinya (CPU tidak bisa akses physical address
+    // secara langsung).
+    uint64_t *pml4_virt =
+        (uint64_t *)(pml4_phys + hhdm_offset);
+
+    serial_write("PML4 non-empty entries:\r\n");
+
+    for (uint64_t i = 0; i < 512; i++) {
+        uint64_t entry = pml4_virt[i];
+
+        // Bit 0 = present bit. Skip entry kosong supaya log
+        // tidak banjir (PML4 biasanya sebagian besar kosong).
+        if ((entry & 0x1) == 0) {
+            continue;
+        }
+
+        serial_write("  PML4[");
+        serial_write_hex(i);
+        serial_write("] = ");
+        serial_write_hex(entry);
+        serial_write("\r\n");
+    }
+}
+
 void kmain(void)
 {
     serial_init();
@@ -909,6 +936,7 @@ void kmain(void)
     serial_write_hex(pml4_phys);
     serial_write("\r\n");
 
+    vmm_dump_pml4(pml4_phys);
     serial_write("ABOUT TO TRIGGER #BP\r\n");
     trigger_breakpoint();
     serial_write("ERROR: #BP DID NOT OCCUR\r\n");
