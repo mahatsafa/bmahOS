@@ -754,6 +754,59 @@ static void trigger_page_fault(void)
     (void)value;
 }
 
+static void trigger_not_present(void)
+{
+    // Matikan present bit pada GDT data segment (index 2, 0x10).
+    // Load ulang DS dengan selector itu -> CPU deteksi segment
+    // not-present pada DS/ES/FS/GS -> #NP (bukan #SS).
+    bmahOS_gdt[2].access &= 0x7F;
+    __asm__ volatile (
+        "movw $0x10, %%ax\n\t"
+        "movw %%ax, %%ds"
+        :
+        :
+        : "ax", "memory"
+    );
+}
+
+static void trigger_stack_fault(void)
+{
+    // Sama seperti #NP, tapi kali ini yang di-reload adalah SS.
+    // Sesuai Intel SDM: load SS ke segment not-present secara
+    // spesifik memicu #SS, berbeda dari DS/ES/FS/GS yang -> #NP.
+    bmahOS_gdt[2].access &= 0x7F;
+    __asm__ volatile (
+        "movw $0x10, %%ax\n\t"
+        "movw %%ax, %%ss"
+        :
+        :
+        : "ax", "memory"
+    );
+}
+
+static void trigger_breakpoint(void)
+{
+    // int3 adalah instruksi resmi 1-byte (0xCC) yang memang
+    // didesain untuk memicu #BP, dipakai debugger untuk software
+    // breakpoint.
+    __asm__ volatile ("int3");
+}
+
+static void trigger_overflow(void)
+{
+    // CATATAN: instruksi "into" DIHAPUS di mode 64-bit (long mode)
+    // oleh spesifikasi AMD64/x86-64 -- bukan keterbatasan bmahOS,
+    // tapi keterbatasan arsitektur CPU itu sendiri. Assembler modern
+    // menolak compile "into" untuk target 64-bit.
+    //
+    // Akibatnya #OF TIDAK dapat ditrigger via software biasa di
+    // kernel 64-bit manapun. Vektor 4 tetap terdaftar di IDT
+    // (stub ISR_NOERR 4 ada, dispatcher siap menangani jika CPU
+    // pernah mengirimnya lewat jalur lain), tapi sengaja tidak
+    // ditest aktif karena tidak ada mekanisme software valid untuk
+    // memicunya di long mode.
+}
+
 void kmain(void)
 {
     serial_init();
@@ -832,9 +885,9 @@ void kmain(void)
         serial_write("PMM: MEMMAP response NULL, skip init\r\n");
     }
 
-    serial_write("ABOUT TO TRIGGER #PF\r\n");
-    trigger_page_fault();
-    serial_write("ERROR: #PF DID NOT OCCUR\r\n");
+    serial_write("ABOUT TO TRIGGER #NP\r\n");
+    trigger_not_present();
+    serial_write("ERROR: #NP DID NOT OCCUR\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");
