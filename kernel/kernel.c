@@ -842,6 +842,53 @@ static void vmm_dump_pml4(uint64_t pml4_phys)
         serial_write("\r\n");
     }
 }
+#define VMM_FLAG_PRESENT   0x1ULL
+#define VMM_FLAG_WRITABLE  0x2ULL
+#define VMM_ENTRY_ADDR_MASK 0x000FFFFFFFFFF000ULL
+
+static uint64_t vmm_get_or_create_table(uint64_t *table_virt, uint64_t index)
+{
+    uint64_t entry = table_virt[index];
+
+    if (entry & VMM_FLAG_PRESENT) {
+        return entry & VMM_ENTRY_ADDR_MASK;
+    }
+
+    uint64_t new_table_phys = pmm_alloc();
+    if (new_table_phys == 0) {
+        serial_write("VMM: pmm_alloc() FAILED\r\n");
+        return 0;
+    }
+
+    uint64_t *new_table_virt = (uint64_t *)(new_table_phys + hhdm_offset);
+    for (uint64_t i = 0; i < 512; i++) {
+        new_table_virt[i] = 0;
+    }
+
+    table_virt[index] = new_table_phys | VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE;
+    return new_table_phys;
+}
+static void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t flags)
+{
+    uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
+    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
+    uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
+    uint64_t pt_idx   = (vaddr >> 12) & 0x1FF;
+    uint64_t *pml4_virt = (uint64_t *)(pml4_phys + hhdm_offset);
+    uint64_t pdpt_phys = vmm_get_or_create_table(pml4_virt, pml4_idx);
+    if (pdpt_phys == 0) return;
+    uint64_t *pdpt_virt = (uint64_t *)(pdpt_phys + hhdm_offset);
+    uint64_t pd_phys = vmm_get_or_create_table(pdpt_virt, pdpt_idx);
+    if (pd_phys == 0) return;
+    uint64_t *pd_virt = (uint64_t *)(pd_phys + hhdm_offset);
+    uint64_t pt_phys = vmm_get_or_create_table(pd_virt, pd_idx);
+    if (pt_phys == 0) return;
+    uint64_t *pt_virt = (uint64_t *)(pt_phys + hhdm_offset);
+    pt_virt[pt_idx] = (paddr & VMM_ENTRY_ADDR_MASK) | flags;
+}
+
+
+
 
 void kmain(void)
 {
@@ -937,6 +984,33 @@ void kmain(void)
     serial_write("\r\n");
 
     vmm_dump_pml4(pml4_phys);
+    uint64_t test_frame_phys = pmm_alloc();
+    serial_write("VMM test: allocated physical frame: ");
+    serial_write_hex(test_frame_phys);
+    serial_write("\r\n");
+
+    uint64_t test_vaddr = 0xFFFF900000000000ULL;
+    vmm_map(pml4_phys, test_vaddr, test_frame_phys, VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE);
+    serial_write("VMM test: mapped vaddr ");
+    serial_write_hex(test_vaddr);
+    serial_write(" -> paddr ");
+    serial_write_hex(test_frame_phys);
+    serial_write("\r\n");
+
+    volatile uint64_t *test_ptr = (volatile uint64_t *)test_vaddr;
+    *test_ptr = 0xDEADBEEFCAFEBABEULL;
+    uint64_t readback = *test_ptr;
+
+    serial_write("VMM test: wrote 0xDEADBEEFCAFEBABE, read back: ");
+    serial_write_hex(readback);
+    serial_write("\r\n");
+
+    if (readback == 0xDEADBEEFCAFEBABEULL) {
+        serial_write("VMM test: PASS (write/read via new mapping matches)\r\n");
+    } else {
+        serial_write("VMM test: FAIL (mismatch)\r\n");
+    }
+    serial_write("\r\n");
     serial_write("ABOUT TO TRIGGER #BP\r\n");
     trigger_breakpoint();
     serial_write("ERROR: #BP DID NOT OCCUR\r\n");
