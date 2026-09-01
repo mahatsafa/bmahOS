@@ -886,6 +886,50 @@ static void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t
     uint64_t *pt_virt = (uint64_t *)(pt_phys + hhdm_offset);
     pt_virt[pt_idx] = (paddr & VMM_ENTRY_ADDR_MASK) | flags;
 }
+#define KHEAP_START 0xFFFF980000000000ULL
+
+static uint64_t kheap_current = 0;
+static uint64_t kheap_mapped_end = 0;
+static uint64_t kheap_pml4_phys = 0;
+
+static void kheap_init(uint64_t pml4_phys)
+{
+    kheap_pml4_phys = pml4_phys;
+    kheap_current = KHEAP_START;
+    kheap_mapped_end = KHEAP_START;
+}
+
+static void *kmalloc(uint64_t size)
+{
+    size = (size + 15) & ~((uint64_t)15);
+
+    while (kheap_current + size > kheap_mapped_end) {
+        uint64_t new_frame = pmm_alloc();
+        if (new_frame == 0) {
+            serial_write("kmalloc: pmm_alloc() FAILED, heap kehabisan memori\r\n");
+            return (void *)0;
+        }
+        vmm_map(kheap_pml4_phys, kheap_mapped_end, new_frame,
+                VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE);
+        kheap_mapped_end += PMM_PAGE_SIZE;
+    }
+
+    uint64_t result = kheap_current;
+    kheap_current += size;
+    return (void *)result;
+}
+
+static void kfree(void *ptr)
+{
+    (void)ptr;
+    // CATATAN: bump allocator TIDAK bisa reclaim memori individual.
+    // Ini keterbatasan desain yang disengaja untuk versi awal --
+    // kfree() ada sebagai API supaya kode lain bisa memanggilnya
+    // tanpa error compile, tapi belum benar-benar mengembalikan
+    // memori. Upgrade ke freelist/slab allocator adalah pekerjaan
+    // masa depan kalau kernel butuh reclaim yang sesungguhnya.
+}
+
 
 
 
@@ -1009,6 +1053,32 @@ void kmain(void)
         serial_write("VMM test: PASS (write/read via new mapping matches)\r\n");
     } else {
         serial_write("VMM test: FAIL (mismatch)\r\n");
+    }
+    serial_write("\r\n");
+    kheap_init(pml4_phys);
+    serial_write("kheap: initialized\r\n");
+
+    char *a = (char *)kmalloc(32);
+    char *b = (char *)kmalloc(64);
+    char *c = (char *)kmalloc(5000);
+
+    serial_write("kmalloc(32)   -> "); serial_write_hex((uint64_t)a); serial_write("\r\n");
+    serial_write("kmalloc(64)   -> "); serial_write_hex((uint64_t)b); serial_write("\r\n");
+    serial_write("kmalloc(5000) -> "); serial_write_hex((uint64_t)c); serial_write("\r\n");
+
+    for (int i = 0; i < 32; i++) a[i] = 0xAA;
+    for (int i = 0; i < 64; i++) b[i] = 0xBB;
+    for (int i = 0; i < 5000; i++) c[i] = 0xCC;
+
+    int pass = 1;
+    for (int i = 0; i < 32; i++) if ((unsigned char)a[i] != 0xAA) pass = 0;
+    for (int i = 0; i < 64; i++) if ((unsigned char)b[i] != 0xBB) pass = 0;
+    for (int i = 0; i < 5000; i++) if ((unsigned char)c[i] != 0xCC) pass = 0;
+
+    if (pass) {
+        serial_write("kmalloc test: PASS (semua alokasi terisi benar, tidak tumpang tindih)\r\n");
+    } else {
+        serial_write("kmalloc test: FAIL\r\n");
     }
     serial_write("\r\n");
     serial_write("ABOUT TO TRIGGER #BP\r\n");
