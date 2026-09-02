@@ -12,7 +12,7 @@ CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-stack-check -fno-p
 LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
 C_SRCS := $(KERNEL_DIR)/kernel.c
-S_SRCS := $(KERNEL_DIR)/gdt.S $(KERNEL_DIR)/interrupt.S
+S_SRCS := $(KERNEL_DIR)/gdt.S $(KERNEL_DIR)/interrupt.S $(KERNEL_DIR)/task.S
 
 C_OBJS := $(patsubst $(KERNEL_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SRCS))
 S_OBJS := $(patsubst $(KERNEL_DIR)/%.S,$(BUILD_DIR)/%.o,$(S_SRCS))

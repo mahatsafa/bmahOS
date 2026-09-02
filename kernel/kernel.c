@@ -942,6 +942,72 @@ static void kfree(void *ptr)
         serial_write("kfree: bukan alokasi terakhir, tidak bisa reclaim aman (no-op)\r\n");
     }
 }
+extern void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp);
+
+typedef struct {
+    uint64_t rsp;
+} task_t;
+
+// Siapkan stack awal task baru supaya context_switch() bisa
+// "melompat" ke entry_function pertama kali task ini dijalankan.
+// Stack direkayasa supaya urutan pop di context_switch() (r15,
+// r14, r13, r12, rbp, rbx) lalu ret, membuat CPU seolah baru
+// masuk ke entry_function.
+static void task_create(task_t *task, void (*entry_function)(void), uint64_t stack_size)
+{
+    uint64_t stack_base = (uint64_t)kmalloc(stack_size);
+    uint64_t stack_top = stack_base + stack_size;
+
+    // Stack tumbuh ke bawah, jadi kita mulai dari alamat tinggi.
+    uint64_t *sp = (uint64_t *)stack_top;
+
+    // Return address palsu untuk RET di context_switch().
+    sp--;
+    *sp = (uint64_t)entry_function;
+
+    // 6 register yang di-pop context_switch() (rbx, rbp, r12-r15),
+    // diisi 0 karena ini task baru, belum ada state sebelumnya.
+    sp--; *sp = 0; // r15
+    sp--; *sp = 0; // r14
+    sp--; *sp = 0; // r13
+    sp--; *sp = 0; // r12
+    sp--; *sp = 0; // rbp
+    sp--; *sp = 0; // rbx
+
+    task->rsp = (uint64_t)sp;
+}
+static task_t task_a;
+static task_t task_b;
+
+static void task_a_entry(void)
+{
+    for (int i = 0; i < 3; i++) {
+        serial_write("Task A jalan, iterasi ke-");
+        serial_write_hex((uint64_t)i);
+        serial_write("\r\n");
+        context_switch(&task_a.rsp, task_b.rsp);
+    }
+    serial_write("Task A selesai\r\n");
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+static void task_b_entry(void)
+{
+    for (int i = 0; i < 3; i++) {
+        serial_write("Task B jalan, iterasi ke-");
+        serial_write_hex((uint64_t)i);
+        serial_write("\r\n");
+        context_switch(&task_b.rsp, task_a.rsp);
+    }
+    serial_write("Task B selesai\r\n");
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+
 static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 {
     uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
@@ -1156,6 +1222,18 @@ void kmain(void)
         serial_write("kfree test: FAIL (alamat tidak sama, reclaim tidak bekerja)\r\n");
     }
     serial_write("\r\n");
+    serial_write("Task scheduling test: membuat task A dan B...\r\n");
+
+    task_create(&task_a, task_a_entry, 4096);
+    task_create(&task_b, task_b_entry, 4096);
+
+    serial_write("Task A dan B dibuat, mulai jalankan Task A...\r\n");
+    serial_write("\r\n");
+
+    static task_t kernel_dummy_task;
+    context_switch(&kernel_dummy_task.rsp, task_a.rsp);
+
+    serial_write("ERROR: kembali ke kmain() setelah task selesai (tidak diharapkan)\r\n");
     serial_write("ABOUT TO TRIGGER #BP\r\n");
     trigger_breakpoint();
     serial_write("ERROR: #BP DID NOT OCCUR\r\n");
