@@ -1,39 +1,47 @@
 .global context_switch
 .type context_switch, @function
-
 # void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp)
-# rdi = old_rsp_ptr  (tempat menyimpan rsp task lama)
-# rsi = new_rsp      (rsp task baru yang mau dipakai)
+# rdi = old_rsp_ptr, rsi = new_rsp
 context_switch:
-    # Simpan callee-saved register (System V AMD64 ABI) ke stack
-    # task LAMA -- ini yang membuat "snapshot" state task lama.
+    # Simpan SEMUA register (15) milik task lama, urutan sama
+    # persis dengan irq_common_stub supaya kompatibel dipanggil
+    # dari dalam interrupt context nanti (Tahap 3).
+    pushq %rax
     pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
     pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
     pushq %r12
     pushq %r13
     pushq %r14
     pushq %r15
-
-    # Simpan rsp sekarang (sudah termasuk register yang baru di-push)
-    # ke *old_rsp_ptr, supaya task lama bisa di-resume nanti.
+    # Simpan rsp task lama.
     movq %rsp, (%rdi)
-
-    # Pindah ke stack task BARU.
+    # Pindah ke stack task baru.
     movq %rsi, %rsp
-
-    # Pop kembali register, tapi sekarang dari stack task BARU --
-    # otomatis jadi nilai register milik task baru.
+    # Pulihkan 15 register milik task baru, urutan kebalikan push.
     popq %r15
     popq %r14
     popq %r13
     popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
     popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
     popq %rbx
-
-    # ret akan pop "return address" dari stack task baru -- ini
-    # yang membuat CPU "melompat" ke entry point task baru (kalau
-    # baru pertama kali dijalankan) atau titik terakhir task itu
-    # berhenti (kalau sudah pernah jalan sebelumnya).
+    popq %rax
+    # ret melompat ke entry_function (task baru) atau titik
+    # terakhir task ini berhenti (kalau sudah pernah jalan).
     ret
-
 .size context_switch, .-context_switch

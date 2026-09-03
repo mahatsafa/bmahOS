@@ -1337,9 +1337,9 @@ typedef struct {
 
 // Siapkan stack awal task baru supaya context_switch() bisa
 // "melompat" ke entry_function pertama kali task ini dijalankan.
-// Stack direkayasa supaya urutan pop di context_switch() (r15,
-// r14, r13, r12, rbp, rbx) lalu ret, membuat CPU seolah baru
-// masuk ke entry_function.
+// Stack direkayasa supaya urutan pop di context_switch() (rax..r15,
+// 15 register, matching irq_common_stub) lalu ret, membuat CPU
+// seolah baru masuk ke entry_function.
 static void task_create(task_t *task, void (*entry_function)(void), uint64_t stack_size)
 {
     uint64_t stack_base = (uint64_t)kmalloc(stack_size);
@@ -1352,14 +1352,23 @@ static void task_create(task_t *task, void (*entry_function)(void), uint64_t sta
     sp--;
     *sp = (uint64_t)entry_function;
 
-    // 6 register yang di-pop context_switch() (rbx, rbp, r12-r15),
-    // diisi 0 karena ini task baru, belum ada state sebelumnya.
-    sp--; *sp = 0; // r15
-    sp--; *sp = 0; // r14
-    sp--; *sp = 0; // r13
-    sp--; *sp = 0; // r12
-    sp--; *sp = 0; // rbp
+    // 15 register, urutan sama seperti urutan PUSH di context_switch()/
+    // irq_common_stub (rax..r15), semua nol (task baru, belum ada state).
+    sp--; *sp = 0; // rax
     sp--; *sp = 0; // rbx
+    sp--; *sp = 0; // rcx
+    sp--; *sp = 0; // rdx
+    sp--; *sp = 0; // rsi
+    sp--; *sp = 0; // rdi
+    sp--; *sp = 0; // rbp
+    sp--; *sp = 0; // r8
+    sp--; *sp = 0; // r9
+    sp--; *sp = 0; // r10
+    sp--; *sp = 0; // r11
+    sp--; *sp = 0; // r12
+    sp--; *sp = 0; // r13
+    sp--; *sp = 0; // r14
+    sp--; *sp = 0; // r15
 
     task->rsp = (uint64_t)sp;
 }
