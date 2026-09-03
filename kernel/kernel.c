@@ -22,6 +22,11 @@ static volatile struct limine_memmap_request memmap_request = {
     .id = LIMINE_MEMMAP_REQUEST_ID,
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_rsdp_request rsdp_request = {
+    .id = LIMINE_RSDP_REQUEST_ID,
+};
+
 extern void isr0(void);
 extern void isr13(void);
 extern void isr1(void);
@@ -197,6 +202,258 @@ static inline uint8_t inb(uint16_t port)
 
     return value;
 }
+
+static void serial_write(const char *s);
+static void serial_write_hex(uint64_t value);
+
+// ============================================================
+// ACPI: RSDP -> RSDT/XSDT -> MADT parsing
+// Base revision Limine kita = 6, artinya RSDP address dikembalikan
+// sebagai virtual (HHDM) -- lihat PROTOCOL.md Base Revision 4:
+// "RSDP address is returned as virtual (HHDM) again (physical only
+// in base revision 3)." Jadi rsdp_request.response->address bisa
+// langsung di-dereference tanpa tambah hhdm_offset.
+// ============================================================
+
+struct acpi_rsdp
+{
+    char signature[8];
+    uint8_t checksum;
+    char oem_id[6];
+    uint8_t revision;
+    uint32_t rsdt_address;
+    // Fields berikut hanya valid kalau revision >= 2 (ACPI 2.0+)
+    uint32_t length;
+    uint64_t xsdt_address;
+    uint8_t extended_checksum;
+    uint8_t reserved[3];
+} __attribute__((packed));
+
+struct acpi_sdt_header
+{
+    char signature[4];
+    uint32_t length;
+    uint8_t revision;
+    uint8_t checksum;
+    char oem_id[6];
+    char oem_table_id[8];
+    uint32_t oem_revision;
+    uint32_t creator_id;
+    uint32_t creator_revision;
+} __attribute__((packed));
+
+struct acpi_madt
+{
+    struct acpi_sdt_header header;
+    uint32_t local_apic_address;
+    uint32_t flags;
+    // Diikuti entries dengan panjang variabel
+} __attribute__((packed));
+
+struct acpi_madt_entry_header
+{
+    uint8_t entry_type;
+    uint8_t entry_length;
+} __attribute__((packed));
+
+// Entry type 0: Processor Local APIC
+struct acpi_madt_local_apic
+{
+    struct acpi_madt_entry_header header;
+    uint8_t acpi_processor_id;
+    uint8_t apic_id;
+    uint32_t flags;
+} __attribute__((packed));
+
+// Entry type 1: I/O APIC
+struct acpi_madt_ioapic
+{
+    struct acpi_madt_entry_header header;
+    uint8_t ioapic_id;
+    uint8_t reserved;
+    uint32_t ioapic_address;
+    uint32_t global_system_interrupt_base;
+} __attribute__((packed));
+
+// Entry type 2: Interrupt Source Override
+struct acpi_madt_iso
+{
+    struct acpi_madt_entry_header header;
+    uint8_t bus_source;
+    uint8_t irq_source;
+    uint32_t global_system_interrupt;
+    uint16_t flags;
+} __attribute__((packed));
+
+static uint64_t g_local_apic_address = 0;
+static uint32_t g_ioapic_address = 0;
+static uint32_t g_ioapic_id = 0;
+static uint32_t g_ioapic_gsi_base = 0;
+static uint32_t g_irq0_gsi = 0; // default asumsi: IRQ0 -> GSI0, kecuali ada override
+
+static struct acpi_sdt_header *acpi_find_table(void *root_sdt, int use_xsdt, const char *signature)
+{
+    struct acpi_sdt_header *root_header = (struct acpi_sdt_header *)root_sdt;
+    uint32_t entries_length = root_header->length - sizeof(struct acpi_sdt_header);
+
+    if (use_xsdt)
+    {
+        uint64_t *entries = (uint64_t *)((uint8_t *)root_sdt + sizeof(struct acpi_sdt_header));
+        uint32_t count = entries_length / sizeof(uint64_t);
+        for (uint32_t i = 0; i < count; i++)
+        {
+            struct acpi_sdt_header *table = (struct acpi_sdt_header *)(entries[i] + hhdm_offset);
+            if (
+                table->signature[0] == signature[0] &&
+                table->signature[1] == signature[1] &&
+                table->signature[2] == signature[2] &&
+                table->signature[3] == signature[3])
+            {
+                return table;
+            }
+        }
+    }
+    else
+    {
+        uint32_t *entries = (uint32_t *)((uint8_t *)root_sdt + sizeof(struct acpi_sdt_header));
+        uint32_t count = entries_length / sizeof(uint32_t);
+        for (uint32_t i = 0; i < count; i++)
+        {
+            struct acpi_sdt_header *table = (struct acpi_sdt_header *)((uint64_t)entries[i] + hhdm_offset);
+            if (
+                table->signature[0] == signature[0] &&
+                table->signature[1] == signature[1] &&
+                table->signature[2] == signature[2] &&
+                table->signature[3] == signature[3])
+            {
+                return table;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static void acpi_parse_madt(struct acpi_madt *madt)
+{
+    g_local_apic_address = madt->local_apic_address;
+    serial_write("MADT: Local APIC address = ");
+    serial_write_hex(g_local_apic_address);
+    serial_write("\r\n");
+
+    uint8_t *entry_ptr = (uint8_t *)madt + sizeof(struct acpi_madt);
+    uint8_t *madt_end = (uint8_t *)madt + madt->header.length;
+
+    while (entry_ptr < madt_end)
+    {
+        struct acpi_madt_entry_header *entry_header = (struct acpi_madt_entry_header *)entry_ptr;
+
+        if (entry_header->entry_type == 0)
+        {
+            struct acpi_madt_local_apic *lapic = (struct acpi_madt_local_apic *)entry_ptr;
+            serial_write("MADT: Local APIC entry -- processor_id=");
+            serial_write_hex(lapic->acpi_processor_id);
+            serial_write(" apic_id=");
+            serial_write_hex(lapic->apic_id);
+            serial_write(" flags=");
+            serial_write_hex(lapic->flags);
+            serial_write("\r\n");
+        }
+        else if (entry_header->entry_type == 1)
+        {
+            struct acpi_madt_ioapic *ioapic = (struct acpi_madt_ioapic *)entry_ptr;
+            serial_write("MADT: IOAPIC entry -- id=");
+            serial_write_hex(ioapic->ioapic_id);
+            serial_write(" address=");
+            serial_write_hex(ioapic->ioapic_address);
+            serial_write(" gsi_base=");
+            serial_write_hex(ioapic->global_system_interrupt_base);
+            serial_write("\r\n");
+
+            // Asumsi single-IOAPIC system (umum di hardware kelas ini):
+            // simpan yang pertama ditemukan.
+            if (g_ioapic_address == 0)
+            {
+                g_ioapic_address = ioapic->ioapic_address;
+                g_ioapic_id = ioapic->ioapic_id;
+                g_ioapic_gsi_base = ioapic->global_system_interrupt_base;
+            }
+        }
+        else if (entry_header->entry_type == 2)
+        {
+            struct acpi_madt_iso *iso = (struct acpi_madt_iso *)entry_ptr;
+            serial_write("MADT: Interrupt Source Override -- bus_source=");
+            serial_write_hex(iso->bus_source);
+            serial_write(" irq_source=");
+            serial_write_hex(iso->irq_source);
+            serial_write(" gsi=");
+            serial_write_hex(iso->global_system_interrupt);
+            serial_write(" flags=");
+            serial_write_hex(iso->flags);
+            serial_write("\r\n");
+
+            if (iso->irq_source == 0)
+            {
+                g_irq0_gsi = iso->global_system_interrupt;
+                serial_write("MADT: IRQ0 di-override ke GSI ");
+                serial_write_hex(g_irq0_gsi);
+                serial_write("\r\n");
+            }
+        }
+        else
+        {
+            serial_write("MADT: entry type lain (");
+            serial_write_hex(entry_header->entry_type);
+            serial_write("), diabaikan\r\n");
+        }
+
+        entry_ptr += entry_header->entry_length;
+    }
+}
+
+static void acpi_init(void)
+{
+    if (rsdp_request.response == NULL)
+    {
+        serial_write("ACPI: RSDP tidak tersedia (rsdp_request.response == NULL)\r\n");
+        return;
+    }
+
+    struct acpi_rsdp *rsdp = (struct acpi_rsdp *)rsdp_request.response->address;
+
+    serial_write("ACPI: RSDP ditemukan, revision=");
+    serial_write_hex(rsdp->revision);
+    serial_write("\r\n");
+
+    struct acpi_madt *madt = NULL;
+
+    if (rsdp->revision >= 2 && rsdp->xsdt_address != 0)
+    {
+        serial_write("ACPI: menggunakan XSDT di physical ");
+        serial_write_hex(rsdp->xsdt_address);
+        serial_write("\r\n");
+        void *xsdt = (void *)(rsdp->xsdt_address + hhdm_offset);
+        madt = (struct acpi_madt *)acpi_find_table(xsdt, 1, "APIC");
+    }
+    else
+    {
+        serial_write("ACPI: menggunakan RSDT di physical ");
+        serial_write_hex(rsdp->rsdt_address);
+        serial_write("\r\n");
+        void *rsdt = (void *)((uint64_t)rsdp->rsdt_address + hhdm_offset);
+        madt = (struct acpi_madt *)acpi_find_table(rsdt, 0, "APIC");
+    }
+
+    if (madt == NULL)
+    {
+        serial_write("ACPI: MADT (signature APIC) TIDAK DITEMUKAN\r\n");
+        return;
+    }
+
+    serial_write("ACPI: MADT ditemukan, parsing...\r\n");
+    acpi_parse_madt(madt);
+}
+
 #define PIC1_COMMAND 0x20
 #define PIC1_DATA    0x21
 #define PIC2_COMMAND 0xA0
@@ -1353,6 +1610,9 @@ void kmain(void)
     } else {
         serial_write("kfree test: FAIL (alamat tidak sama, reclaim tidak bekerja)\r\n");
     }
+    serial_write("\r\n");
+    serial_write("=== ACPI: mencari MADT untuk info Local APIC/IOAPIC ===\r\n");
+    acpi_init();
     serial_write("\r\n");
     pic_remap();
     pic_unmask_irq(0);
