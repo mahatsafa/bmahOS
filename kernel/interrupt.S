@@ -168,3 +168,63 @@ ISR_ERR 17
 ISR_NOERR 18
 # #XM — SIMD Floating-Point Exception — no error code
 ISR_NOERR 19
+
+# ===============================================================
+# IRQ common entry (BEDA dari exception!)
+#
+# IRQ tidak pernah punya error code dari CPU. Handler-nya TIDAK
+# boleh halt permanen seperti exception_dispatcher -- timer harus
+# terus berdetak. irq_number dipush manual supaya handler C tahu
+# IRQ mana yang terpicu (perlu untuk kirim EOI ke PIC yang benar).
+# ===============================================================
+.type irq_common_stub, @function
+irq_common_stub:
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+    movq %rsp, %rdi
+    call irq_handler
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+    addq $16, %rsp
+    iretq
+.size irq_common_stub, .-irq_common_stub
+
+.macro IRQ num, irq_num
+.global irq\num
+.type irq\num, @function
+irq\num:
+    cli
+    pushq $0
+    pushq $\irq_num
+    jmp irq_common_stub
+.size irq\num, .-irq\num
+.endm
+
+# IRQ0 = timer, terhubung ke vektor 32 setelah PIC remap
+IRQ 32, 0

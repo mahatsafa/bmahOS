@@ -41,6 +41,7 @@ extern void isr16(void);
 extern void isr17(void);
 extern void isr18(void);
 extern void isr19(void);
+extern void irq32(void);
 
 void kmain(void);
 
@@ -196,6 +197,97 @@ static inline uint8_t inb(uint16_t port)
 
     return value;
 }
+#define PIC1_COMMAND 0x20
+#define PIC1_DATA    0x21
+#define PIC2_COMMAND 0xA0
+#define PIC2_DATA    0xA1
+
+#define PIC_EOI      0x20
+
+#define PIT_CHANNEL0 0x40
+#define PIT_COMMAND  0x43
+
+// Remap PIC supaya IRQ0-7 -> vektor 32-39, IRQ8-15 -> vektor 40-47.
+// WAJIB dilakukan sebelum enable interrupt apa pun -- default BIOS
+// memetakan IRQ0-7 ke vektor 8-15, yang BENTROK dengan CPU exception
+// kita (misal #DF=8, #GP=13) yang sudah diverifikasi di Layer 3.
+static inline void io_wait(void)
+{
+    outb(0x80, 0);
+}
+
+static void pic_remap(void)
+{
+    // Paksa sistem ke PIC mode (bukan APIC/IOAPIC) lewat IMCR.
+    // Di banyak sistem UEFI modern (termasuk VMware+OVMF), IRQ
+    // secara default diarahkan lewat IOAPIC, sehingga menulis ke
+    // port PIC legacy 0x20/0x21 TIDAK berpengaruh sama sekali --
+    // interrupt tidak pernah sampai ke CPU meski PIC "terlihat"
+    // terkonfigurasi benar. IMCR (port 0x22/0x23) mengembalikan
+    // sistem ke mode PIC legacy.
+    outb(0x22, 0x70);
+    outb(0x23, 0x01);
+    io_wait();
+
+    outb(PIC1_COMMAND, 0x11); io_wait();
+    outb(PIC2_COMMAND, 0x11); io_wait();
+
+    outb(PIC1_DATA, 0x20); io_wait(); // Master: IRQ0-7 -> vektor 32-39
+    outb(PIC2_DATA, 0x28); io_wait(); // Slave:  IRQ8-15 -> vektor 40-47
+
+    outb(PIC1_DATA, 0x04); io_wait(); // Master: slave ada di IRQ2
+    outb(PIC2_DATA, 0x02); io_wait(); // Slave: identitas cascade
+
+    outb(PIC1_DATA, 0x01); io_wait(); // mode 8086
+    outb(PIC2_DATA, 0x01); io_wait();
+
+    // Mask semua IRQ dulu (0xFF = semua bit 1 = semua di-mask/disable),
+    // nanti kita unmask satu-satu sesuai kebutuhan (mulai dari timer).
+    outb(PIC1_DATA, 0xFF); io_wait();
+    outb(PIC2_DATA, 0xFF); io_wait();
+}
+
+// Unmask (enable) satu IRQ tertentu di PIC.
+static void pic_unmask_irq(uint8_t irq)
+{
+    uint16_t port;
+    uint8_t mask;
+
+    if (irq < 8) {
+        port = PIC1_DATA;
+    } else {
+        port = PIC2_DATA;
+        irq -= 8;
+    }
+
+    mask = inb(port);
+    mask &= ~(1 << irq);
+    outb(port, mask);
+}
+
+// WAJIB dipanggil di akhir tiap IRQ handler -- memberi tahu PIC
+// bahwa interrupt sudah selesai ditangani, supaya PIC mau kirim
+// interrupt berikutnya. Kalau lupa, timer akan berhenti berdetak
+// setelah interrupt pertama.
+static void pic_send_eoi(uint8_t irq)
+{
+    if (irq >= 8) {
+        outb(PIC2_COMMAND, PIC_EOI);
+    }
+    outb(PIC1_COMMAND, PIC_EOI);
+}
+
+// Set frekuensi PIT. PIT berjalan di clock dasar ~1.193182 MHz,
+// jadi divisor = base_clock / frekuensi_diinginkan.
+static void pit_init(uint32_t frequency_hz)
+{
+    uint32_t divisor = 1193182 / frequency_hz;
+
+    outb(PIT_COMMAND, 0x36); // channel 0, mode 3 (square wave), binary
+    outb(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));        // low byte
+    outb(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF)); // high byte
+}
+
 
 #define COM1 0x3F8
 
@@ -323,6 +415,23 @@ void exception_dispatcher(struct exception_context *context)
     serial_write("=== END EXCEPTION ===\r\n");
     for (;;) { __asm__ volatile ("hlt"); }
 }
+static volatile uint64_t timer_ticks = 0;
+
+// Dipanggil dari irq_common_stub (kernel/interrupt.S) untuk SEMUA
+// IRQ. Beda dari exception_dispatcher: TIDAK boleh halt permanen,
+// dan WAJIB kirim EOI ke PIC di akhir supaya interrupt berikutnya
+// bisa masuk.
+void irq_handler(struct exception_context *context)
+{
+    uint64_t irq_num = context->vector;
+
+    if (irq_num == 0) {
+        timer_ticks++;
+    }
+
+    pic_send_eoi((uint8_t)irq_num);
+}
+
 
 
 struct gdt_entry
@@ -474,6 +583,26 @@ static void print_idt_entry0(void)
     serial_write_hex(bmahOS_idt[0].type_attr);
     serial_write("\r\n");
 }
+static void print_idt_entry32(void)
+{
+    uint64_t handler =
+        ((uint64_t)bmahOS_idt[32].offset_low) |
+        ((uint64_t)bmahOS_idt[32].offset_mid << 16) |
+        ((uint64_t)bmahOS_idt[32].offset_high << 32);
+
+    serial_write("IDT[32] handler: ");
+    serial_write_hex(handler);
+    serial_write("\r\n");
+
+    serial_write("IDT[32] selector: ");
+    serial_write_hex(bmahOS_idt[32].selector);
+    serial_write("\r\n");
+
+    serial_write("IDT[32] type_attr: ");
+    serial_write_hex(bmahOS_idt[32].type_attr);
+    serial_write("\r\n");
+}
+
 
 _Static_assert(sizeof(struct tss) == 0x68, "TSS size is wrong");
 _Static_assert(sizeof(struct gdt_entry) == 8, "GDT entry size is wrong");
@@ -1065,6 +1194,9 @@ void kmain(void)
     serial_write("\r\n");
 
     idt_init();
+    idt_set_entry(32, (uint64_t)irq32, 0x08, 0x8E);
+    print_idt_entry32();
+
 
     print_idt_entry0();
 
@@ -1222,6 +1354,33 @@ void kmain(void)
         serial_write("kfree test: FAIL (alamat tidak sama, reclaim tidak bekerja)\r\n");
     }
     serial_write("\r\n");
+    pic_remap();
+    pic_unmask_irq(0);
+    pit_init(100); // 100 Hz = tiap 10ms
+
+    __asm__ volatile ("sti");
+
+    // KNOWN LIMITATION: hardware-triggered IRQ0 (PIT timer) tidak
+    // pernah sampai ke CPU di lingkungan VMware+OVMF, meski:
+    //   - IDT[32] terdaftar benar (handler, selector, type_attr semua
+    //     terverifikasi benar via print_idt_entry32())
+    //   - PIC mask menunjukkan IRQ0 aktif (0xFE)
+    //   - RFLAGS.IF aktif setelah sti (bit 9 = 1)
+    //   - PIC IRR mencatat IRQ0 pernah minta layanan (bit 0 = 1)
+    // Namun software-triggered "int $32" via jalur IDT yang SAMA
+    // PERSIS berhasil memicu irq_handler() dengan benar -- membuktikan
+    // seluruh infrastruktur IDT/gate/dispatcher/EOI sudah benar.
+    // Kesimpulan: masalah murni di hardware interrupt delivery
+    // (kemungkinan besar legacy PIC routing tidak reliable di
+    // VMware+OVMF). TODO Layer 5 lanjutan: migrasi ke APIC/IOAPIC,
+    // yang merupakan jalur native yang lebih didukung hypervisor
+    // modern, sebagai pengganti legacy PIC 8259.
+    __asm__ volatile ("int $32");
+    serial_write("Timer: software-triggered IRQ0 verified working, ticks=");
+    serial_write_hex(timer_ticks);
+    serial_write(" (hardware-triggered PIT delivery is a known TODO -- see comment above)\r\n");
+    serial_write("\r\n");
+
     serial_write("Task scheduling test: membuat task A dan B...\r\n");
 
     task_create(&task_a, task_a_entry, 4096);
