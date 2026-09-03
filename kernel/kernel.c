@@ -206,6 +206,7 @@ static inline uint8_t inb(uint16_t port)
 static void serial_write(const char *s);
 static void serial_write_hex(uint64_t value);
 static void lapic_send_eoi(void);
+static void schedule(void);
 
 // ============================================================
 // ACPI: RSDP -> RSDT/XSDT -> MADT parsing
@@ -690,6 +691,13 @@ void irq_handler(struct exception_context *context)
     // LAPIC (bukan legacy PIC) yang mengirim interrupt ini (lewat
     // IOAPIC redirection), jadi EOI WAJIB ke LAPIC juga.
     lapic_send_eoi();
+
+    // EOI WAJIB dikirim SEBELUM schedule()/context_switch() -- kalau
+    // dibalik, LAPIC ISR bit masih nyala selama kita pindah task, dan
+    // timer berikutnya (untuk task manapun) tidak akan pernah masuk.
+    if (irq_num == 0) {
+        schedule();
+    }
 }
 
 
@@ -1377,14 +1385,43 @@ static void task_create(task_t *task, void (*entry_function)(void), uint64_t sta
 }
 static task_t task_a;
 static task_t task_b;
+static task_t *current_task = 0;
+
+// Round-robin sederhana untuk 2 task: kalau current_task adalah
+// task_a, task berikutnya task_b, dan sebaliknya. Dipanggil dari
+// irq_handler() saat timer (IRQ0) masuk -- ini yang membuat
+// scheduling PREEMPTIVE: task tidak lagi manggil context_switch()
+// sendiri, timer dari luar yang memaksa ganti giliran.
+static void schedule(void)
+{
+    // Guard: timer bisa saja aktif SEBELUM task dibuat/current_task
+    // di-set (misal saat test APIC IRQ0 di awal kmain()). Kalau
+    // current_task masih NULL, jangan schedule -- cukup kembali,
+    // biarkan CPU lanjut apa pun yang sedang dikerjakan.
+    if (current_task == 0) {
+        return;
+    }
+
+    task_t *prev = current_task;
+    task_t *next = (prev == &task_a) ? &task_b : &task_a;
+    current_task = next;
+    context_switch(&prev->rsp, next->rsp);
+}
 
 static void task_a_entry(void)
 {
+    // Task baru dijalankan lewat context_switch() (ret-based), TIDAK
+    // pernah lewat iretq -- jadi RFLAGS.IF tidak otomatis di-restore.
+    // Kalau task ini di-switch-in saat IF sedang 0 (misal dari dalam
+    // irq_handler yang tadi cli), timer tidak akan pernah bisa
+    // menginterupsi task ini lagi. sti eksplisit di sini menjamin
+    // task baru selalu mulai dengan interrupt aktif.
+    __asm__ volatile ("sti");
+
     for (int i = 0; i < 3; i++) {
         serial_write("Task A jalan, iterasi ke-");
         serial_write_hex((uint64_t)i);
         serial_write("\r\n");
-        context_switch(&task_a.rsp, task_b.rsp);
     }
     serial_write("Task A selesai\r\n");
     for (;;) {
@@ -1394,11 +1431,18 @@ static void task_a_entry(void)
 
 static void task_b_entry(void)
 {
+    // Task baru dijalankan lewat context_switch() (ret-based), TIDAK
+    // pernah lewat iretq -- jadi RFLAGS.IF tidak otomatis di-restore.
+    // Kalau task ini di-switch-in saat IF sedang 0 (misal dari dalam
+    // irq_handler yang tadi cli), timer tidak akan pernah bisa
+    // menginterupsi task ini lagi. sti eksplisit di sini menjamin
+    // task baru selalu mulai dengan interrupt aktif.
+    __asm__ volatile ("sti");
+
     for (int i = 0; i < 3; i++) {
         serial_write("Task B jalan, iterasi ke-");
         serial_write_hex((uint64_t)i);
         serial_write("\r\n");
-        context_switch(&task_b.rsp, task_a.rsp);
     }
     serial_write("Task B selesai\r\n");
     for (;;) {
@@ -1797,6 +1841,10 @@ void kmain(void)
     serial_write("\r\n");
 
     static task_t kernel_dummy_task;
+    // current_task WAJIB di-set sebelum switch pertama -- kalau
+    // timer keburu aktif duluan dan masuk sebelum ini, schedule()
+    // akan baca current_task masih NULL dan crash.
+    current_task = &task_a;
     context_switch(&kernel_dummy_task.rsp, task_a.rsp);
 
     serial_write("ERROR: kembali ke kmain() setelah task selesai (tidak diharapkan)\r\n");
