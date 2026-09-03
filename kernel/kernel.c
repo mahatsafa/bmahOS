@@ -1230,6 +1230,7 @@ static void vmm_dump_pml4(uint64_t pml4_phys)
 }
 #define VMM_FLAG_PRESENT   0x1ULL
 #define VMM_FLAG_WRITABLE  0x2ULL
+#define VMM_FLAG_NOCACHE   0x10ULL  // PCD bit -- wajib untuk MMIO (Local APIC, IOAPIC)
 #define VMM_ENTRY_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
 static uint64_t vmm_get_or_create_table(uint64_t *table_virt, uint64_t index)
@@ -1423,6 +1424,120 @@ static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
     __asm__ volatile ("invlpg (%0)" : : "r"(vaddr) : "memory");
 }
 
+// ============================================================
+// Local APIC & IOAPIC
+// Alamat MMIO (0xFEE00000 / 0xFEC00000) TIDAK dipetakan oleh HHDM
+// Limine (HHDM cuma memetakan region usable/reclaimable/module/
+// framebuffer), jadi kita map manual pakai vmm_map() dengan flag
+// NOCACHE (PCD) karena ini device MMIO, bukan RAM biasa.
+// ============================================================
+
+#define LAPIC_VIRT  0xFFFF910000000000ULL
+#define IOAPIC_VIRT 0xFFFF910000001000ULL
+
+#define LAPIC_REG_ID   0x20
+#define LAPIC_REG_SVR  0xF0
+
+#define IOAPIC_REG_IOREGSEL 0x00
+#define IOAPIC_REG_IOWIN    0x10
+#define IOAPIC_REDTBL_BASE  0x10
+
+static uint32_t lapic_read(uint32_t reg)
+{
+    volatile uint32_t *ptr = (volatile uint32_t *)(LAPIC_VIRT + reg);
+    return *ptr;
+}
+
+static void lapic_write(uint32_t reg, uint32_t value)
+{
+    volatile uint32_t *ptr = (volatile uint32_t *)(LAPIC_VIRT + reg);
+    *ptr = value;
+}
+
+static uint32_t ioapic_read(uint32_t reg)
+{
+    volatile uint32_t *regsel = (volatile uint32_t *)(IOAPIC_VIRT + IOAPIC_REG_IOREGSEL);
+    volatile uint32_t *win    = (volatile uint32_t *)(IOAPIC_VIRT + IOAPIC_REG_IOWIN);
+    *regsel = reg;
+    return *win;
+}
+
+static void ioapic_write(uint32_t reg, uint32_t value)
+{
+    volatile uint32_t *regsel = (volatile uint32_t *)(IOAPIC_VIRT + IOAPIC_REG_IOREGSEL);
+    volatile uint32_t *win    = (volatile uint32_t *)(IOAPIC_VIRT + IOAPIC_REG_IOWIN);
+    *regsel = reg;
+    *win = value;
+}
+
+// Panggil setelah acpi_init() sukses (g_local_apic_address dan
+// g_ioapic_address sudah terisi).
+static void apic_enable_local_apic(uint64_t pml4_phys)
+{
+    if (g_local_apic_address == 0)
+    {
+        serial_write("APIC: Local APIC address tidak diketahui, skip\r\n");
+        return;
+    }
+
+    vmm_map(pml4_phys, LAPIC_VIRT, g_local_apic_address,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE);
+
+    uint32_t id = lapic_read(LAPIC_REG_ID);
+    serial_write("LAPIC: mapped, ID register = ");
+    serial_write_hex(id);
+    serial_write("\r\n");
+
+    // Spurious Interrupt Vector Register: bit 8 = APIC software enable,
+    // bit 0-7 = spurious vector (konvensi umum: 0xFF).
+    uint32_t svr = lapic_read(LAPIC_REG_SVR);
+    svr |= (1 << 8);
+    svr = (svr & ~0xFFu) | 0xFF;
+    lapic_write(LAPIC_REG_SVR, svr);
+
+    serial_write("LAPIC: enabled via SVR (software enable bit + spurious vector 0xFF)\r\n");
+}
+
+// Program IOAPIC redirection table entry untuk GSI tertentu supaya
+// interrupt itu diarahkan ke 'vector', destination = Local APIC ID
+// 'dest_apic_id', unmasked, physical delivery mode, active-high edge
+// (default 0 untuk polarity/trigger bit -- cocok dengan ISO flags 0x5
+// yang kita lihat untuk IRQ0->GSI2 di boot log).
+static void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t vector, uint8_t dest_apic_id)
+{
+    if (g_ioapic_address == 0)
+    {
+        serial_write("APIC: IOAPIC address tidak diketahui, skip\r\n");
+        return;
+    }
+
+    vmm_map(pml4_phys, IOAPIC_VIRT, g_ioapic_address,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE);
+
+    uint32_t ioapic_id_reg = ioapic_read(0x00);
+    serial_write("IOAPIC: mapped, ID register = ");
+    serial_write_hex(ioapic_id_reg);
+    serial_write("\r\n");
+
+    uint32_t redtbl_index = IOAPIC_REDTBL_BASE + (gsi * 2);
+
+    uint32_t low = vector; // delivery mode=000 (fixed), dest mode=0 (physical),
+                           // polarity=0 (active high), trigger=0 (edge), mask=0
+    uint32_t high = ((uint32_t)dest_apic_id) << 24;
+
+    ioapic_write(redtbl_index, low);
+    ioapic_write(redtbl_index + 1, high);
+
+    serial_write("IOAPIC: GSI ");
+    serial_write_hex(gsi);
+    serial_write(" -> vector ");
+    serial_write_hex(vector);
+    serial_write(" -> dest APIC ID ");
+    serial_write_hex(dest_apic_id);
+    serial_write(" (redirection table diprogram)\r\n");
+}
+
+
 
 
 
@@ -1613,32 +1728,41 @@ void kmain(void)
     serial_write("\r\n");
     serial_write("=== ACPI: mencari MADT untuk info Local APIC/IOAPIC ===\r\n");
     acpi_init();
+    serial_write("=== APIC: enable Local APIC + program IOAPIC redirection ===\r\n");
+    apic_enable_local_apic(pml4_phys);
+    ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, 0);
     serial_write("\r\n");
     pic_remap();
-    pic_unmask_irq(0);
+    // pic_unmask_irq(0) SENGAJA TIDAK dipanggil -- IRQ0/GSI2 sekarang
+    // ditangani via IOAPIC redirection table (lihat ioapic_map_and_configure
+    // di atas), PIC harus tetap mask supaya tidak ada pengiriman ganda.
     pit_init(100); // 100 Hz = tiap 10ms
 
     __asm__ volatile ("sti");
 
-    // KNOWN LIMITATION: hardware-triggered IRQ0 (PIT timer) tidak
-    // pernah sampai ke CPU di lingkungan VMware+OVMF, meski:
-    //   - IDT[32] terdaftar benar (handler, selector, type_attr semua
-    //     terverifikasi benar via print_idt_entry32())
-    //   - PIC mask menunjukkan IRQ0 aktif (0xFE)
-    //   - RFLAGS.IF aktif setelah sti (bit 9 = 1)
-    //   - PIC IRR mencatat IRQ0 pernah minta layanan (bit 0 = 1)
-    // Namun software-triggered "int $32" via jalur IDT yang SAMA
-    // PERSIS berhasil memicu irq_handler() dengan benar -- membuktikan
-    // seluruh infrastruktur IDT/gate/dispatcher/EOI sudah benar.
-    // Kesimpulan: masalah murni di hardware interrupt delivery
-    // (kemungkinan besar legacy PIC routing tidak reliable di
-    // VMware+OVMF). TODO Layer 5 lanjutan: migrasi ke APIC/IOAPIC,
-    // yang merupakan jalur native yang lebih didukung hypervisor
-    // modern, sebagai pengganti legacy PIC 8259.
-    __asm__ volatile ("int $32");
-    serial_write("Timer: software-triggered IRQ0 verified working, ticks=");
+    // Test hardware-triggered IRQ0 via IOAPIC (BUKAN software int $32).
+    // Kalau timer_ticks naik sendiri di sini, migrasi PIC->APIC/IOAPIC
+    // berhasil menyelesaikan KNOWN LIMITATION sebelumnya (legacy PIC
+    // delivery tidak reliable di VMware+OVMF).
+    serial_write("APIC IRQ0 hardware delivery test: menunggu timer_ticks naik otomatis...\r\n");
+    uint64_t start_ticks = timer_ticks;
+    for (volatile uint64_t i = 0; i < 50000000ULL; i++)
+    {
+        if (timer_ticks != start_ticks) break;
+    }
+    serial_write("timer_ticks sebelum busy-wait: ");
+    serial_write_hex(start_ticks);
+    serial_write(", sesudah: ");
     serial_write_hex(timer_ticks);
-    serial_write(" (hardware-triggered PIT delivery is a known TODO -- see comment above)\r\n");
+    serial_write("\r\n");
+    if (timer_ticks != start_ticks)
+    {
+        serial_write("APIC IRQ0 test: PASS (timer_ticks naik otomatis via hardware IOAPIC delivery)\r\n");
+    }
+    else
+    {
+        serial_write("APIC IRQ0 test: FAIL (timer_ticks tidak naik -- hardware delivery masih belum sampai ke CPU)\r\n");
+    }
     serial_write("\r\n");
 
     serial_write("Task scheduling test: membuat task A dan B...\r\n");
