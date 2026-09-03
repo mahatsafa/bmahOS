@@ -205,6 +205,7 @@ static inline uint8_t inb(uint16_t port)
 
 static void serial_write(const char *s);
 static void serial_write_hex(uint64_t value);
+static void lapic_send_eoi(void);
 
 // ============================================================
 // ACPI: RSDP -> RSDT/XSDT -> MADT parsing
@@ -686,7 +687,9 @@ void irq_handler(struct exception_context *context)
         timer_ticks++;
     }
 
-    pic_send_eoi((uint8_t)irq_num);
+    // LAPIC (bukan legacy PIC) yang mengirim interrupt ini (lewat
+    // IOAPIC redirection), jadi EOI WAJIB ke LAPIC juga.
+    lapic_send_eoi();
 }
 
 
@@ -1446,6 +1449,7 @@ static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 
 #define LAPIC_REG_ID   0x20
 #define LAPIC_REG_SVR  0xF0
+#define LAPIC_REG_EOI  0xB0
 
 #define IOAPIC_REG_IOREGSEL 0x00
 #define IOAPIC_REG_IOWIN    0x10
@@ -1461,6 +1465,16 @@ static void lapic_write(uint32_t reg, uint32_t value)
 {
     volatile uint32_t *ptr = (volatile uint32_t *)(LAPIC_VIRT + reg);
     *ptr = value;
+}
+
+// LAPIC EOI: BEDA dari pic_send_eoi() (legacy 8259 PIC). Interrupt
+// yang datang lewat IOAPIC/LAPIC WAJIB di-EOI lewat register LAPIC
+// ini (offset 0xB0), bukan port PIC lama -- kalau salah, LAPIC ISR
+// bit untuk vector itu tidak pernah clear, dan interrupt berikutnya
+// tidak akan pernah dikirim lagi (macet setelah 1x).
+static void lapic_send_eoi(void)
+{
+    lapic_write(LAPIC_REG_EOI, 0);
 }
 
 static uint32_t ioapic_read(uint32_t reg)
