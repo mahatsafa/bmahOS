@@ -1393,8 +1393,18 @@ static void kfree(void *ptr)
 }
 extern void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp);
 
+// TASK_READY: task valid, boleh dipilih scheduler.
+// TASK_DEAD: task sudah selesai, scheduler WAJIB melewatinya --
+// task menandai dirinya sendiri DEAD di akhir entry function-nya
+// (lihat task_a_entry()/task_b_entry()).
+typedef enum {
+    TASK_READY,
+    TASK_DEAD,
+} task_status_t;
+
 typedef struct {
     uint64_t rsp;
+    task_status_t status;
 } task_t;
 
 // Siapkan stack awal task baru supaya context_switch() bisa
@@ -1433,6 +1443,7 @@ static void task_create(task_t *task, void (*entry_function)(void), uint64_t sta
     sp--; *sp = 0; // r15
 
     task->rsp = (uint64_t)sp;
+    task->status = TASK_READY;
 }
 #define MAX_TASKS 8
 
@@ -1451,10 +1462,6 @@ static size_t current_index = 0;
 // context_switch() sendiri, timer dari luar yang memaksa ganti giliran.
 static void schedule(void)
 {
-    // Guard: timer bisa saja aktif SEBELUM task dibuat (misal saat
-    // test APIC IRQ0 di awal kmain()). Kalau belum ada task terdaftar,
-    // jangan schedule -- cukup kembali, biarkan CPU lanjut apa pun
-    // yang sedang dikerjakan.
     // Guard ganda: (1) belum ada task terdaftar, ATAU (2) scheduler
     // belum pernah benar-benar diserahkan alih dari kmain() ke task
     // pertama. Tanpa guard (2), timer yang masuk di antara
@@ -1466,8 +1473,29 @@ static void schedule(void)
         return;
     }
 
+    // Bounded scan: cari task READY berikutnya, MAKSIMAL task_count
+    // kali percobaan. Ini WAJIB dibatasi -- kalau semua task DEAD,
+    // loop tanpa batas akan menggantung scheduler selamanya di dalam
+    // interrupt context (fatal, karena timer berikutnya pun tidak
+    // akan pernah bisa masuk lagi).
+    size_t next_index = current_index;
+    bool found = false;
+
+    for (size_t attempt = 0; attempt < task_count; attempt++) {
+        next_index = (next_index + 1) % task_count;
+        if (tasks[next_index].status == TASK_READY) {
+            found = true;
+            break;
+        }
+    }
+
+    // Semua task DEAD (atau tidak ada yang READY) -- tidak ada yang
+    // bisa dijalankan, jangan context switch ke mana pun.
+    if (!found) {
+        return;
+    }
+
     size_t prev_index = current_index;
-    size_t next_index = (current_index + 1) % task_count;
     current_index = next_index;
 
     context_switch(&tasks[prev_index].rsp, tasks[next_index].rsp);
@@ -1496,6 +1524,11 @@ static void task_a_entry(void)
         irq_restore(flags);
     }
     serial_write("Task A selesai\r\n");
+
+    // Tandai diri sendiri DEAD supaya scheduler melewati task ini
+    // di rotasi round-robin berikutnya (lihat schedule()). current_index
+    // masih menunjuk ke task ini sendiri saat baris ini dieksekusi.
+    tasks[current_index].status = TASK_DEAD;
     for (;;) {
         __asm__ volatile ("hlt");
     }
@@ -1524,6 +1557,11 @@ static void task_b_entry(void)
         irq_restore(flags);
     }
     serial_write("Task B selesai\r\n");
+
+    // Tandai diri sendiri DEAD supaya scheduler melewati task ini
+    // di rotasi round-robin berikutnya (lihat schedule()). current_index
+    // masih menunjuk ke task ini sendiri saat baris ini dieksekusi.
+    tasks[current_index].status = TASK_DEAD;
     for (;;) {
         __asm__ volatile ("hlt");
     }
