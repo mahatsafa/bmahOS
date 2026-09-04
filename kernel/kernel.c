@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <limine.h>
 
 __attribute__((used, section(".limine_requests")))
@@ -1433,29 +1434,43 @@ static void task_create(task_t *task, void (*entry_function)(void), uint64_t sta
 
     task->rsp = (uint64_t)sp;
 }
-static task_t task_a;
-static task_t task_b;
-static task_t *current_task = 0;
+#define MAX_TASKS 8
 
-// Round-robin sederhana untuk 2 task: kalau current_task adalah
-// task_a, task berikutnya task_b, dan sebaliknya. Dipanggil dari
-// irq_handler() saat timer (IRQ0) masuk -- ini yang membuat
-// scheduling PREEMPTIVE: task tidak lagi manggil context_switch()
-// sendiri, timer dari luar yang memaksa ganti giliran.
+static task_t tasks[MAX_TASKS];
+static size_t task_count = 0;
+static volatile bool scheduler_started = false;
+static size_t current_index = 0;
+
+// Round-robin generik untuk N task (N <= MAX_TASKS). current_index
+// adalah SATU-SATUNYA source of truth untuk "task mana yang sedang
+// jalan" -- kalau butuh pointer ke task aktif, turunkan dari index
+// ini (&tasks[current_index]), jangan simpan pointer terpisah supaya
+// tidak ada dua state yang bisa saling tidak sinkron.
+// Dipanggil dari irq_handler() saat timer (IRQ0) masuk -- ini yang
+// membuat scheduling PREEMPTIVE: task tidak lagi manggil
+// context_switch() sendiri, timer dari luar yang memaksa ganti giliran.
 static void schedule(void)
 {
-    // Guard: timer bisa saja aktif SEBELUM task dibuat/current_task
-    // di-set (misal saat test APIC IRQ0 di awal kmain()). Kalau
-    // current_task masih NULL, jangan schedule -- cukup kembali,
-    // biarkan CPU lanjut apa pun yang sedang dikerjakan.
-    if (current_task == 0) {
+    // Guard: timer bisa saja aktif SEBELUM task dibuat (misal saat
+    // test APIC IRQ0 di awal kmain()). Kalau belum ada task terdaftar,
+    // jangan schedule -- cukup kembali, biarkan CPU lanjut apa pun
+    // yang sedang dikerjakan.
+    // Guard ganda: (1) belum ada task terdaftar, ATAU (2) scheduler
+    // belum pernah benar-benar diserahkan alih dari kmain() ke task
+    // pertama. Tanpa guard (2), timer yang masuk di antara
+    // task_count di-set dan context_switch() pertama benar-benar
+    // terjadi akan salah kira RSP kmain() saat itu adalah RSP task
+    // aktif, lalu menimpanya ke tasks[current_index].rsp -- merusak
+    // context task yang sebenarnya belum pernah jalan sama sekali.
+    if (task_count == 0 || !scheduler_started) {
         return;
     }
 
-    task_t *prev = current_task;
-    task_t *next = (prev == &task_a) ? &task_b : &task_a;
-    current_task = next;
-    context_switch(&prev->rsp, next->rsp);
+    size_t prev_index = current_index;
+    size_t next_index = (current_index + 1) % task_count;
+    current_index = next_index;
+
+    context_switch(&tasks[prev_index].rsp, tasks[next_index].rsp);
 }
 
 static void task_a_entry(void)
@@ -1898,18 +1913,27 @@ void kmain(void)
 
     serial_write("Task scheduling test: membuat task A dan B...\r\n");
 
-    task_create(&task_a, task_a_entry, 4096);
-    task_create(&task_b, task_b_entry, 4096);
+    task_create(&tasks[0], task_a_entry, 4096);
+    task_create(&tasks[1], task_b_entry, 4096);
+    task_count = 2;
 
     serial_write("Task A dan B dibuat, mulai jalankan Task A...\r\n");
     serial_write("\r\n");
 
     static task_t kernel_dummy_task;
-    // current_task WAJIB di-set sebelum switch pertama -- kalau
+    // current_index WAJIB di-set sebelum switch pertama -- kalau
     // timer keburu aktif duluan dan masuk sebelum ini, schedule()
-    // akan baca current_task masih NULL dan crash.
-    current_task = &task_a;
-    context_switch(&kernel_dummy_task.rsp, task_a.rsp);
+    // akan baca task_count masih 0 dan tidak melakukan apa-apa (aman,
+    // guard menangani ini), tapi index harus tetap benar sebelum
+    // context_switch pertama terjadi.
+    current_index = 0;
+    // scheduler_started WAJIB true SEBELUM context_switch pertama --
+    // sejak titik ini, RSP yang berjalan adalah RSP task_a yang valid
+    // (hasil task_create()), BUKAN lagi stack kmain(). Kalau timer
+    // masuk setelah ini, schedule() boleh mulai menyimpan/memuat
+    // context task dengan aman.
+    scheduler_started = true;
+    context_switch(&kernel_dummy_task.rsp, tasks[0].rsp);
 
     serial_write("ERROR: kembali ke kmain() setelah task selesai (tidak diharapkan)\r\n");
     serial_write("ABOUT TO TRIGGER #BP\r\n");
