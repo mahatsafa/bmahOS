@@ -561,6 +561,35 @@ static void serial_init(void)
     outb(COM1 + 4, 0x0B);
 }
 
+// irq_save/irq_restore: proteksi critical section yang AMAN terhadap
+// nested call (beda dari cli/sti polos). irq_save() menyimpan kondisi
+// IF (Interrupt Flag) yang SEBENARNYA sebelum cli, lewat pushfq (baca
+// seluruh RFLAGS). irq_restore() hanya sti KALAU kondisi sebelumnya
+// memang IF=1 -- kalau caller sudah cli duluan sebelum manggil kita,
+// kita tidak akan sengaja menyalakan interrupt yang caller matikan.
+static inline uint64_t irq_save(void)
+{
+    uint64_t flags;
+    __asm__ volatile (
+        "pushfq\n\t"
+        "popq %0\n\t"
+        "cli"
+        : "=r"(flags)
+        :
+        : "memory"
+    );
+    return flags;
+}
+
+static inline void irq_restore(uint64_t flags)
+{
+    // Bit ke-9 RFLAGS = IF. Kalau nyala di kondisi yang disimpan,
+    // berarti sebelum irq_save() dipanggil interrupt memang aktif.
+    if (flags & (1 << 9)) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
+}
+
 static void serial_putc(char c)
 {
     while (!(inb(COM1 + 5) & 0x20))
@@ -569,7 +598,11 @@ static void serial_putc(char c)
     outb(COM1, (uint8_t)c);
 }
 
-static void serial_write(const char *s)
+// Versi TANPA lock -- dipakai internal oleh fungsi lain yang SUDAH
+// pegang lock sendiri (mis. serial_write_hex()), supaya tidak nested
+// lock diri sendiri (nested cli aman secara hardware, tapi nested
+// irq_save/irq_restore naif bisa salah restore state kalau tidak hati-hati).
+static void serial_write_nolock(const char *s)
 {
     while (*s)
     {
@@ -577,17 +610,34 @@ static void serial_write(const char *s)
     }
 }
 
+// Versi PUBLIK dengan lock -- pakai ini dari luar (task, dsb.) supaya
+// satu pemanggilan serial_write() tidak bisa disisipi task lain
+// di tengah-tengah string.
+static void serial_write(const char *s)
+{
+    uint64_t flags = irq_save();
+    serial_write_nolock(s);
+    irq_restore(flags);
+}
+
 static void serial_write_hex(uint64_t value)
 {
     static const char hex[] = "0123456789ABCDEF";
 
-    serial_write("0x");
+    // Lock SEKALI untuk seluruh "0x" + digit-digitnya -- kalau tidak,
+    // ada celah antara serial_write("0x") selesai dan loop digit mulai,
+    // di mana task lain bisa menyelip di tengah angka hex.
+    uint64_t flags = irq_save();
+
+    serial_write_nolock("0x");
 
     for (int i = 15; i >= 0; i--)
     {
         uint8_t digit = (value >> (i * 4)) & 0xF;
         serial_putc(hex[digit]);
     }
+
+    irq_restore(flags);
 }
 
 
@@ -1419,9 +1469,16 @@ static void task_a_entry(void)
     __asm__ volatile ("sti");
 
     for (int i = 0; i < 3; i++) {
+        // Satu critical section untuk SELURUH baris log (3 panggilan
+        // serial_write/serial_write_hex sekaligus) -- kalau tiap
+        // panggilan dilock terpisah, timer masih bisa menyelip DI
+        // ANTARA panggilan, membuat baris dari task lain menyisip
+        // di tengah baris ini walau tiap panggilan sendiri utuh.
+        uint64_t flags = irq_save();
         serial_write("Task A jalan, iterasi ke-");
         serial_write_hex((uint64_t)i);
         serial_write("\r\n");
+        irq_restore(flags);
     }
     serial_write("Task A selesai\r\n");
     for (;;) {
@@ -1440,9 +1497,16 @@ static void task_b_entry(void)
     __asm__ volatile ("sti");
 
     for (int i = 0; i < 3; i++) {
+        // Satu critical section untuk SELURUH baris log (3 panggilan
+        // serial_write/serial_write_hex sekaligus) -- kalau tiap
+        // panggilan dilock terpisah, timer masih bisa menyelip DI
+        // ANTARA panggilan, membuat baris dari task lain menyisip
+        // di tengah baris ini walau tiap panggilan sendiri utuh.
+        uint64_t flags = irq_save();
         serial_write("Task B jalan, iterasi ke-");
         serial_write_hex((uint64_t)i);
         serial_write("\r\n");
+        irq_restore(flags);
     }
     serial_write("Task B selesai\r\n");
     for (;;) {
