@@ -209,6 +209,7 @@ static void serial_write_hex(uint64_t value);
 static void lapic_send_eoi(void);
 static void schedule(void);
 static void task_exit(void);
+static void task_sleep(uint64_t ticks);
 
 // ============================================================
 // ACPI: RSDP -> RSDT/XSDT -> MADT parsing
@@ -1401,11 +1402,13 @@ extern void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp);
 typedef enum {
     TASK_READY,
     TASK_DEAD,
+    TASK_SLEEPING,
 } task_status_t;
 
 typedef struct {
     uint64_t rsp;
     task_status_t status;
+    uint64_t wake_at_tick;
 } task_t;
 
 // Siapkan stack awal task baru supaya context_switch() bisa
@@ -1474,6 +1477,17 @@ static void schedule(void)
         return;
     }
 
+    // Sebelum mencari task berikutnya: bangunkan semua task SLEEPING
+    // yang waktu bangunnya sudah tiba. Scheduler yang bertanggung
+    // jawab menentukan "siapa yang runnable", jadi pengecekan ini
+    // wajar dilakukan di sini, bukan di irq_handler() terpisah.
+    for (size_t i = 0; i < task_count; i++) {
+        if (tasks[i].status == TASK_SLEEPING &&
+            timer_ticks >= tasks[i].wake_at_tick) {
+            tasks[i].status = TASK_READY;
+        }
+    }
+
     // Bounded scan: cari task READY berikutnya, MAKSIMAL task_count
     // kali percobaan. Ini WAJIB dibatasi -- kalau semua task DEAD,
     // loop tanpa batas akan menggantung scheduler selamanya di dalam
@@ -1493,6 +1507,21 @@ static void schedule(void)
     // Semua task DEAD (atau tidak ada yang READY) -- tidak ada yang
     // bisa dijalankan, jangan context switch ke mana pun.
     if (!found) {
+        return;
+    }
+
+    // Bug tersembunyi yang baru terungkap lewat task_sleep(): bounded
+    // scan bisa saja "menemukan" task yang SEDANG BERJALAN SEKARANG
+    // (current_index) sebagai satu-satunya TASK_READY, kalau semua
+    // task lain sedang SLEEPING/DEAD. Scheduler tidak membedakan
+    // "sedang jalan" dari "berstatus READY" -- keduanya sama saja di
+    // field status. Tanpa guard ini, context_switch(&tasks[i].rsp,
+    // tasks[i].rsp) akan menyimpan dan memuat RSP dari alamat yang
+    // SAMA, tapi nilai new_rsp sudah "dibekukan" SEBELUM push register
+    // terjadi -- hasilnya RSP dimuat dari titik yang salah, ret
+    // melompat ke alamat sampah (terbukti dari crash RIP=0x0 #PF saat
+    // Task A sleep dan Task B jadi satu-satunya TASK_READY).
+    if (next_index == current_index) {
         return;
     }
 
@@ -1527,6 +1556,31 @@ static void task_exit(void)
     }
 }
 
+// Task minta "tidur" selama ticks timer, lalu otomatis dibangunkan
+// scheduler sendiri (lihat pengecekan wake_at_tick di schedule()) --
+// task lain TIDAK perlu tahu-menahu untuk membangunkannya.
+static void task_sleep(uint64_t ticks)
+{
+    // irq_save() WAJIB -- task_sleep() dipanggil dari NORMAL task
+    // context (interrupt aktif), bukan dari irq_handler(). Tanpa ini,
+    // timer bisa masuk di tengah kita menulis wake_at_tick/status,
+    // menyebabkan schedule() (yang tidak reentrant) terpanggil dua
+    // kali bertumpuk.
+    uint64_t flags = irq_save();
+
+    tasks[current_index].wake_at_tick = timer_ticks + ticks;
+    tasks[current_index].status = TASK_SLEEPING;
+
+    schedule();
+
+    // Baris ini baru benar-benar dieksekusi ketika task ini nanti
+    // dibangunkan scheduler dan mendapat giliran CPU lagi -- BUKAN
+    // langsung setelah schedule() dipanggil di atas. Sama seperti
+    // task_exit(): jangan mengandalkan kode setelah schedule() untuk
+    // jalan seketika kalau context switch berhasil terjadi.
+    irq_restore(flags);
+}
+
 static void task_a_entry(void)
 {
     // Task baru dijalankan lewat context_switch() (ret-based), TIDAK
@@ -1548,6 +1602,16 @@ static void task_a_entry(void)
         serial_write_hex((uint64_t)i);
         serial_write("\r\n");
         irq_restore(flags);
+
+        // Uji task_sleep(): setelah iterasi pertama, A "tidur" 5 tick
+        // timer -- scheduler harus otomatis memberi giliran ke task
+        // lain selama itu, lalu membangunkan A sendiri tanpa task
+        // manapun perlu tahu-menahu.
+        if (i == 0) {
+            serial_write("Task A akan tidur 5 tick...\r\n");
+            task_sleep(5);
+            serial_write("Task A bangun dari tidur\r\n");
+        }
     }
     serial_write("Task A selesai\r\n");
 
