@@ -208,6 +208,7 @@ static void serial_write(const char *s);
 static void serial_write_hex(uint64_t value);
 static void lapic_send_eoi(void);
 static void schedule(void);
+static void task_exit(void);
 
 // ============================================================
 // ACPI: RSDP -> RSDT/XSDT -> MADT parsing
@@ -1501,6 +1502,31 @@ static void schedule(void)
     context_switch(&tasks[prev_index].rsp, tasks[next_index].rsp);
 }
 
+// Dipanggil task untuk mengakhiri dirinya sendiri secara permanen.
+// BEDA dari irq_handler() yang manggil schedule() dari INTERRUPT
+// context (otomatis cli lewat gate) -- task_exit() dipanggil dari
+// NORMAL task context, di mana interrupt masih aktif (task sti di
+// awal hidupnya). Tanpa irq_save()/irq_restore() di sini, timer bisa
+// masuk DI TENGAH badan schedule() (yang tidak reentrant -- lihat
+// komentar di schedule()), menyebabkan dua instance schedule() saling
+// menimpa state satu sama lain.
+static void task_exit(void)
+{
+    uint64_t flags = irq_save();
+
+    tasks[current_index].status = TASK_DEAD;
+    schedule();
+
+    // Kalau eksekusi balik ke titik ini, schedule() tidak menemukan
+    // task READY lain (found == false) -- task ini satu-satunya yang
+    // masih hidup. Tidak ada gunanya lanjut apa pun, restore interrupt
+    // state lalu hlt selamanya.
+    irq_restore(flags);
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
+}
+
 static void task_a_entry(void)
 {
     // Task baru dijalankan lewat context_switch() (ret-based), TIDAK
@@ -1525,13 +1551,9 @@ static void task_a_entry(void)
     }
     serial_write("Task A selesai\r\n");
 
-    // Tandai diri sendiri DEAD supaya scheduler melewati task ini
-    // di rotasi round-robin berikutnya (lihat schedule()). current_index
-    // masih menunjuk ke task ini sendiri saat baris ini dieksekusi.
-    tasks[current_index].status = TASK_DEAD;
-    for (;;) {
-        __asm__ volatile ("hlt");
-    }
+    // Serahkan CPU secara permanen -- task_exit() menandai diri
+    // sendiri DEAD dan meminta scheduler pindah ke task lain.
+    task_exit();
 }
 
 static void task_b_entry(void)
@@ -1558,13 +1580,9 @@ static void task_b_entry(void)
     }
     serial_write("Task B selesai\r\n");
 
-    // Tandai diri sendiri DEAD supaya scheduler melewati task ini
-    // di rotasi round-robin berikutnya (lihat schedule()). current_index
-    // masih menunjuk ke task ini sendiri saat baris ini dieksekusi.
-    tasks[current_index].status = TASK_DEAD;
-    for (;;) {
-        __asm__ volatile ("hlt");
-    }
+    // Serahkan CPU secara permanen -- task_exit() menandai diri
+    // sendiri DEAD dan meminta scheduler pindah ke task lain.
+    task_exit();
 }
 
 
