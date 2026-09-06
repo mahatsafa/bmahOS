@@ -211,6 +211,11 @@ static void schedule(void);
 static void task_exit(void);
 static void task_sleep(uint64_t ticks);
 static void task_wait_for(size_t target_index);
+// Forward declaration struct -- definisi lengkap ada dekat task_t,
+// tapi tipenya perlu dikenal compiler di sini untuk sem_wait/sem_post.
+typedef struct semaphore semaphore_t;
+static void sem_wait(semaphore_t *sem);
+static void sem_post(semaphore_t *sem);
 
 // ============================================================
 // ACPI: RSDP -> RSDT/XSDT -> MADT parsing
@@ -1407,11 +1412,25 @@ typedef enum {
     TASK_BLOCKED,
 } task_status_t;
 
+// Semaphore sederhana: counter + "wake maksimal 1 waiter per post"
+// (lihat sem_post()). Tidak ada waiter queue eksplisit -- sem_post()
+// scan tasks[] cari SATU task BLOCKED pada semaphore ini, konsisten
+// dengan gaya schedule() yang sudah ada (linear scan), bukan struktur
+// antrian terpisah. Semantiknya tetap sama: 1 post membangunkan
+// maksimal 1 task.
+typedef struct semaphore {
+    int count;
+} semaphore_t;
+
 typedef struct {
     uint64_t rsp;
     task_status_t status;
     uint64_t wake_at_tick;
     size_t waiting_for;
+    // NULL kalau task tidak sedang menunggu semaphore manapun.
+    // BLOCKED karena task_wait_for() punya waiting_for_sem == NULL;
+    // BLOCKED karena sem_wait() punya waiting_for_sem != NULL.
+    semaphore_t *waiting_for_sem;
 } task_t;
 
 // Siapkan stack awal task baru supaya context_switch() bisa
@@ -1451,6 +1470,7 @@ static void task_create(task_t *task, void (*entry_function)(void), uint64_t sta
 
     task->rsp = (uint64_t)sp;
     task->status = TASK_READY;
+    task->waiting_for_sem = 0;
 }
 #define MAX_TASKS 8
 
@@ -1458,6 +1478,10 @@ static task_t tasks[MAX_TASKS];
 static size_t task_count = 0;
 static volatile bool scheduler_started = false;
 static size_t current_index = 0;
+
+// Semaphore uji: count=1 -- simulasi 1 "slot" critical section yang
+// diperebutkan Task A dan B (lihat task_a_entry()/task_b_entry()).
+static semaphore_t test_sem = { .count = 1 };
 
 // Round-robin generik untuk N task (N <= MAX_TASKS). current_index
 // adalah SATU-SATUNYA source of truth untuk "task mana yang sedang
@@ -1497,7 +1521,15 @@ static void schedule(void)
     // yang aktif mencari "siapa saja yang menungguku" (itu butuh
     // reverse-lookup per-task yang lebih kompleks).
     for (size_t i = 0; i < task_count; i++) {
+        // waiting_for_sem == 0 WAJIB dicek -- ini blok KHUSUS untuk
+        // task_wait_for() (menunggu TASK lain mati). Task yang BLOCKED
+        // via sem_wait() (waiting_for_sem != NULL) TIDAK BOLEH kena
+        // logika ini -- field waiting_for milik mereka tidak valid/
+        // relevan (bisa berisi nilai basi dari task_wait_for()
+        // sebelumnya), dan mereka cuma boleh dibangunkan oleh
+        // sem_post() (lihat sem_post()), bukan oleh scan generik ini.
         if (tasks[i].status == TASK_BLOCKED &&
+            tasks[i].waiting_for_sem == 0 &&
             tasks[tasks[i].waiting_for].status == TASK_DEAD) {
             tasks[i].status = TASK_READY;
         }
@@ -1623,6 +1655,60 @@ static void task_wait_for(size_t target_index)
     irq_restore(flags);
 }
 
+// Minta akses semaphore. Kalau count > 0, langsung ambil (count--)
+// dan lanjut TANPA blocking. Kalau count == 0, task BLOCKED sampai
+// sem_post() membangunkannya -- TAPI wake TIDAK SAMA DENGAN acquire:
+// begitu dibangunkan, task WAJIB mengecek ulang count (loop), karena
+// bisa saja task lain "menyerobot" slot itu duluan sebelum giliran
+// CPU sampai ke task ini (meski di desain sem_post() sekarang -- wake
+// maksimal 1 waiter per post -- skenario itu semestinya tidak
+// terjadi untuk kasus sederhana; loop tetap dipertahankan sebagai
+// praktik aman standar terhadap spurious wakeup).
+static void sem_wait(semaphore_t *sem)
+{
+    uint64_t flags = irq_save();
+
+    while (sem->count <= 0) {
+        tasks[current_index].waiting_for_sem = sem;
+        tasks[current_index].status = TASK_BLOCKED;
+        schedule();
+        // Baris ini baru jalan lagi ketika sem_post() membangunkan
+        // task ini DAN scheduler benar-benar memberi giliran CPU.
+    }
+
+    sem->count--;
+    tasks[current_index].waiting_for_sem = 0;
+
+    irq_restore(flags);
+}
+
+// Lepas akses semaphore. Membangunkan MAKSIMAL SATU task yang BLOCKED
+// menunggu semaphore ini (linear scan, bukan waiter queue eksplisit --
+// konsisten dengan gaya schedule() yang sudah ada). Kalau tidak ada
+// yang menunggu, count++ saja (slot tersedia untuk sem_wait() di
+// masa depan).
+static void sem_post(semaphore_t *sem)
+{
+    uint64_t flags = irq_save();
+
+    // count++ SELALU terjadi, ada atau tidak ada yang dibangunkan --
+    // "melepas 1 slot" itu maknanya. Kalau ada task yang dibangunkan,
+    // dia akan lolos pengecekan while(count <= 0) miliknya begitu
+    // giliran CPU sampai ke dia. Kalau tidak ada yang menunggu, count
+    // yang naik ini menunggu sem_wait() berikutnya datang.
+    sem->count++;
+
+    for (size_t i = 0; i < task_count; i++) {
+        if (tasks[i].status == TASK_BLOCKED &&
+            tasks[i].waiting_for_sem == sem) {
+            tasks[i].status = TASK_READY;
+            break;
+        }
+    }
+
+    irq_restore(flags);
+}
+
 static void task_a_entry(void)
 {
     // Task baru dijalankan lewat context_switch() (ret-based), TIDAK
@@ -1632,6 +1718,13 @@ static void task_a_entry(void)
     // menginterupsi task ini lagi. sti eksplisit di sini menjamin
     // task baru selalu mulai dengan interrupt aktif.
     __asm__ volatile ("sti");
+
+    // Uji sem_wait()/sem_post(): test_sem count=1, A dan B sama-sama
+    // memperebutkan. Task yang duluan dapat, yang satunya BLOCKED
+    // sampai sem_post() dari pemegang sebelumnya.
+    serial_write("Task A minta semaphore...\r\n");
+    sem_wait(&test_sem);
+    serial_write("Task A dapat semaphore\r\n");
 
     for (int i = 0; i < 3; i++) {
         // Satu critical section untuk SELURUH baris log (3 panggilan
@@ -1657,6 +1750,9 @@ static void task_a_entry(void)
     }
     serial_write("Task A selesai\r\n");
 
+    serial_write("Task A melepas semaphore\r\n");
+    sem_post(&test_sem);
+
     // Serahkan CPU secara permanen -- task_exit() menandai diri
     // sendiri DEAD dan meminta scheduler pindah ke task lain.
     task_exit();
@@ -1672,11 +1768,12 @@ static void task_b_entry(void)
     // task baru selalu mulai dengan interrupt aktif.
     __asm__ volatile ("sti");
 
-    // Uji task_wait_for(): B diblokir sampai A (index 0) TASK_DEAD --
-    // event-based blocking, bukan berbasis waktu seperti task_sleep().
-    serial_write("Task B menunggu Task A selesai...\r\n");
-    task_wait_for(0);
-    serial_write("Task A sudah selesai, Task B lanjut\r\n");
+    // Uji sem_wait()/sem_post(): B mencoba ambil semaphore yang SAMA
+    // dengan A sejak awal (kontensi nyata) -- test_sem count=1, jadi
+    // salah satu pasti BLOCKED sampai yang lain sem_post().
+    serial_write("Task B minta semaphore...\r\n");
+    sem_wait(&test_sem);
+    serial_write("Task B dapat semaphore\r\n");
 
     for (int i = 0; i < 3; i++) {
         // Satu critical section untuk SELURUH baris log (3 panggilan
@@ -1691,6 +1788,9 @@ static void task_b_entry(void)
         irq_restore(flags);
     }
     serial_write("Task B selesai\r\n");
+
+    serial_write("Task B melepas semaphore\r\n");
+    sem_post(&test_sem);
 
     // Serahkan CPU secara permanen -- task_exit() menandai diri
     // sendiri DEAD dan meminta scheduler pindah ke task lain.
