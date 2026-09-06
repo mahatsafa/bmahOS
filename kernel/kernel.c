@@ -210,6 +210,7 @@ static void lapic_send_eoi(void);
 static void schedule(void);
 static void task_exit(void);
 static void task_sleep(uint64_t ticks);
+static void task_wait_for(size_t target_index);
 
 // ============================================================
 // ACPI: RSDP -> RSDT/XSDT -> MADT parsing
@@ -1403,12 +1404,14 @@ typedef enum {
     TASK_READY,
     TASK_DEAD,
     TASK_SLEEPING,
+    TASK_BLOCKED,
 } task_status_t;
 
 typedef struct {
     uint64_t rsp;
     task_status_t status;
     uint64_t wake_at_tick;
+    size_t waiting_for;
 } task_t;
 
 // Siapkan stack awal task baru supaya context_switch() bisa
@@ -1484,6 +1487,18 @@ static void schedule(void)
     for (size_t i = 0; i < task_count; i++) {
         if (tasks[i].status == TASK_SLEEPING &&
             timer_ticks >= tasks[i].wake_at_tick) {
+            tasks[i].status = TASK_READY;
+        }
+    }
+
+    // Sama seperti pengecekan SLEEPING di atas: bangunkan task yang
+    // BLOCKED kalau task yang dia tunggu (waiting_for) sudah DEAD.
+    // Scheduler pasif mengecek kondisi eksternal, bukan task_exit()
+    // yang aktif mencari "siapa saja yang menungguku" (itu butuh
+    // reverse-lookup per-task yang lebih kompleks).
+    for (size_t i = 0; i < task_count; i++) {
+        if (tasks[i].status == TASK_BLOCKED &&
+            tasks[tasks[i].waiting_for].status == TASK_DEAD) {
             tasks[i].status = TASK_READY;
         }
     }
@@ -1581,6 +1596,33 @@ static void task_sleep(uint64_t ticks)
     irq_restore(flags);
 }
 
+// Task minta "diblokir" sampai task lain (target_index) menjadi
+// TASK_DEAD. BEDA dari task_sleep() -- syarat bangun bukan waktu,
+// tapi status task lain (event-based blocking, bukan time-based).
+static void task_wait_for(size_t target_index)
+{
+    uint64_t flags = irq_save();
+
+    // Guard dasar: index invalid atau menunggu diri sendiri (self-wait
+    // = deadlock instan untuk 1 task). Deadlock circular antar 2+
+    // task (A wait B, B wait A) BELUM ditangani di primitive ini --
+    // dicatat sebagai known limitation, bukan diabaikan begitu saja.
+    if (target_index >= task_count || target_index == current_index) {
+        irq_restore(flags);
+        return;
+    }
+
+    tasks[current_index].waiting_for = target_index;
+    tasks[current_index].status = TASK_BLOCKED;
+
+    schedule();
+
+    // Sama seperti task_sleep(): baris ini baru benar-benar
+    // dieksekusi ketika task ini dibangunkan (target sudah DEAD) dan
+    // mendapat giliran CPU lagi.
+    irq_restore(flags);
+}
+
 static void task_a_entry(void)
 {
     // Task baru dijalankan lewat context_switch() (ret-based), TIDAK
@@ -1629,6 +1671,12 @@ static void task_b_entry(void)
     // menginterupsi task ini lagi. sti eksplisit di sini menjamin
     // task baru selalu mulai dengan interrupt aktif.
     __asm__ volatile ("sti");
+
+    // Uji task_wait_for(): B diblokir sampai A (index 0) TASK_DEAD --
+    // event-based blocking, bukan berbasis waktu seperti task_sleep().
+    serial_write("Task B menunggu Task A selesai...\r\n");
+    task_wait_for(0);
+    serial_write("Task A sudah selesai, Task B lanjut\r\n");
 
     for (int i = 0; i < 3; i++) {
         // Satu critical section untuk SELURUH baris log (3 panggilan
