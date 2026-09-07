@@ -1523,6 +1523,12 @@ typedef struct {
     // per-task supaya banyak user task preemptive tidak berebut satu
     // kernel stack global saat masing-masing trap ke ring 0.
     uint64_t rsp0;
+    // Dipakai HANYA oleh user_task_trampoline() saat task user ini
+    // pertama kali dijalankan lewat context_switch(). user_stack_top
+    // sudah dihitung sebagai base+PMM_PAGE_SIZE (siap pakai langsung
+    // sebagai RSP awal ring 3, tidak perlu dihitung ulang).
+    uint64_t user_entry;
+    uint64_t user_stack_top;
 } task_t;
 
 // Siapkan stack awal task baru supaya context_switch() bisa
@@ -1572,6 +1578,94 @@ static task_t tasks[MAX_TASKS];
 static size_t task_count = 0;
 static volatile bool scheduler_started = false;
 static size_t current_index = 0;
+
+// =============================================================
+// Layer 7: user task creation (checkpoint -- dummy code hardcode,
+// belum dipanggil dari mana pun, cuma dites kompilasi dulu).
+//
+// Dummy code IDENTIK dengan test usermode manual di kmain() (Layer 6):
+// SYS_TEST(0x99) lalu spin loop (jmp $, BUKAN hlt -- hlt privileged,
+// akan #GP di ring 3).
+static const uint8_t user_task_dummy_code[] = {
+    0xB8, 0x00, 0x00, 0x00, 0x00,   // mov eax, 0   (SYS_TEST)
+    0xBF, 0x99, 0x00, 0x00, 0x00,   // mov edi, 0x99 (arg0)
+    0xBE, 0x00, 0x00, 0x00, 0x00,   // mov esi, 0
+    0xBA, 0x00, 0x00, 0x00, 0x00,   // mov edx, 0
+    0xCD, 0x80,                     // int 0x80
+    0xEB, 0xFE                      // jmp $ (spin loop)
+};
+
+// Dipanggil via ret dari context_switch() -- BUKAN dipanggil biasa,
+// jadi tidak boleh punya parameter (harus cocok dengan konvensi
+// "entry_function" yang dipakai task_create()). Baca entry/stack
+// milik task yang SEDANG aktif (current_index sudah diupdate oleh
+// schedule() SEBELUM context_switch() dipanggil), lalu masuk ring 3
+// lewat enter_usermode(). Fungsi ini tidak pernah return (persis
+// seperti enter_usermode() -- ring 3 tidak akan ret ke sini).
+static void user_task_trampoline(void)
+{
+    uint64_t entry = tasks[current_index].user_entry;
+    uint64_t stack_top = tasks[current_index].user_stack_top;
+    enter_usermode(entry, stack_top);
+}
+
+// Varian task_create() untuk task user. Beda dari task_create():
+// - entry_function yang dirig ke stack SELALU user_task_trampoline,
+//   bukan parameter caller (ring 0 -> ring 3 harus lewat iretq,
+//   context_switch() biasa (ret) tidak bisa melakukan itu langsung).
+// - Butuh pml4_phys eksplisit sebagai parameter karena pml4_phys
+//   di kmain() adalah variabel LOKAL (dari read_cr3()), bukan global.
+// - Mengalokasikan DUA jenis memori terpisah: kernel_stack (buat
+//   task->rsp/rsp0, dipakai saat trap balik ke ring 0) dan halaman
+//   user code+stack (VMM_FLAG_USER, dipakai kode ring 3).
+static void task_create_user(
+    task_t *task,
+    uint64_t pml4_phys,
+    uint64_t user_code_vaddr,
+    uint64_t user_stack_vaddr,
+    uint64_t kernel_stack_size
+)
+{
+    // --- Kernel stack task ini (dipakai context_switch() & RSP0) ---
+    uint64_t kstack_base = (uint64_t)kmalloc(kernel_stack_size);
+    uint64_t kstack_top = kstack_base + kernel_stack_size;
+
+    uint64_t *sp = (uint64_t *)kstack_top;
+
+    // Return address palsu untuk RET di context_switch() -- selalu
+    // trampoline, task user tidak pernah "entry_function" langsung.
+    sp--;
+    *sp = (uint64_t)user_task_trampoline;
+
+    // 15 register kosong, sama seperti task_create().
+    for (int i = 0; i < 15; i++) {
+        sp--;
+        *sp = 0;
+    }
+
+    task->rsp = (uint64_t)sp;
+    task->rsp0 = kstack_top;
+    task->status = TASK_READY;
+    task->waiting_for_sem = 0;
+    task->is_user_task = true;
+
+    // --- Halaman user code + stack (ring 3, VMM_FLAG_USER) ---
+    uint64_t user_code_frame = pmm_alloc();
+    uint64_t user_stack_frame = pmm_alloc();
+
+    vmm_map(pml4_phys, user_code_vaddr, user_code_frame,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+    vmm_map(pml4_phys, user_stack_vaddr, user_stack_frame,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+
+    uint8_t *user_code_dst = (uint8_t *)user_code_vaddr;
+    for (uint64_t i = 0; i < sizeof(user_task_dummy_code); i++) {
+        user_code_dst[i] = user_task_dummy_code[i];
+    }
+
+    task->user_entry = user_code_vaddr;
+    task->user_stack_top = user_stack_vaddr + PMM_PAGE_SIZE;
+}
 
 // Semaphore uji: count=1 -- simulasi 1 "slot" critical section yang
 // diperebutkan Task A dan B (lihat task_a_entry()/task_b_entry()).
