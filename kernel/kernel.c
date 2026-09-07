@@ -1783,6 +1783,22 @@ static void schedule(void)
     // yang benar, bukan sisa milik task sebelumnya.
     bmahOS_tss.rsp0 = tasks[next_index].rsp0;
 
+    // Log HANYA untuk switch yang melibatkan user task -- kalau
+    // dicetak untuk SEMUA switch (termasuk A<->B biasa), log akan
+    // banjir karena schedule() dipanggil tiap tick timer. Ini
+    // pembuktian langsung bahwa TSS.RSP0 benar-benar berubah nilai
+    // setiap kali scheduler masuk/keluar dari task user, BUKAN
+    // sekadar diasumsikan dari kode.
+    if (tasks[next_index].is_user_task || tasks[prev_index].is_user_task) {
+        serial_write("schedule(): switch prev_idx=");
+        serial_write_hex(prev_index);
+        serial_write(" next_idx=");
+        serial_write_hex(next_index);
+        serial_write(" TSS.RSP0=");
+        serial_write_hex(bmahOS_tss.rsp0);
+        serial_write("\r\n");
+    }
+
     context_switch(&tasks[prev_index].rsp, tasks[next_index].rsp);
 }
 
@@ -2477,19 +2493,12 @@ void kmain(void)
     }
     serial_write("\r\n");
 
-    // DISABLED sementara (Layer 7 trampoline checkpoint, single-task
-    // biar log bersih) -- known-good reference, jangan dihapus.
-    // serial_write("Task scheduling test: membuat task A dan B...\r\n");
-    // task_create(&tasks[0], task_a_entry, 4096);
-    // task_create(&tasks[1], task_b_entry, 4096);
-    // task_count = 2;
-    // serial_write("Task A dan B dibuat, mulai jalankan Task A...\r\n");
-    // serial_write("\r\n");
-
-    serial_write("Layer 7 checkpoint: membuat 1 user task via task_create_user()...\r\n");
-    task_create_user(&tasks[0], pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR, 4096);
-    task_count = 1;
-    serial_write("User task dibuat, mulai jalankan lewat scheduler...\r\n");
+    serial_write("Task scheduling test: membuat task A, B, dan 1 user task...\r\n");
+    task_create(&tasks[0], task_a_entry, 4096);
+    task_create(&tasks[1], task_b_entry, 4096);
+    task_create_user(&tasks[2], pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR, 4096);
+    task_count = 3;
+    serial_write("Task A, B, dan user task dibuat, mulai jalankan lewat scheduler...\r\n");
     serial_write("\r\n");
 
     static task_t kernel_dummy_task;
