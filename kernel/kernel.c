@@ -791,7 +791,7 @@ struct tss
     uint8_t  reserved4[6];
 } __attribute__((packed));
 
-static struct gdt_entry bmahOS_gdt[5];
+static struct gdt_entry bmahOS_gdt[7];
 static struct tss bmahOS_tss;
 
 struct idt_entry
@@ -933,7 +933,7 @@ static void print_idt_entry32(void)
 
 _Static_assert(sizeof(struct tss) == 0x68, "TSS size is wrong");
 _Static_assert(sizeof(struct gdt_entry) == 8, "GDT entry size is wrong");
-_Static_assert(sizeof(bmahOS_gdt) == 40, "GDT size is wrong");
+_Static_assert(sizeof(bmahOS_gdt) == 56, "GDT size is wrong");
 
 static void gdt_set_entry(
     int index,
@@ -982,6 +982,8 @@ static void gdt_init(void)
     gdt_set_entry(0, 0x00, 0x00);
     gdt_set_entry(1, 0x9B, 0x20);
     gdt_set_entry(2, 0x93, 0x00);
+    gdt_set_entry(5, 0xFB, 0x20);
+    gdt_set_entry(6, 0xF3, 0x00);
 
     tss_set_descriptor(
         3,
