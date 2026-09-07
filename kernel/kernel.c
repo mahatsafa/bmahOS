@@ -1604,8 +1604,14 @@ static const uint8_t user_task_dummy_code[] = {
 // seperti enter_usermode() -- ring 3 tidak akan ret ke sini).
 static void user_task_trampoline(void)
 {
+    serial_write("user_task_trampoline(): masuk (masih ring 0), current_index=");
+    serial_write_hex(current_index);
+    serial_write("\r\n");
+
     uint64_t entry = tasks[current_index].user_entry;
     uint64_t stack_top = tasks[current_index].user_stack_top;
+
+    serial_write("user_task_trampoline(): memanggil enter_usermode()...\r\n");
     enter_usermode(entry, stack_top);
 }
 
@@ -1665,6 +1671,14 @@ static void task_create_user(
 
     task->user_entry = user_code_vaddr;
     task->user_stack_top = user_stack_vaddr + PMM_PAGE_SIZE;
+
+    serial_write("task_create_user(): kode di ");
+    serial_write_hex(user_code_vaddr);
+    serial_write(", stack di ");
+    serial_write_hex(user_stack_vaddr);
+    serial_write(", rsp0 di ");
+    serial_write_hex(kstack_top);
+    serial_write("\r\n");
 }
 
 // Semaphore uji: count=1 -- simulasi 1 "slot" critical section yang
@@ -2358,6 +2372,8 @@ void kmain(void)
     }
     serial_write("\r\n");
 
+    /* DISABLED (Layer 7 trampoline checkpoint) -- known-good reference,
+     * jangan dihapus, diganti task_create_user() + scheduler di bawah.
     // =============================================================
     // User mode entry test (Layer 6)
     //
@@ -2393,9 +2409,6 @@ void kmain(void)
         0xEB, 0xFE
     };
 
-    #define USER_CODE_VADDR  0x0000000000400000ULL
-    #define USER_STACK_VADDR 0x0000000000500000ULL
-
     uint64_t user_code_frame = pmm_alloc();
     uint64_t user_stack_frame = pmm_alloc();
 
@@ -2420,6 +2433,10 @@ void kmain(void)
 
     serial_write("ERROR: kembali ke kmain() setelah enter_usermode (tidak diharapkan)\r\n");
     serial_write("\r\n");
+     */
+
+    #define USER_CODE_VADDR  0x0000000000400000ULL
+    #define USER_STACK_VADDR 0x0000000000500000ULL
 
     serial_write("=== ACPI: mencari MADT untuk info Local APIC/IOAPIC ===\r\n");
     acpi_init();
@@ -2460,13 +2477,19 @@ void kmain(void)
     }
     serial_write("\r\n");
 
-    serial_write("Task scheduling test: membuat task A dan B...\r\n");
+    // DISABLED sementara (Layer 7 trampoline checkpoint, single-task
+    // biar log bersih) -- known-good reference, jangan dihapus.
+    // serial_write("Task scheduling test: membuat task A dan B...\r\n");
+    // task_create(&tasks[0], task_a_entry, 4096);
+    // task_create(&tasks[1], task_b_entry, 4096);
+    // task_count = 2;
+    // serial_write("Task A dan B dibuat, mulai jalankan Task A...\r\n");
+    // serial_write("\r\n");
 
-    task_create(&tasks[0], task_a_entry, 4096);
-    task_create(&tasks[1], task_b_entry, 4096);
-    task_count = 2;
-
-    serial_write("Task A dan B dibuat, mulai jalankan Task A...\r\n");
+    serial_write("Layer 7 checkpoint: membuat 1 user task via task_create_user()...\r\n");
+    task_create_user(&tasks[0], pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR, 4096);
+    task_count = 1;
+    serial_write("User task dibuat, mulai jalankan lewat scheduler...\r\n");
     serial_write("\r\n");
 
     static task_t kernel_dummy_task;
