@@ -794,6 +794,12 @@ struct tss
 static struct gdt_entry bmahOS_gdt[7];
 static struct tss bmahOS_tss;
 
+// Kernel stack statis untuk TSS.RSP0 (dipakai CPU saat transisi
+// ring 3 -> ring 0 lewat interrupt/syscall). Static karena kmalloc
+// (lewat PMM) belum siap saat gdt_init() dipanggil di kmain().
+#define RSP0_STACK_SIZE 16384
+static uint8_t rsp0_stack[RSP0_STACK_SIZE];
+
 struct idt_entry
 {
     uint16_t offset_low;
@@ -990,6 +996,10 @@ static void gdt_init(void)
         (uint64_t)&bmahOS_tss,
         sizeof(bmahOS_tss) - 1
     );
+
+    // Stack tumbuh ke bawah -> RSP0 harus nunjuk ke alamat TERTINGGI
+    // dari buffer, bukan awal buffer.
+    bmahOS_tss.rsp0 = (uint64_t)&rsp0_stack[RSP0_STACK_SIZE];
 }
 
 static void print_bmahOS_gdt(void)
@@ -1975,6 +1985,10 @@ void kmain(void)
 
     serial_write("TR: ");
     serial_write_hex(tr);
+    serial_write("\r\n");
+
+    serial_write("TSS.RSP0: ");
+    serial_write_hex(bmahOS_tss.rsp0);
     serial_write("\r\n");
 
     serial_write("TSS descriptor AFTER LTR:\r\n");
