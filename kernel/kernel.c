@@ -1086,6 +1086,7 @@ static void print_bmahOS_gdt(void)
 extern void gdt_load_and_reload_asm(const void *gdtr);
 extern void tss_load_asm(void);
 extern uint64_t tss_read_asm(void);
+extern void enter_usermode(uint64_t entry_vaddr, uint64_t user_stack_top);
 extern void idt_load_asm(const void *idtr);
 
 static void idt_load(void)
@@ -1377,6 +1378,7 @@ static void vmm_dump_pml4(uint64_t pml4_phys)
 #define VMM_FLAG_PRESENT   0x1ULL
 #define VMM_FLAG_WRITABLE  0x2ULL
 #define VMM_FLAG_NOCACHE   0x10ULL  // PCD bit -- wajib untuk MMIO (Local APIC, IOAPIC)
+#define VMM_FLAG_USER      0x4ULL   // US bit -- wajib untuk halaman yang boleh diakses ring 3
 #define VMM_ENTRY_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
 static uint64_t vmm_get_or_create_table(uint64_t *table_virt, uint64_t index)
@@ -1398,7 +1400,11 @@ static uint64_t vmm_get_or_create_table(uint64_t *table_virt, uint64_t index)
         new_table_virt[i] = 0;
     }
 
-    table_virt[index] = new_table_phys | VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE;
+    // Tabel perantara SELALU diberi US=1 -- ini standar desain
+    // paging x86: izin akhir tetap ditentukan gabungan semua level,
+    // jadi US=1 di tabel perantara tidak membuka akses apa pun
+    // kalau PTE (leaf) tidak ikut diberi US=1.
+    table_virt[index] = new_table_phys | VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER;
     return new_table_phys;
 }
 static void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t flags)
@@ -2239,6 +2245,66 @@ void kmain(void)
         serial_write("kfree test: FAIL (alamat tidak sama, reclaim tidak bekerja)\r\n");
     }
     serial_write("\r\n");
+
+    // =============================================================
+    // User mode entry test (Layer 6)
+    //
+    // Kode user dummy ditulis manual sebagai raw machine code (bukan
+    // lewat compiler C), karena harus berdiri sendiri di halaman
+    // terpisah yang di-map dengan VMM_FLAG_USER -- bukan bagian dari
+    // .text kernel. Instruksi (encoding x86-64, AT&T-equivalent):
+    //
+    //   mov eax, 0        B8 00 00 00 00   (SYS_TEST = 0)
+    //   mov edi, 0x99     BF 99 00 00 00   (arg0, angka sembarang
+    //                                       biar gampang dikenali di log)
+    //   mov esi, 0        BE 00 00 00 00   (arg1)
+    //   mov edx, 0        BA 00 00 00 00   (arg2)
+    //   int 0x80          CD 80
+    // loop:
+    //   hlt               F4
+    //   jmp loop          EB FD
+    //
+    // Catatan: "mov eax,imm32" (bukan "mov rax,imm64") tetap
+    // meng-nolkan 32 bit atas rax -- cukup untuk nilai kecil ini,
+    // dan lebih pendek encoding-nya.
+    static const uint8_t user_code[] = {
+        0xB8, 0x00, 0x00, 0x00, 0x00,
+        0xBF, 0x99, 0x00, 0x00, 0x00,
+        0xBE, 0x00, 0x00, 0x00, 0x00,
+        0xBA, 0x00, 0x00, 0x00, 0x00,
+        0xCD, 0x80,
+        0xF4,
+        0xEB, 0xFD
+    };
+
+    #define USER_CODE_VADDR  0x0000000000400000ULL
+    #define USER_STACK_VADDR 0x0000000000500000ULL
+
+    uint64_t user_code_frame = pmm_alloc();
+    uint64_t user_stack_frame = pmm_alloc();
+
+    vmm_map(pml4_phys, USER_CODE_VADDR, user_code_frame,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+    vmm_map(pml4_phys, USER_STACK_VADDR, user_stack_frame,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+
+    uint8_t *user_code_dst = (uint8_t *)USER_CODE_VADDR;
+    for (uint64_t i = 0; i < sizeof(user_code); i++) {
+        user_code_dst[i] = user_code[i];
+    }
+
+    serial_write("User mode test: kode user di-copy ke ");
+    serial_write_hex(USER_CODE_VADDR);
+    serial_write(", stack di ");
+    serial_write_hex(USER_STACK_VADDR);
+    serial_write("\r\n");
+    serial_write("User mode test: melompat ke ring 3 lewat enter_usermode()...\r\n");
+
+    enter_usermode(USER_CODE_VADDR, USER_STACK_VADDR + PMM_PAGE_SIZE);
+
+    serial_write("ERROR: kembali ke kmain() setelah enter_usermode (tidak diharapkan)\r\n");
+    serial_write("\r\n");
+
     serial_write("=== ACPI: mencari MADT untuk info Local APIC/IOAPIC ===\r\n");
     acpi_init();
     serial_write("=== APIC: enable Local APIC + program IOAPIC redirection ===\r\n");
