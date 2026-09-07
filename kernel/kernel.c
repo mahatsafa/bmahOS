@@ -1518,6 +1518,11 @@ typedef struct {
     // dipakai untuk penandaan; integrasi penuh (context_switch vs
     // enter_usermode saat first-run) menyusul.
     bool is_user_task;
+    // Top of this task's kernel stack -- disalin ke bmahOS_tss.rsp0
+    // oleh schedule() setiap kali task ini yang akan berjalan. Wajib
+    // per-task supaya banyak user task preemptive tidak berebut satu
+    // kernel stack global saat masing-masing trap ke ring 0.
+    uint64_t rsp0;
 } task_t;
 
 // Siapkan stack awal task baru supaya context_switch() bisa
@@ -1559,6 +1564,7 @@ static void task_create(task_t *task, void (*entry_function)(void), uint64_t sta
     task->status = TASK_READY;
     task->waiting_for_sem = 0;
     task->is_user_task = false;
+    task->rsp0 = stack_top;
 }
 #define MAX_TASKS 8
 
@@ -1662,6 +1668,12 @@ static void schedule(void)
 
     size_t prev_index = current_index;
     current_index = next_index;
+
+    // Swap TSS.RSP0 ke kernel stack task berikutnya SEBELUM context
+    // switch -- kalau task ini (nanti) user task dan trap ke ring 0
+    // via syscall/interrupt, CPU harus menemukan RSP0 milik task
+    // yang benar, bukan sisa milik task sebelumnya.
+    bmahOS_tss.rsp0 = tasks[next_index].rsp0;
 
     context_switch(&tasks[prev_index].rsp, tasks[next_index].rsp);
 }
