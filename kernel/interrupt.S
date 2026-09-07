@@ -170,6 +170,16 @@ ISR_NOERR 18
 ISR_NOERR 19
 
 # ===============================================================
+# Syscall entry (int 0x80)
+#
+# Dipanggil dari ring 3 lewat "int $0x80". Pakai isr_common_stub
+# yang sama seperti exception -- struct exception_context sudah
+# generik, syscall_handler baca context->rax sebagai syscall number.
+# Tidak ada error code dari CPU untuk instruksi int manual.
+# ===============================================================
+ISR_NOERR 128
+
+# ===============================================================
 # IRQ common entry (BEDA dari exception!)
 #
 # IRQ tidak pernah punya error code dari CPU. Handler-nya TIDAK

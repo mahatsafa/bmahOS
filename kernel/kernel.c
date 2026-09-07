@@ -47,6 +47,7 @@ extern void isr16(void);
 extern void isr17(void);
 extern void isr18(void);
 extern void isr19(void);
+extern void isr128(void);
 extern void irq32(void);
 
 void kmain(void);
@@ -693,8 +694,24 @@ static uint64_t read_ss(void)
     return ss;
 }
 
+// Dispatch syscall (int 0x80). context->rax = nomor syscall saat
+// masuk. Untuk sekarang cuma placeholder test -- dispatch table
+// sungguhan menyusul.
+static void syscall_handler(struct exception_context *context)
+{
+    serial_write("SYSCALL masuk, nomor: ");
+    serial_write_hex(context->rax);
+    serial_write("\r\n");
+}
+
 void exception_dispatcher(struct exception_context *context)
 {
+    if (context->vector == 128)
+    {
+        syscall_handler(context);
+        return;
+    }
+
     serial_write("\r\n");
     serial_write("=== EXCEPTION DISPATCHER ===\r\n");
 
@@ -893,6 +910,11 @@ static void idt_init(void)
             0x8E
         );
     }
+
+    // int 0x80 -- syscall gate. DPL=3 (0xEE) supaya ring 3 boleh
+    // trigger tanpa #GP. Selector tetap 0x08 (kernel code) karena
+    // handler-nya SELALU jalan di ring 0, terlepas dari ring pemanggil.
+    idt_set_entry(128, (uint64_t)isr128, 0x08, 0xEE);
 }
 
 
@@ -2005,6 +2027,17 @@ void kmain(void)
     serial_write("Loading IDT...\r\n");
 
     idt_load();
+
+    serial_write("Testing int 0x80 syscall gate...\r\n");
+    __asm__ volatile (
+        "movq $42, %%rax\n\t"
+        "int $0x80"
+        :
+        :
+        : "rax"
+    );
+    serial_write("Kembali dari int 0x80, kernel masih hidup.\r\n");
+
 
     read_idtr();
 
