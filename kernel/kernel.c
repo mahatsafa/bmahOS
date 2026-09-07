@@ -694,14 +694,56 @@ static uint64_t read_ss(void)
     return ss;
 }
 
+// ===============================================================
+// Syscall dispatch table
+//
+// Konvensi: rax = nomor syscall, rdi/rsi/rdx = argumen 1/2/3
+// (sama seperti konvensi Linux x86-64 syscall ABI, supaya familiar
+// dan gampang dibandingkan referensi). Return value ditaruh balik
+// ke context->rax sebelum iretq.
+// ===============================================================
+
+#define SYS_TEST 0
+#define SYSCALL_COUNT 1
+
+static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2)
+{
+    serial_write("sys_test dipanggil, arg0=");
+    serial_write_hex(arg0);
+    serial_write(" arg1=");
+    serial_write_hex(arg1);
+    serial_write(" arg2=");
+    serial_write_hex(arg2);
+    serial_write("\r\n");
+    return 0xAAAA;
+}
+
+typedef uint64_t (*syscall_fn_t)(uint64_t, uint64_t, uint64_t);
+
+static const syscall_fn_t syscall_table[SYSCALL_COUNT] = {
+    [SYS_TEST] = sys_test,
+};
+
 // Dispatch syscall (int 0x80). context->rax = nomor syscall saat
-// masuk. Untuk sekarang cuma placeholder test -- dispatch table
-// sungguhan menyusul.
+// masuk, ditimpa dengan return value sebelum kembali ke pemanggil.
 static void syscall_handler(struct exception_context *context)
 {
-    serial_write("SYSCALL masuk, nomor: ");
-    serial_write_hex(context->rax);
-    serial_write("\r\n");
+    uint64_t syscall_num = context->rax;
+
+    if (syscall_num >= SYSCALL_COUNT || syscall_table[syscall_num] == 0)
+    {
+        serial_write("SYSCALL tidak dikenal: ");
+        serial_write_hex(syscall_num);
+        serial_write("\r\n");
+        context->rax = (uint64_t)-1;
+        return;
+    }
+
+    context->rax = syscall_table[syscall_num](
+        context->rdi,
+        context->rsi,
+        context->rdx
+    );
 }
 
 void exception_dispatcher(struct exception_context *context)
@@ -2028,14 +2070,22 @@ void kmain(void)
 
     idt_load();
 
-    serial_write("Testing int 0x80 syscall gate...\r\n");
+    serial_write("Testing int 0x80 syscall gate (SYS_TEST)...\r\n");
+    uint64_t syscall_ret;
     __asm__ volatile (
-        "movq $42, %%rax\n\t"
-        "int $0x80"
+        "movq $0, %%rax\n\t"
+        "movq $0x11, %%rdi\n\t"
+        "movq $0x22, %%rsi\n\t"
+        "movq $0x33, %%rdx\n\t"
+        "int $0x80\n\t"
+        "movq %%rax, %0"
+        : "=r"(syscall_ret)
         :
-        :
-        : "rax"
+        : "rax", "rdi", "rsi", "rdx"
     );
+    serial_write("Return value dari SYS_TEST: ");
+    serial_write_hex(syscall_ret);
+    serial_write("\r\n");
     serial_write("Kembali dari int 0x80, kernel masih hidup.\r\n");
 
 
