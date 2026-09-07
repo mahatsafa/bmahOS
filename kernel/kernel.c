@@ -1513,6 +1513,11 @@ typedef struct {
     // BLOCKED karena task_wait_for() punya waiting_for_sem == NULL;
     // BLOCKED karena sem_wait() punya waiting_for_sem != NULL.
     semaphore_t *waiting_for_sem;
+    // true kalau task ini jalan di ring 3 (user task). Scheduler
+    // belum membedakan perlakuan berdasarkan field ini -- baru
+    // dipakai untuk penandaan; integrasi penuh (context_switch vs
+    // enter_usermode saat first-run) menyusul.
+    bool is_user_task;
 } task_t;
 
 // Siapkan stack awal task baru supaya context_switch() bisa
@@ -1553,6 +1558,7 @@ static void task_create(task_t *task, void (*entry_function)(void), uint64_t sta
     task->rsp = (uint64_t)sp;
     task->status = TASK_READY;
     task->waiting_for_sem = 0;
+    task->is_user_task = false;
 }
 #define MAX_TASKS 8
 
@@ -2261,8 +2267,13 @@ void kmain(void)
     //   mov edx, 0        BA 00 00 00 00   (arg2)
     //   int 0x80          CD 80
     // loop:
-    //   hlt               F4
-    //   jmp loop          EB FD
+    //   jmp loop          EB FE   (spin loop -- BUKAN hlt!)
+    //
+    // PENTING: hlt TIDAK BOLEH dipakai di sini -- hlt adalah
+    // instruksi privileged (CPL harus 0), jadi kalau dieksekusi di
+    // ring 3 akan memicu #GP. Spin loop (jmp ke diri sendiri) tidak
+    // privileged, aman dieksekusi di ring manapun, walau boros CPU
+    // (busy-wait). Cukup untuk tahap verifikasi ini.
     //
     // Catatan: "mov eax,imm32" (bukan "mov rax,imm64") tetap
     // meng-nolkan 32 bit atas rax -- cukup untuk nilai kecil ini,
@@ -2273,8 +2284,7 @@ void kmain(void)
         0xBE, 0x00, 0x00, 0x00, 0x00,
         0xBA, 0x00, 0x00, 0x00, 0x00,
         0xCD, 0x80,
-        0xF4,
-        0xEB, 0xFD
+        0xEB, 0xFE
     };
 
     #define USER_CODE_VADDR  0x0000000000400000ULL
