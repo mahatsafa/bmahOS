@@ -1624,14 +1624,39 @@ static void user_task_trampoline(void)
 // - Mengalokasikan DUA jenis memori terpisah: kernel_stack (buat
 //   task->rsp/rsp0, dipakai saat trap balik ke ring 0) dan halaman
 //   user code+stack (VMM_FLAG_USER, dipakai kode ring 3).
+// code/code_len digeneralisasi (Layer 7 lanjutan) -- sebelumnya
+// task_create_user() hardcode user_task_dummy_code[] di dalam badan
+// fungsi. Sekarang pemanggil (kmain() atau nanti syscall exec/spawn)
+// yang menentukan kode apa yang dijalankan di ring 3.
+//
+// code_len WAJIB <= PMM_PAGE_SIZE (4096) -- kita cuma alokasikan
+// SATU frame fisik untuk halaman kode. Kalau code_len lebih besar,
+// byte yang meluber akan menimpa memori di luar frame yang dialokasikan
+// (bug diam-diam, tidak akan #PF karena masih di halaman yang sama
+// index-nya secara virtual tapi menabrak data lain di physical
+// memory kalau alignment tidak pas -- makanya DICEGAH di awal, bukan
+// dibiarkan lalu diharapkan #PF menangkapnya).
 static void task_create_user(
     task_t *task,
     uint64_t pml4_phys,
     uint64_t user_code_vaddr,
     uint64_t user_stack_vaddr,
-    uint64_t kernel_stack_size
+    uint64_t kernel_stack_size,
+    const uint8_t *code,
+    size_t code_len
 )
 {
+    if (code_len > PMM_PAGE_SIZE) {
+        serial_write("task_create_user(): FATAL -- code_len melebihi 1 halaman (");
+        serial_write_hex(code_len);
+        serial_write(" > ");
+        serial_write_hex(PMM_PAGE_SIZE);
+        serial_write("), dibatalkan.\r\n");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
     // --- Kernel stack task ini (dipakai context_switch() & RSP0) ---
     uint64_t kstack_base = (uint64_t)kmalloc(kernel_stack_size);
     uint64_t kstack_top = kstack_base + kernel_stack_size;
@@ -1665,14 +1690,16 @@ static void task_create_user(
             VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
 
     uint8_t *user_code_dst = (uint8_t *)user_code_vaddr;
-    for (uint64_t i = 0; i < sizeof(user_task_dummy_code); i++) {
-        user_code_dst[i] = user_task_dummy_code[i];
+    for (size_t i = 0; i < code_len; i++) {
+        user_code_dst[i] = code[i];
     }
 
     task->user_entry = user_code_vaddr;
     task->user_stack_top = user_stack_vaddr + PMM_PAGE_SIZE;
 
-    serial_write("task_create_user(): kode di ");
+    serial_write("task_create_user(): kode (");
+    serial_write_hex(code_len);
+    serial_write(" byte) di ");
     serial_write_hex(user_code_vaddr);
     serial_write(", stack di ");
     serial_write_hex(user_stack_vaddr);
@@ -2496,7 +2523,8 @@ void kmain(void)
     serial_write("Task scheduling test: membuat task A, B, dan 1 user task...\r\n");
     task_create(&tasks[0], task_a_entry, 4096);
     task_create(&tasks[1], task_b_entry, 4096);
-    task_create_user(&tasks[2], pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR, 4096);
+    task_create_user(&tasks[2], pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR, 4096,
+                      user_task_dummy_code, sizeof(user_task_dummy_code));
     task_count = 3;
     serial_write("Task A, B, dan user task dibuat, mulai jalankan lewat scheduler...\r\n");
     serial_write("\r\n");
