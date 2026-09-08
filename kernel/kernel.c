@@ -1702,7 +1702,7 @@ static void kfree(void *ptr)
         serial_write("kfree: bukan alokasi terakhir, tidak bisa reclaim aman (no-op)\r\n");
     }
 }
-extern void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp);
+extern void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp, uint64_t new_pml4_phys);
 
 // TASK_READY: task valid, boleh dipilih scheduler.
 // TASK_DEAD: task sudah selesai, scheduler WAJIB melewatinya --
@@ -1801,6 +1801,11 @@ static void task_create(task_t *task, void (*entry_function)(void), uint64_t sta
     task->waiting_for_sem = 0;
     task->is_user_task = false;
     task->rsp0 = stack_top;
+    // Layer 8 checkpoint 2: task kernel SENGAJA share PML4 global --
+    // tidak ada manfaat isolasi address space untuk task yang tidak
+    // pernah masuk ring 3. g_current_pml4_phys sudah diisi di kmain()
+    // sebelum task_create() pertama dipanggil.
+    task->pml4_phys = g_current_pml4_phys;
 }
 #define MAX_TASKS 8
 
@@ -1947,6 +1952,11 @@ static void task_create_user(
     task->status = TASK_READY;
     task->waiting_for_sem = 0;
     task->is_user_task = true;
+    // Layer 8 checkpoint 2: simpan pml4_phys yang DIOPER pemanggil.
+    // Checkpoint ini pemanggil masih selalu mengoper PML4 global
+    // (identik task kernel) -- isolasi sungguhan (PML4 privat per
+    // user task) baru aktif di checkpoint 3.
+    task->pml4_phys = pml4_phys;
 
     // --- Halaman user code + stack (ring 3, VMM_FLAG_USER) ---
     uint64_t user_code_frame = pmm_alloc();
@@ -2078,6 +2088,14 @@ static void schedule(void)
     // yang benar, bukan sisa milik task sebelumnya.
     bmahOS_tss.rsp0 = tasks[next_index].rsp0;
 
+    // Layer 8 checkpoint 2: g_current_pml4_phys MENCERMINKAN task
+    // aktif (cache/mirror), BUKAN source of truth kedua --
+    // tasks[i].pml4_phys tetap satu-satunya tempat state PML4
+    // per-task disimpan. Diupdate di sini, SEBELUM context_switch(),
+    // supaya syscall (is_valid_user_ptr) yang trap segera setelah
+    // switch selalu baca PML4 task yang BENAR sedang berjalan.
+    g_current_pml4_phys = tasks[next_index].pml4_phys;
+
     // Log HANYA untuk switch yang melibatkan user task -- kalau
     // dicetak untuk SEMUA switch (termasuk A<->B biasa), log akan
     // banjir karena schedule() dipanggil tiap tick timer. Ini
@@ -2094,7 +2112,7 @@ static void schedule(void)
         serial_write("\r\n");
     }
 
-    context_switch(&tasks[prev_index].rsp, tasks[next_index].rsp);
+    context_switch(&tasks[prev_index].rsp, tasks[next_index].rsp, tasks[next_index].pml4_phys);
 }
 
 // Dipanggil task untuk mengakhiri dirinya sendiri secara permanen.
@@ -2824,7 +2842,7 @@ void kmain(void)
     // masuk setelah ini, schedule() boleh mulai menyimpan/memuat
     // context task dengan aman.
     scheduler_started = true;
-    context_switch(&kernel_dummy_task.rsp, tasks[0].rsp);
+    context_switch(&kernel_dummy_task.rsp, tasks[0].rsp, tasks[0].pml4_phys);
 
     serial_write("ERROR: kembali ke kmain() setelah task selesai (tidak diharapkan)\r\n");
     serial_write("ABOUT TO TRIGGER #BP\r\n");

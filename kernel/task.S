@@ -1,7 +1,7 @@
 .global context_switch
 .type context_switch, @function
-# void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp)
-# rdi = old_rsp_ptr, rsi = new_rsp
+# void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp, uint64_t new_pml4_phys)
+# rdi = old_rsp_ptr, rsi = new_rsp, rdx = new_pml4_phys
 context_switch:
     # Simpan SEMUA register (15) milik task lama, urutan sama
     # persis dengan irq_common_stub supaya kompatibel dipanggil
@@ -23,6 +23,15 @@ context_switch:
     pushq %r15
     # Simpan rsp task lama.
     movq %rsp, (%rdi)
+    # Layer 8 checkpoint 2: ganti CR3 HANYA kalau PML4 tujuan beda
+    # dari CR3 sekarang -- reload CR3 flush SELURUH TLB, mahal kalau
+    # dilakukan sia-sia untuk switch antar task yang share PML4 sama
+    # (mis. Task A <-> Task B, keduanya pakai PML4 kernel global).
+    movq %cr3, %rax
+    cmpq %rdx, %rax
+    je   .Lskip_cr3_switch
+    movq %rdx, %cr3
+.Lskip_cr3_switch:
     # Pindah ke stack task baru.
     movq %rsi, %rsp
     # Pulihkan 15 register milik task baru, urutan kebalikan push.
