@@ -1830,6 +1830,26 @@ static const uint8_t user_task_dummy_code[] = {
     0xEB, 0xFE                      // jmp $ (spin loop)
 };
 
+// Layer 8 checkpoint 4: uji isolasi address space sesungguhnya. Task
+// ini (tasks[2], PML4 privat sendiri hasil vmm_clone_kernel_pml4())
+// mencoba SYS_WRITE ke 0x600000 -- alamat yang VALID dan MAPPED milik
+// task LAIN (tasks[3], lihat USER_CODE_VADDR2), tapi TIDAK PERNAH
+// di-map di PML4 milik task INI. Kalau isolasi bekerja benar,
+// is_valid_user_ptr() HARUS menolak (vmm_is_user_page() menemukan
+// halaman not-present saat walk di PML4 task ini sendiri) -- BUKAN
+// menolak karena alasan lain (mis. alamat kernel seperti test
+// sebelumnya). Ini pembeda penting: test lama membuktikan "pointer ke
+// kernel ditolak", test ini membuktikan "pointer ke SESAMA USER TASK
+// LAIN ikut ditolak", yang jauh lebih kuat sebagai bukti isolasi.
+static const uint8_t user_task_isolation_test_code[] = {
+    0xB8, 0x01, 0x00, 0x00, 0x00,
+    0xBF, 0x00, 0x00, 0x60, 0x00,
+    0xBE, 0x05, 0x00, 0x00, 0x00,
+    0xBA, 0x00, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
+    0xEB, 0xFE
+};
+
 static const uint8_t user_task_syswrite_test_code[] = {
     0xB8, 0x01, 0x00, 0x00, 0x00,
     0xBF, 0x33, 0x00, 0x60, 0x00,
@@ -2831,7 +2851,7 @@ void kmain(void)
     // (0x000) SENGAJA kosong di hasil clone.
     uint64_t pml4_task2 = vmm_clone_kernel_pml4(pml4_phys);
     task_create_user(&tasks[2], pml4_task2, USER_CODE_VADDR, USER_STACK_VADDR, 4096,
-                      user_task_dummy_code, sizeof(user_task_dummy_code));
+                      user_task_isolation_test_code, sizeof(user_task_isolation_test_code));
 
     #define USER_CODE_VADDR2  0x0000000000600000ULL
     #define USER_STACK_VADDR2 0x0000000000700000ULL
