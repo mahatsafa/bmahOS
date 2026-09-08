@@ -18,6 +18,13 @@ static volatile struct limine_hhdm_request hhdm_request = {
 
 static uint64_t hhdm_offset = 0;
 
+// Address space YANG DIPAKAI SEMUA task saat ini (kernel maupun
+// user) -- arsitektur sekarang belum isolasi per-proses (ditunda ke
+// Layer 8+, lihat catatan rencana). Diisi sekali di kmain() dari
+// read_cr3(), dipakai syscall (mis. sys_write) untuk validasi
+// pointer user lewat is_valid_user_ptr().
+static uint64_t g_current_pml4_phys = 0;
+
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_memmap_request memmap_request = {
     .id = LIMINE_MEMMAP_REQUEST_ID,
@@ -703,8 +710,15 @@ static uint64_t read_ss(void)
 // ke context->rax sebelum iretq.
 // ===============================================================
 
-#define SYS_TEST 0
-#define SYSCALL_COUNT 1
+// Forward declaration -- definisi lengkap is_valid_user_ptr() ada
+// di bawah (dekat vmm_map(), butuh VMM_FLAG_* dan hhdm_offset yang
+// didefinisikan di situ), tapi sys_write() di section syscall ini
+// perlu memanggilnya lebih dulu secara urutan baris.
+static bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len);
+
+#define SYS_TEST  0
+#define SYS_WRITE 1
+#define SYSCALL_COUNT 2
 
 static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2)
 {
@@ -718,10 +732,32 @@ static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     return 0xAAAA;
 }
 
+static uint64_t sys_write(uint64_t buf_ptr, uint64_t len, uint64_t arg2)
+{
+    (void)arg2;
+
+    if (!is_valid_user_ptr(g_current_pml4_phys, buf_ptr, len)) {
+        serial_write("sys_write(): DITOLAK -- pointer/len tidak valid (ptr=");
+        serial_write_hex(buf_ptr);
+        serial_write(", len=");
+        serial_write_hex(len);
+        serial_write(")\r\n");
+        return (uint64_t)-1;
+    }
+
+    const char *buf = (const char *)buf_ptr;
+    for (uint64_t i = 0; i < len; i++) {
+        serial_putc(buf[i]);
+    }
+
+    return len;
+}
+
 typedef uint64_t (*syscall_fn_t)(uint64_t, uint64_t, uint64_t);
 
 static const syscall_fn_t syscall_table[SYSCALL_COUNT] = {
-    [SYS_TEST] = sys_test,
+    [SYS_TEST]  = sys_test,
+    [SYS_WRITE] = sys_write,
 };
 
 // Dispatch syscall (int 0x80). context->rax = nomor syscall saat
@@ -1425,6 +1461,87 @@ static void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t
     uint64_t *pt_virt = (uint64_t *)(pt_phys + hhdm_offset);
     pt_virt[pt_idx] = (paddr & VMM_ENTRY_ADDR_MASK) | flags;
 }
+
+// ===============================================================
+// Syscall pointer validation (Layer 7 lanjutan)
+//
+// vmm_is_user_page(): walk page table READ-ONLY untuk SATU alamat
+// (dibulatkan ke awal halaman 4KB). BEDA dari vmm_get_or_create_table()
+// yang dipakai vmm_map() -- fungsi ini TIDAK PERNAH mengalokasikan
+// tabel baru. Kalau level manapun (PML4/PDPT/PD/PT) belum present,
+// itu berarti alamat tersebut PASTI belum pernah di-map -- otomatis
+// tidak valid, tidak perlu jalan lebih jauh.
+//
+// Syarat valid: seluruh level present DAN leaf (PTE) punya bit US=1
+// (VMM_FLAG_USER). US=1 di tabel perantara saja TIDAK CUKUP -- x86
+// paging AND semua level, tapi untuk tujuan "boleh diakses ring 3",
+// yang benar-benar menentukan adalah PTE (leaf), karena tabel
+// perantara SELALU diberi US=1 oleh vmm_get_or_create_table() (lihat
+// komentarnya) sehingga tidak bisa dipakai membedakan kernel vs user
+// page.
+static bool vmm_is_user_page(uint64_t pml4_phys, uint64_t vaddr)
+{
+    uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
+    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
+    uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
+    uint64_t pt_idx   = (vaddr >> 12) & 0x1FF;
+
+    uint64_t *pml4_virt = (uint64_t *)(pml4_phys + hhdm_offset);
+    uint64_t pml4_entry = pml4_virt[pml4_idx];
+    if ((pml4_entry & VMM_FLAG_PRESENT) == 0) {
+        return false;
+    }
+
+    uint64_t pdpt_phys = pml4_entry & VMM_ENTRY_ADDR_MASK;
+    uint64_t *pdpt_virt = (uint64_t *)(pdpt_phys + hhdm_offset);
+    uint64_t pdpt_entry = pdpt_virt[pdpt_idx];
+    if ((pdpt_entry & VMM_FLAG_PRESENT) == 0) {
+        return false;
+    }
+
+    uint64_t pd_phys = pdpt_entry & VMM_ENTRY_ADDR_MASK;
+    uint64_t *pd_virt = (uint64_t *)(pd_phys + hhdm_offset);
+    uint64_t pd_entry = pd_virt[pd_idx];
+    if ((pd_entry & VMM_FLAG_PRESENT) == 0) {
+        return false;
+    }
+
+    uint64_t pt_phys = pd_entry & VMM_ENTRY_ADDR_MASK;
+    uint64_t *pt_virt = (uint64_t *)(pt_phys + hhdm_offset);
+    uint64_t pt_entry = pt_virt[pt_idx];
+    if ((pt_entry & VMM_FLAG_PRESENT) == 0) {
+        return false;
+    }
+
+    return (pt_entry & VMM_FLAG_USER) != 0;
+}
+
+// ptr/len byte-granular dari sudut pandang pemanggil syscall, tapi
+// paging bekerja per-halaman (4KB) -- jadi validasi SEMUA halaman
+// yang disentuh oleh range [ptr, ptr+len), bukan cuma byte pertama.
+static bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len)
+{
+    if (len == 0) {
+        return true;
+    }
+
+    uint64_t end = ptr + len;
+    if (end < ptr) {
+        return false;
+    }
+
+    uint64_t page_start = ptr & ~(PMM_PAGE_SIZE - 1);
+    uint64_t page_end = (end - 1) & ~(PMM_PAGE_SIZE - 1);
+
+    for (uint64_t page = page_start; page <= page_end; page += PMM_PAGE_SIZE) {
+        if (!vmm_is_user_page(pml4_phys, page)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 #define KHEAP_START 0xFFFF980000000000ULL
 
 static uint64_t kheap_current = 0;
@@ -1593,6 +1710,25 @@ static const uint8_t user_task_dummy_code[] = {
     0xBA, 0x00, 0x00, 0x00, 0x00,   // mov edx, 0
     0xCD, 0x80,                     // int 0x80
     0xEB, 0xFE                      // jmp $ (spin loop)
+};
+
+static const uint8_t user_task_syswrite_test_code[] = {
+    0xB8, 0x01, 0x00, 0x00, 0x00,
+    0xBF, 0x33, 0x00, 0x60, 0x00,
+    0xBE, 0x06, 0x00, 0x00, 0x00,
+    0xBA, 0x00, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
+
+    0xB8, 0x01, 0x00, 0x00, 0x00,
+    0x48, 0xBF, 0x00, 0x00, 0x00, 0x80,
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0xBE, 0x05, 0x00, 0x00, 0x00,
+    0xBA, 0x00, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
+
+    0xEB, 0xFE,
+
+    0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x0A
 };
 
 // Dipanggil via ret dari context_switch() -- BUKAN dipanggil biasa,
@@ -2323,6 +2459,7 @@ void kmain(void)
     }
 
     uint64_t pml4_phys = read_cr3();
+    g_current_pml4_phys = pml4_phys;
     serial_write("CR3 (PML4 physical addr): ");
     serial_write_hex(pml4_phys);
     serial_write("\r\n");
@@ -2525,7 +2662,14 @@ void kmain(void)
     task_create(&tasks[1], task_b_entry, 4096);
     task_create_user(&tasks[2], pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR, 4096,
                       user_task_dummy_code, sizeof(user_task_dummy_code));
-    task_count = 3;
+
+    #define USER_CODE_VADDR2  0x0000000000600000ULL
+    #define USER_STACK_VADDR2 0x0000000000700000ULL
+
+    task_create_user(&tasks[3], pml4_phys, USER_CODE_VADDR2, USER_STACK_VADDR2, 4096,
+                      user_task_syswrite_test_code, sizeof(user_task_syswrite_test_code));
+
+    task_count = 4;
     serial_write("Task A, B, dan user task dibuat, mulai jalankan lewat scheduler...\r\n");
     serial_write("\r\n");
 
