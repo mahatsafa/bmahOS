@@ -1967,7 +1967,20 @@ static void task_create_user(
     vmm_map(pml4_phys, user_stack_vaddr, user_stack_frame,
             VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
 
-    uint8_t *user_code_dst = (uint8_t *)user_code_vaddr;
+    // Layer 8 checkpoint 3 FIX: TIDAK BOLEH menulis lewat alamat
+    // virtual user_code_vaddr di sini -- PML4 yang baru saja dipetakan
+    // (pml4_phys milik task ini, hasil vmm_clone_kernel_pml4()) BELUM
+    // TENTU sama dengan CR3 yang SEDANG AKTIF saat task_create_user()
+    // dipanggil (kmain() masih jalan dengan PML4 kernel lama, task ini
+    // belum pernah di-context-switch). Menulis ke user_code_vaddr lewat
+    // pointer biasa memakai page table AKTIF SEKARANG, yang tidak
+    // punya mapping tersebut -- menyebabkan #PF not-present (terbukti
+    // nyata: CR2=user_code_vaddr, error code=write). Solusi: tulis
+    // lewat HHDM (alamat fisik + hhdm_offset), yang SELALU bisa
+    // diakses dari address space manapun yang sedang aktif, karena
+    // HHDM adalah salah satu entri kernel-shared yang ikut di-copy
+    // vmm_clone_kernel_pml4() (VMM_SHARED_PML4_IDX_HHDM).
+    uint8_t *user_code_dst = (uint8_t *)(user_code_frame + hhdm_offset);
     for (size_t i = 0; i < code_len; i++) {
         user_code_dst[i] = code[i];
     }
@@ -2810,19 +2823,28 @@ void kmain(void)
     serial_write("Task scheduling test: membuat task A, B, dan 1 user task...\r\n");
     task_create(&tasks[0], task_a_entry, 4096);
     task_create(&tasks[1], task_b_entry, 4096);
-    task_create_user(&tasks[2], pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR, 4096,
+    // Layer 8 checkpoint 3: task user sekarang dapat PML4 PRIVAT
+    // sendiri (hasil clone), BUKAN lagi PML4 global -- ini titik
+    // perubahan behavior utama Layer 8. vmm_map() di dalam
+    // task_create_user() akan otomatis alokasi PDPT/PD/PT baru untuk
+    // user_code_vaddr/user_stack_vaddr, karena index PML4 rendah
+    // (0x000) SENGAJA kosong di hasil clone.
+    uint64_t pml4_task2 = vmm_clone_kernel_pml4(pml4_phys);
+    task_create_user(&tasks[2], pml4_task2, USER_CODE_VADDR, USER_STACK_VADDR, 4096,
                       user_task_dummy_code, sizeof(user_task_dummy_code));
 
     #define USER_CODE_VADDR2  0x0000000000600000ULL
     #define USER_STACK_VADDR2 0x0000000000700000ULL
 
-    task_create_user(&tasks[3], pml4_phys, USER_CODE_VADDR2, USER_STACK_VADDR2, 4096,
+    uint64_t pml4_task3 = vmm_clone_kernel_pml4(pml4_phys);
+    task_create_user(&tasks[3], pml4_task3, USER_CODE_VADDR2, USER_STACK_VADDR2, 4096,
                       user_task_syswrite_test_code, sizeof(user_task_syswrite_test_code));
 
     #define USER_CODE_VADDR3  0x0000000000800000ULL
     #define USER_STACK_VADDR3 0x0000000000900000ULL
 
-    task_create_user(&tasks[4], pml4_phys, USER_CODE_VADDR3, USER_STACK_VADDR3, 4096,
+    uint64_t pml4_task4 = vmm_clone_kernel_pml4(pml4_phys);
+    task_create_user(&tasks[4], pml4_task4, USER_CODE_VADDR3, USER_STACK_VADDR3, 4096,
                       user_task_sysexit_test_code, sizeof(user_task_sysexit_test_code));
 
     task_count = 5;
