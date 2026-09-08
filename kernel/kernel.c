@@ -733,18 +733,13 @@ static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     return 0xAAAA;
 }
 
+// Validasi pointer/len TIDAK LAGI dilakukan di sini -- dipindah ke
+// syscall_handler() lewat metadata has_user_ptr (lihat syscall_desc_t).
+// Saat fungsi ini dipanggil, buf_ptr/len SUDAH dipastikan valid untuk
+// diakses ring 3 oleh dispatcher, sebelum dispatch terjadi.
 static uint64_t sys_write(uint64_t buf_ptr, uint64_t len, uint64_t arg2)
 {
     (void)arg2;
-
-    if (!is_valid_user_ptr(g_current_pml4_phys, buf_ptr, len)) {
-        serial_write("sys_write(): DITOLAK -- pointer/len tidak valid (ptr=");
-        serial_write_hex(buf_ptr);
-        serial_write(", len=");
-        serial_write_hex(len);
-        serial_write(")\r\n");
-        return (uint64_t)-1;
-    }
 
     const char *buf = (const char *)buf_ptr;
     for (uint64_t i = 0; i < len; i++) {
@@ -777,10 +772,24 @@ static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2)
 
 typedef uint64_t (*syscall_fn_t)(uint64_t, uint64_t, uint64_t);
 
-static const syscall_fn_t syscall_table[SYSCALL_COUNT] = {
-    [SYS_TEST]  = sys_test,
-    [SYS_WRITE] = sys_write,
-    [SYS_EXIT]  = sys_exit,
+// Metadata per-syscall -- Layer 8 checkpoint: centralize syscall
+// pointer validation. has_user_ptr berarti spesifik: arg0 (rdi)
+// adalah user pointer, arg1 (rsi) adalah len, KEDUANYA divalidasi
+// oleh syscall_handler() SEBELUM dispatch ke fn. Ini BUKAN framework
+// validasi pointer generik -- baru mendukung SATU pola (ptr di arg0,
+// len di arg1) karena baru SYS_WRITE yang butuh. Kalau nanti ada
+// syscall dengan pola beda (pointer bukan di arg0, atau lebih dari
+// satu pointer), field ini perlu digeneralisasi -- BUKAN dipaksakan
+// sekarang.
+typedef struct {
+    syscall_fn_t fn;
+    bool has_user_ptr;  // arg0=user_ptr, arg1=len; validate before dispatch
+} syscall_desc_t;
+
+static const syscall_desc_t syscall_table[SYSCALL_COUNT] = {
+    [SYS_TEST]  = { sys_test,  false },
+    [SYS_WRITE] = { sys_write, true  },
+    [SYS_EXIT]  = { sys_exit,  false },
 };
 
 // Dispatch syscall (int 0x80). context->rax = nomor syscall saat
@@ -789,7 +798,7 @@ static void syscall_handler(struct exception_context *context)
 {
     uint64_t syscall_num = context->rax;
 
-    if (syscall_num >= SYSCALL_COUNT || syscall_table[syscall_num] == 0)
+    if (syscall_num >= SYSCALL_COUNT || syscall_table[syscall_num].fn == 0)
     {
         serial_write("SYSCALL tidak dikenal: ");
         serial_write_hex(syscall_num);
@@ -798,7 +807,23 @@ static void syscall_handler(struct exception_context *context)
         return;
     }
 
-    context->rax = syscall_table[syscall_num](
+    if (syscall_table[syscall_num].has_user_ptr)
+    {
+        if (!is_valid_user_ptr(g_current_pml4_phys, context->rdi, context->rsi))
+        {
+            serial_write("syscall_handler(): DITOLAK -- pointer/len tidak valid (syscall=");
+            serial_write_hex(syscall_num);
+            serial_write(", ptr=");
+            serial_write_hex(context->rdi);
+            serial_write(", len=");
+            serial_write_hex(context->rsi);
+            serial_write(")\r\n");
+            context->rax = (uint64_t)-1;
+            return;
+        }
+    }
+
+    context->rax = syscall_table[syscall_num].fn(
         context->rdi,
         context->rsi,
         context->rdx
