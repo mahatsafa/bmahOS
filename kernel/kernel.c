@@ -1510,6 +1510,62 @@ static void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t
     pt_virt[pt_idx] = (paddr & VMM_ENTRY_ADDR_MASK) | flags;
 }
 
+// Layer 8 checkpoint 1 (dormant, belum dipanggil manapun): bikin PML4
+// baru untuk SATU user task, cuma berisi entri kernel-shared yang
+// diperlukan (HHDM, kernel higher-half, MMIO APIC/IOAPIC, kheap).
+// SENGAJA TIDAK menyalin semua 512 entri PML4 -- terbukti lewat
+// vmm_dump_pml4() nyata (boot log) bahwa PML4[0x000] mencakup SELURUH
+// rentang alamat rendah 0x0-0x7FFFFFFFFF, tempat SEMUA user task
+// (USER_CODE_VADDR dkk) berada. Kalau index itu ikut disalin, PML4
+// baru akan menunjuk ke PDPT/PD/PT YANG SAMA dengan task lain --
+// isolasi nol walau kelihatannya sudah punya PML4 terpisah. Index di
+// bawah ini WAJIB diverifikasi ulang lewat vmm_dump_pml4() kalau
+// layout memori (HHDM offset, KHEAP_START, dst) berubah di masa
+// depan -- ini bukan konstanta arsitektural x86, murni hasil
+// observasi layout bmahOS SEKARANG.
+#define VMM_SHARED_PML4_IDX_HHDM     0x100  // hhdm_offset region
+#define VMM_SHARED_PML4_IDX_APIC1    0x120  // MMIO Local APIC/IOAPIC
+#define VMM_SHARED_PML4_IDX_APIC2    0x122  // MMIO Local APIC/IOAPIC
+#define VMM_SHARED_PML4_IDX_KHEAP    0x130  // KHEAP_START region
+#define VMM_SHARED_PML4_IDX_KERNEL   0x1FF  // kernel higher-half (.text/.data)
+
+static uint64_t vmm_clone_kernel_pml4(uint64_t kernel_pml4_phys)
+{
+    uint64_t new_pml4_phys = pmm_alloc();
+    if (new_pml4_phys == 0) {
+        serial_write("vmm_clone_kernel_pml4(): pmm_alloc() FAILED\r\n");
+        return 0;
+    }
+
+    uint64_t *new_pml4_virt = (uint64_t *)(new_pml4_phys + hhdm_offset);
+    for (uint64_t i = 0; i < 512; i++) {
+        new_pml4_virt[i] = 0;
+    }
+
+    uint64_t *kernel_pml4_virt = (uint64_t *)(kernel_pml4_phys + hhdm_offset);
+
+    static const uint64_t shared_indices[] = {
+        VMM_SHARED_PML4_IDX_HHDM,
+        VMM_SHARED_PML4_IDX_APIC1,
+        VMM_SHARED_PML4_IDX_APIC2,
+        VMM_SHARED_PML4_IDX_KHEAP,
+        VMM_SHARED_PML4_IDX_KERNEL,
+    };
+
+    for (uint64_t i = 0; i < sizeof(shared_indices) / sizeof(shared_indices[0]); i++) {
+        uint64_t idx = shared_indices[i];
+        new_pml4_virt[idx] = kernel_pml4_virt[idx];
+    }
+
+    // Index 0 (alamat rendah, tempat user code/stack) SENGAJA
+    // dibiarkan 0 (belum present) -- akan terisi fresh saat vmm_map()
+    // dipanggil untuk memetakan user code/stack milik task ini,
+    // lewat vmm_get_or_create_table() yang otomatis alokasi PDPT/PD/PT
+    // baru karena entry-nya belum present di PML4 baru ini.
+
+    return new_pml4_phys;
+}
+
 // ===============================================================
 // Syscall pointer validation (Layer 7 lanjutan)
 //
@@ -1694,6 +1750,15 @@ typedef struct {
     // sebagai RSP awal ring 3, tidak perlu dihitung ulang).
     uint64_t user_entry;
     uint64_t user_stack_top;
+    // Layer 8 checkpoint 1 (dormant): PML4 physical address milik
+    // task ini. Task kernel (task_create()) akan diisi dengan PML4
+    // global (read_cr3() awal) -- TIDAK PUNYA address space sendiri,
+    // sengaja tetap share. Task user (task_create_user()) akan diisi
+    // hasil vmm_clone_kernel_pml4() -- PML4 privat per task. BELUM
+    // dipakai schedule()/context_switch() di checkpoint ini -- field
+    // ini ada tapi tidak mengubah behavior apa pun sampai checkpoint
+    // berikutnya.
+    uint64_t pml4_phys;
 } task_t;
 
 // Siapkan stack awal task baru supaya context_switch() bisa
