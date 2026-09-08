@@ -718,7 +718,8 @@ static bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len);
 
 #define SYS_TEST  0
 #define SYS_WRITE 1
-#define SYSCALL_COUNT 2
+#define SYS_EXIT  2
+#define SYSCALL_COUNT 3
 
 static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2)
 {
@@ -753,11 +754,33 @@ static uint64_t sys_write(uint64_t buf_ptr, uint64_t len, uint64_t arg2)
     return len;
 }
 
+// Task minta mengakhiri dirinya sendiri secara permanen dari ring 3.
+// Delegasi murni ke task_exit() (Layer 5) -- TIDAK ADA mekanisme exit
+// kedua. task_exit() dipanggil dari sini di dalam INTERRUPT context
+// (int 0x80 gate sudah cli otomatis), tapi ini AMAN: context_switch()
+// yang dipanggil task_exit()->schedule() cuma menukar rsp lalu ret --
+// stack lama (termasuk frame isr128->syscall_handler->sys_exit di
+// dalamnya) ditinggalkan total begitu context switch terjadi, tidak
+// pernah "kembali" lagi. Beda dengan task_sleep()/task_wait_for()
+// yang MEMANG akan resume tepat di titik pemanggilan.
+static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2)
+{
+    (void)arg0; (void)arg1; (void)arg2;
+
+    task_exit();
+
+    // Tidak pernah sampai sini kalau context_switch() berhasil pergi
+    // ke task lain. Kalau task ini satu-satunya yang hidup,
+    // task_exit() sudah hlt selamanya duluan sebelum baris ini.
+    return 0;
+}
+
 typedef uint64_t (*syscall_fn_t)(uint64_t, uint64_t, uint64_t);
 
 static const syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     [SYS_TEST]  = sys_test,
     [SYS_WRITE] = sys_write,
+    [SYS_EXIT]  = sys_exit,
 };
 
 // Dispatch syscall (int 0x80). context->rax = nomor syscall saat
