@@ -714,7 +714,7 @@ static uint64_t read_ss(void)
 // di bawah (dekat vmm_map(), butuh VMM_FLAG_* dan hhdm_offset yang
 // didefinisikan di situ), tapi sys_write() di section syscall ini
 // perlu memanggilnya lebih dulu secara urutan baris.
-static bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len);
+static bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len, bool require_writable);
 
 #define SYS_TEST  0
 #define SYS_WRITE 1
@@ -809,7 +809,7 @@ static void syscall_handler(struct exception_context *context)
 
     if (syscall_table[syscall_num].has_user_ptr)
     {
-        if (!is_valid_user_ptr(g_current_pml4_phys, context->rdi, context->rsi))
+        if (!is_valid_user_ptr(g_current_pml4_phys, context->rdi, context->rsi, false))
         {
             serial_write("syscall_handler(): DITOLAK -- pointer/len tidak valid (syscall=");
             serial_write_hex(syscall_num);
@@ -1583,7 +1583,14 @@ static uint64_t vmm_clone_kernel_pml4(uint64_t kernel_pml4_phys)
 // perantara SELALU diberi US=1 oleh vmm_get_or_create_table() (lihat
 // komentarnya) sehingga tidak bisa dipakai membedakan kernel vs user
 // page.
-static bool vmm_is_user_page(uint64_t pml4_phys, uint64_t vaddr)
+// Checkpoint permission: require_writable menambahkan syarat WRITABLE
+// DI ATAS syarat USER, bukan menggantikannya -- pemanggil yang minta
+// require_writable=true tetap harus lolos cek USER seperti biasa,
+// baru kemudian PTE juga wajib punya VMM_FLAG_WRITABLE. Halaman non-
+// writable (mis. hipotetis code page read-only) tetap valid diakses
+// kalau require_writable=false (dipakai untuk syscall yang membaca
+// dari user, seperti SYS_WRITE).
+static bool vmm_is_user_page(uint64_t pml4_phys, uint64_t vaddr, bool require_writable)
 {
     uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
     uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
@@ -1617,13 +1624,21 @@ static bool vmm_is_user_page(uint64_t pml4_phys, uint64_t vaddr)
         return false;
     }
 
-    return (pt_entry & VMM_FLAG_USER) != 0;
+    if ((pt_entry & VMM_FLAG_USER) == 0) {
+        return false;
+    }
+
+    if (require_writable && (pt_entry & VMM_FLAG_WRITABLE) == 0) {
+        return false;
+    }
+
+    return true;
 }
 
 // ptr/len byte-granular dari sudut pandang pemanggil syscall, tapi
 // paging bekerja per-halaman (4KB) -- jadi validasi SEMUA halaman
 // yang disentuh oleh range [ptr, ptr+len), bukan cuma byte pertama.
-static bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len)
+static bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len, bool require_writable)
 {
     if (len == 0) {
         return true;
@@ -1638,7 +1653,7 @@ static bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len)
     uint64_t page_end = (end - 1) & ~(PMM_PAGE_SIZE - 1);
 
     for (uint64_t page = page_start; page <= page_end; page += PMM_PAGE_SIZE) {
-        if (!vmm_is_user_page(pml4_phys, page)) {
+        if (!vmm_is_user_page(pml4_phys, page, require_writable)) {
             return false;
         }
     }
