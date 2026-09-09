@@ -1759,6 +1759,13 @@ typedef struct {
     // ini ada tapi tidak mengubah behavior apa pun sampai checkpoint
     // berikutnya.
     uint64_t pml4_phys;
+    // Checkpoint allocator: alamat virtual berikutnya yang bebas
+    // dipakai di address space task ini (bump allocator, TIDAK ADA
+    // free/reclaim). Hanya bermakna untuk user task -- task kernel
+    // tidak pernah exec() sehingga field ini tidak diinisialisasi
+    // untuk task_create() biasa. Nilai awal diisi USER_VADDR_ALLOC_BASE
+    // oleh task_create_user().
+    uint64_t next_free_vaddr;
 } task_t;
 
 // Siapkan stack awal task baru supaya context_switch() bisa
@@ -1929,6 +1936,42 @@ static void user_task_trampoline(void)
 // index-nya secara virtual tapi menabrak data lain di physical
 // memory kalau alignment tidak pas -- makanya DICEGAH di awal, bukan
 // dibiarkan lalu diharapkan #PF menangkapnya).
+// Checkpoint allocator: bump allocator sederhana untuk alamat
+// virtual per-task. TIDAK PERNAH membebaskan alamat (tidak ada
+// free-list/coalescing) -- cukup untuk exec() yang mengalokasikan
+// code/data/stack sekali di awal hidup task, lalu dibuang total saat
+// task exit. Bukan konstanta arsitektural MMU -- ini murni policy
+// allocator saat ini, aman direvisi naik kalau kebutuhan berubah.
+#define USER_VADDR_ALLOC_BASE 0x0000000000400000ULL
+#define USER_VADDR_LIMIT      0x0000000010000000ULL  // batas eksklusif, 256 MiB
+
+// Alokasikan `size` byte alamat virtual bebas di address space milik
+// `task`, page-aligned ke atas. Mengembalikan base alamat, atau 0
+// kalau gagal (overflow aritmetika ATAU melewati USER_VADDR_LIMIT).
+// TIDAK melakukan mapping fisik apa pun -- itu tetap tanggung jawab
+// vmm_map() terpisah, dipanggil caller setelah alamat ini didapat.
+static uint64_t vmm_alloc_vaddr(task_t *task, size_t size)
+{
+    uint64_t aligned_size = (size + (PMM_PAGE_SIZE - 1)) & ~(PMM_PAGE_SIZE - 1);
+
+    // Overflow check SEBELUM penjumlahan -- jangan percaya
+    // (next_free_vaddr + aligned_size) > LIMIT kalau penjumlahannya
+    // sendiri bisa wraparound duluan.
+    if (aligned_size > USER_VADDR_LIMIT - task->next_free_vaddr) {
+        serial_write("vmm_alloc_vaddr(): USER_VADDR_LIMIT exceeded (next_free=");
+        serial_write_hex(task->next_free_vaddr);
+        serial_write(", requested=");
+        serial_write_hex(aligned_size);
+        serial_write(")\r\n");
+        return 0;
+    }
+
+    uint64_t base = task->next_free_vaddr;
+    task->next_free_vaddr += aligned_size;
+
+    return base;
+}
+
 static void task_create_user(
     task_t *task,
     uint64_t pml4_phys,
@@ -1977,6 +2020,11 @@ static void task_create_user(
     // (identik task kernel) -- isolasi sungguhan (PML4 privat per
     // user task) baru aktif di checkpoint 3.
     task->pml4_phys = pml4_phys;
+    // Checkpoint allocator: mulai dari basis alokasi -- dormant,
+    // belum ada pemanggil vmm_alloc_vaddr() manapun di checkpoint
+    // ini, task_create_user() masih menerima user_code_vaddr/
+    // user_stack_vaddr eksplisit dari caller seperti sebelumnya.
+    task->next_free_vaddr = USER_VADDR_ALLOC_BASE;
 
     // --- Halaman user code + stack (ring 3, VMM_FLAG_USER) ---
     uint64_t user_code_frame = pmm_alloc();
