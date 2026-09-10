@@ -1896,6 +1896,37 @@ static const uint8_t user_task_syswrite_test_code[] = {
 
     0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x0A
 };
+
+// Checkpoint spawn (B) -- uji nyata: BEDA dari user_task_syswrite_test_code
+// di atas, array ini punya immediate address yang dihitung untuk base
+// USER_VADDR_ALLOC_BASE (0x400000), BUKAN 0x600000. Ini bukan bug
+// spawn() -- ini pembelajaran: kode biner mentah yang ditulis manual
+// TIDAK position-independent, pointer string di dalamnya adalah
+// alamat absolut yang cuma benar untuk SATU base tertentu. spawn()
+// yang dipakai untuk menjalankan image dari base MANAPUN (hasil
+// vmm_alloc_vaddr()) butuh image yang memang dirakit untuk base itu,
+// atau (nanti) mekanisme relokasi/PIC -- di luar lingkup checkpoint
+// spawn generik pertama, dicatat sebagai konteks penting, bukan utang
+// yang perlu diselesaikan sekarang karena base allocator sudah tetap
+// (USER_VADDR_ALLOC_BASE) sejauh ini.
+static const uint8_t user_task_spawn_test_code[] = {
+    0xB8, 0x01, 0x00, 0x00, 0x00,
+    0xBF, 0x33, 0x00, 0x40, 0x00,
+    0xBE, 0x06, 0x00, 0x00, 0x00,
+    0xBA, 0x00, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
+
+    0xB8, 0x01, 0x00, 0x00, 0x00,
+    0x48, 0xBF, 0x00, 0x00, 0x00, 0x80,
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0xBE, 0x05, 0x00, 0x00, 0x00,
+    0xBA, 0x00, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
+
+    0xEB, 0xFE,
+
+    0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x0A
+};
 // Layer 8: uji SYS_EXIT. Urutan: SYS_WRITE("before exit\n"),
 // SYS_EXIT(), SYS_WRITE("after exit\n") [TIDAK BOLEH PERNAH
 // TEREKSEKUSI], jmp $ (fallback kalau somehow lolos). Offset string
@@ -3067,6 +3098,17 @@ void kmain(void)
                       user_task_sysexit_test_code, sizeof(user_task_sysexit_test_code));
 
     task_count = 5;
+
+    // Checkpoint spawn (B) -- uji nyata pertama: buat task ke-6 (slot
+    // index 5) LEWAT spawn() generik, BUKAN task_create_user() manual.
+    // Image yang dipakai SENGAJA sama dengan task 3
+    // (user_task_syswrite_test_code, mencetak "hello\n") -- bukti yang
+    // diharapkan: "hello" muncul DUA KALI di boot log (task 3 lama +
+    // task 5 baru), dari dua PML4 privat yang BERBEDA (isolasi tetap
+    // terjaga), dengan alamat code/stack dari vmm_alloc_vaddr() (bukan
+    // konstanta USER_CODE_VADDR* manual seperti task 0-4).
+    spawn(user_task_spawn_test_code, sizeof(user_task_spawn_test_code));
+
     serial_write("Task A, B, dan user task dibuat, mulai jalankan lewat scheduler...\r\n");
     serial_write("\r\n");
 
