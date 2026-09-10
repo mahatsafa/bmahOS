@@ -257,6 +257,81 @@ typedef struct semaphore semaphore_t;
 static void sem_wait(semaphore_t *sem);
 static void sem_post(semaphore_t *sem);
 
+// Checkpoint PCI: baca 1 register 32-bit dari PCI configuration space
+// lewat Legacy Configuration Mechanism #1 (CONFIG_ADDRESS/CONFIG_DATA,
+// port 0xCF8/0xCFC) -- didukung universal di x86 (termasuk VMware),
+// tidak butuh parsing tabel ACPI MCFG seperti PCIe Enhanced Config
+// Access Mechanism. offset WAJIB word-aligned (kelipatan 4) -- bit
+// 1-0 CONFIG_ADDRESS selalu 00, caller yang salah offset akan diam-
+// diam dibulatkan ke bawah oleh mask di bawah, bukan error eksplisit.
+#define PCI_CONFIG_ADDRESS 0xCF8
+#define PCI_CONFIG_DATA    0xCFC
+
+static uint32_t pci_config_read32(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset)
+{
+    uint32_t address =
+        (1U << 31) |
+        ((uint32_t)bus << 16) |
+        ((uint32_t)device << 11) |
+        ((uint32_t)function << 8) |
+        ((uint32_t)offset & 0xFC);
+
+    outl(PCI_CONFIG_ADDRESS, address);
+    return inl(PCI_CONFIG_DATA);
+}
+
+// Checkpoint PCI: scan brute-force SELURUH kombinasi bus/device/
+// function (256 x 32 x 8 = 65536 probe), TANPA optimisasi multi-
+// function header (skip function 1-7 kalau device bukan multi-
+// function) -- checkpoint pertama sengaja dibuat sesempit mungkin,
+// murni discovery + log, TIDAK ADA pci_device_t/registry/lookup API/
+// driver apa pun. Vendor ID == 0xFFFF berarti device tidak ada di
+// slot itu (satu-satunya kondisi skip yang kita pakai).
+static void pci_scan_and_log(void)
+{
+    serial_write("PCI: mulai scan bus/device/function...\r\n");
+
+    for (uint32_t bus = 0; bus < 256; bus++) {
+        for (uint32_t device = 0; device < 32; device++) {
+            for (uint32_t function = 0; function < 8; function++) {
+                uint32_t reg0 = pci_config_read32((uint8_t)bus, (uint8_t)device, (uint8_t)function, 0x00);
+                uint16_t vendor_id = (uint16_t)(reg0 & 0xFFFF);
+
+                if (vendor_id == 0xFFFF) {
+                    continue;
+                }
+
+                uint16_t device_id = (uint16_t)((reg0 >> 16) & 0xFFFF);
+
+                uint32_t reg8 = pci_config_read32((uint8_t)bus, (uint8_t)device, (uint8_t)function, 0x08);
+                uint8_t prog_if    = (uint8_t)((reg8 >> 8) & 0xFF);
+                uint8_t subclass   = (uint8_t)((reg8 >> 16) & 0xFF);
+                uint8_t class_code = (uint8_t)((reg8 >> 24) & 0xFF);
+
+                serial_write("PCI: bus=");
+                serial_write_hex(bus);
+                serial_write(" device=");
+                serial_write_hex(device);
+                serial_write(" function=");
+                serial_write_hex(function);
+                serial_write(" vendor=");
+                serial_write_hex(vendor_id);
+                serial_write(" device_id=");
+                serial_write_hex(device_id);
+                serial_write(" class=");
+                serial_write_hex(class_code);
+                serial_write(" subclass=");
+                serial_write_hex(subclass);
+                serial_write(" prog_if=");
+                serial_write_hex(prog_if);
+                serial_write("\r\n");
+            }
+        }
+    }
+
+    serial_write("PCI: scan selesai.\r\n");
+}
+
 // ============================================================
 // ACPI: RSDP -> RSDT/XSDT -> MADT parsing
 // Base revision Limine kita = 6, artinya RSDP address dikembalikan
@@ -2795,6 +2870,8 @@ static void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t v
 void kmain(void)
 {
     serial_init();
+
+    pci_scan_and_log();
 
     gdt_init();
 
