@@ -24,6 +24,12 @@ static uint64_t hhdm_offset = 0;
 // read_cr3(), dipakai syscall (mis. sys_write) untuk validasi
 // pointer user lewat is_valid_user_ptr().
 static uint64_t g_current_pml4_phys = 0;
+// Checkpoint spawn: PML4 kernel ASLI (hasil read_cr3() sekali di awal
+// boot), TIDAK PERNAH berubah setelah diisi -- beda dari
+// g_current_pml4_phys yang berubah tiap schedule() mengikuti task
+// aktif. Ini sumber kebenaran stabil untuk spawn()/vmm_clone_kernel_pml4()
+// supaya tidak perlu terima kernel_pml4_phys sebagai parameter caller.
+static uint64_t g_kernel_pml4_phys = 0;
 
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_memmap_request memmap_request = {
@@ -2706,6 +2712,7 @@ void kmain(void)
 
     uint64_t pml4_phys = read_cr3();
     g_current_pml4_phys = pml4_phys;
+    g_kernel_pml4_phys = pml4_phys;
     serial_write("CR3 (PML4 physical addr): ");
     serial_write_hex(pml4_phys);
     serial_write("\r\n");
