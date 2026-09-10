@@ -218,6 +218,32 @@ static inline uint8_t inb(uint16_t port)
     return value;
 }
 
+// Checkpoint PCI: varian 32-bit outb/inb -- dibutuhkan karena PCI
+// configuration space diakses lewat CONFIG_ADDRESS/CONFIG_DATA yang
+// keduanya register 32-bit (port 0xCF8/0xCFC), bukan 8-bit seperti
+// PIC/PIT/serial yang sudah ada.
+static inline void outl(uint16_t port, uint32_t value)
+{
+    __asm__ volatile (
+        "outl %0, %1"
+        :
+        : "a"(value), "Nd"(port)
+    );
+}
+
+static inline uint32_t inl(uint16_t port)
+{
+    uint32_t value;
+
+    __asm__ volatile (
+        "inl %1, %0"
+        : "=a"(value)
+        : "Nd"(port)
+    );
+
+    return value;
+}
+
 static void serial_write(const char *s);
 static void serial_write_hex(uint64_t value);
 static void lapic_send_eoi(void);
