@@ -2082,8 +2082,16 @@ static void task_create_user(
     uint64_t user_code_frame = pmm_alloc();
     uint64_t user_stack_frame = pmm_alloc();
 
+    // Checkpoint permission (bagian 1): code TIDAK LAGI writable --
+    // WRITABLE dihapus dari mapping code, HANYA stack yang tetap
+    // writable. Copy image tetap berhasil karena dilakukan lewat HHDM
+    // (physical frame langsung), bukan lewat PTE user code_vaddr ini.
+    // Belum ada NX/XD (EFER.NXE belum pernah diset di boot sequence
+    // bmahOS) -- jadi stack MASIH bisa dieksekusi sebagai kode kalau
+    // task melompat ke sana; itu checkpoint permission bagian 2
+    // terpisah, butuh setup MSR IA32_EFER dulu.
     vmm_map(pml4_phys, user_code_vaddr, user_code_frame,
-            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+            VMM_FLAG_PRESENT | VMM_FLAG_USER);
     vmm_map(pml4_phys, user_stack_vaddr, user_stack_frame,
             VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
 
@@ -2215,8 +2223,10 @@ static task_t *spawn(const uint8_t *image, size_t image_len)
     uint64_t code_frame = pmm_alloc();
     uint64_t stack_frame = pmm_alloc();
 
+    // Checkpoint permission (bagian 1): code read-only, sama seperti
+    // task_create_user() -- lihat komentar di sana untuk detail.
     vmm_map(pml4_phys, code_vaddr, code_frame,
-            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+            VMM_FLAG_PRESENT | VMM_FLAG_USER);
     vmm_map(pml4_phys, stack_vaddr, stack_frame,
             VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
 
@@ -3005,12 +3015,24 @@ void kmain(void)
     uint64_t user_code_frame = pmm_alloc();
     uint64_t user_stack_frame = pmm_alloc();
 
+    // Checkpoint permission (bagian 1): code read-only, sama seperti
+    // task_create_user()/spawn().
     vmm_map(pml4_phys, USER_CODE_VADDR, user_code_frame,
-            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+            VMM_FLAG_PRESENT | VMM_FLAG_USER);
     vmm_map(pml4_phys, USER_STACK_VADDR, user_stack_frame,
             VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
 
-    uint8_t *user_code_dst = (uint8_t *)USER_CODE_VADDR;
+    // Checkpoint permission (bagian 1) FIX: dulu kode ini menulis
+    // lewat alamat virtual USER_CODE_VADDR langsung -- kebetulan tetap
+    // berhasil sebelumnya karena PML4 task ini SAMA dengan CR3 aktif
+    // saat kmain() menjalankan baris ini (task pertama, sebelum PML4
+    // privat dipakai di task manapun). Begitu code page jadi read-only
+    // (VMM_FLAG_WRITABLE dihapus di atas), menulis lewat virtual
+    // address akan #PF write-to-read-only walau CR3 aktif sama persis
+    // -- PTE tidak peduli siapa yang menulis, cuma peduli bit WRITABLE.
+    // Fix: tulis lewat HHDM (physical frame + hhdm_offset), pola sama
+    // seperti task_create_user()/spawn() sejak Layer 8 checkpoint 3.
+    uint8_t *user_code_dst = (uint8_t *)(user_code_frame + hhdm_offset);
     for (uint64_t i = 0; i < sizeof(user_code); i++) {
         user_code_dst[i] = user_code[i];
     }
