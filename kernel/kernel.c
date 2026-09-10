@@ -2088,6 +2088,135 @@ static void task_create_user(
     serial_write("\r\n");
 }
 
+// Checkpoint spawn (B): primitive generik pertama untuk membuat task
+// user baru dari image di memori -- MENGGANTIKAN pola hardcoded
+// task_create_user(&tasks[N], pml4_taskN, USER_CODE_VADDRn, ...) yang
+// dipakai kmain() sejauh ini. Perbedaan utama dari task_create_user():
+//   - Tidak menerima pml4_phys dari caller -- selalu clone dari
+//     g_kernel_pml4_phys (source of truth stabil, checkpoint A).
+//   - Tidak menerima alamat virtual dari caller -- selalu dapat dari
+//     vmm_alloc_vaddr() (checkpoint allocator), bukan konstanta
+//     USER_CODE_VADDR/USER_STACK_VADDR manual.
+//   - Slot task diambil dari tasks[task_count++] -- TIDAK ADA reuse
+//     slot DEAD (utang teknis eksplisit, ditunda).
+// SENGAJA BELUM ditangani di checkpoint ini (utang teknis eksplisit):
+//   - Code/data/stack permission masih writable semua (tidak ada
+//     read-only code / NX) -- checkpoint permission terpisah nanti.
+//   - Rollback kalau alokasi gagal di tengah jalan -- FATAL+halt saja,
+//     tidak membebaskan frame yang sudah terlanjur dialokasikan.
+//   - exec() (mengganti address space task yang sedang berjalan) --
+//     tidak dibahas sama sekali, spawn() selalu bikin task BARU.
+// Batasan yang dipertahankan dari task_create_user(): image_len tidak
+// boleh melebihi 1 halaman (code cuma dialokasikan 1 frame fisik) --
+// bukan generalisasi ke image besar, itu di luar lingkup checkpoint
+// "spawn generik pertama".
+static task_t *spawn(const uint8_t *image, size_t image_len)
+{
+    if (task_count >= MAX_TASKS) {
+        serial_write("spawn(): FATAL -- MAX_TASKS tercapai (");
+        serial_write_hex(task_count);
+        serial_write("), dibatalkan.\r\n");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    if (image_len > PMM_PAGE_SIZE) {
+        serial_write("spawn(): FATAL -- image_len melebihi 1 halaman (");
+        serial_write_hex(image_len);
+        serial_write(" > ");
+        serial_write_hex(PMM_PAGE_SIZE);
+        serial_write("), dibatalkan.\r\n");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    task_t *task = &tasks[task_count];
+
+    uint64_t pml4_phys = vmm_clone_kernel_pml4(g_kernel_pml4_phys);
+
+    // next_free_vaddr HARUS di-set sebelum vmm_alloc_vaddr() dipanggil
+    // -- fungsi itu cuma membaca+memajukan field ini, tidak pernah
+    // menginisialisasinya sendiri.
+    task->next_free_vaddr = USER_VADDR_ALLOC_BASE;
+
+    uint64_t code_vaddr = vmm_alloc_vaddr(task, image_len);
+    if (code_vaddr == 0) {
+        serial_write("spawn(): FATAL -- vmm_alloc_vaddr() gagal untuk code, dibatalkan.\r\n");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    uint64_t stack_vaddr = vmm_alloc_vaddr(task, PMM_PAGE_SIZE);
+    if (stack_vaddr == 0) {
+        serial_write("spawn(): FATAL -- vmm_alloc_vaddr() gagal untuk stack, dibatalkan.\r\n");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    // --- Kernel stack task ini (dipakai context_switch() & RSP0) ---
+    // Ukuran sama seperti seluruh call site task_create_user() yang
+    // ada sekarang (4096) -- bukan angka baru.
+    uint64_t kstack_base = (uint64_t)kmalloc(4096);
+    uint64_t kstack_top = kstack_base + 4096;
+
+    uint64_t *sp = (uint64_t *)kstack_top;
+
+    sp--;
+    *sp = (uint64_t)user_task_trampoline;
+
+    for (int i = 0; i < 15; i++) {
+        sp--;
+        *sp = 0;
+    }
+
+    task->rsp = (uint64_t)sp;
+    task->rsp0 = kstack_top;
+    task->status = TASK_READY;
+    task->waiting_for_sem = 0;
+    task->is_user_task = true;
+    task->pml4_phys = pml4_phys;
+
+    // --- Halaman code + stack (ring 3, VMM_FLAG_USER) ---
+    uint64_t code_frame = pmm_alloc();
+    uint64_t stack_frame = pmm_alloc();
+
+    vmm_map(pml4_phys, code_vaddr, code_frame,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+    vmm_map(pml4_phys, stack_vaddr, stack_frame,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+
+    // Copy image via HHDM, BUKAN lewat code_vaddr -- alasan identik
+    // dengan fix Layer 8 checkpoint 3: pml4_phys milik task ini belum
+    // tentu sama dengan CR3 aktif saat spawn() dipanggil.
+    uint8_t *code_dst = (uint8_t *)(code_frame + hhdm_offset);
+    for (size_t i = 0; i < image_len; i++) {
+        code_dst[i] = image[i];
+    }
+
+    task->user_entry = code_vaddr;
+    task->user_stack_top = stack_vaddr + PMM_PAGE_SIZE;
+
+    serial_write("spawn(): task baru di slot ");
+    serial_write_hex(task_count);
+    serial_write(", kode (");
+    serial_write_hex(image_len);
+    serial_write(" byte) di ");
+    serial_write_hex(code_vaddr);
+    serial_write(", stack di ");
+    serial_write_hex(stack_vaddr);
+    serial_write(", rsp0 di ");
+    serial_write_hex(kstack_top);
+    serial_write("\r\n");
+
+    task_count++;
+
+    return task;
+}
+
 // Semaphore uji: count=1 -- simulasi 1 "slot" critical section yang
 // diperebutkan Task A dan B (lihat task_a_entry()/task_b_entry()).
 static semaphore_t test_sem = { .count = 1 };
