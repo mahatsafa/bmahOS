@@ -2887,6 +2887,14 @@ static void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t v
 // benar punya device terpasang bisa dilihat dari bit PI yang set DAN
 // PxSSTS port itu (belum dibaca di checkpoint ini -- checkpoint
 // berikutnya).
+static struct {
+    volatile uint32_t *hba;
+    uint32_t port;
+    uint64_t cmd_table_phys;
+    uint8_t *cmd_table_virt;
+    int initialized;
+} g_ahci_ata_port;
+
 static void ahci_port_init(volatile uint32_t *hba, uint32_t port)
 {
     uint32_t port_base = 0x100 + (port * 0x80);
@@ -2985,6 +2993,114 @@ static void ahci_port_init(volatile uint32_t *hba, uint32_t port)
     serial_write(" CTBA=");
     serial_write_hex(cmd_table_phys);
     serial_write(")\r\n");
+
+    g_ahci_ata_port.hba = hba;
+    g_ahci_ata_port.port = port;
+    g_ahci_ata_port.cmd_table_phys = cmd_table_phys;
+    g_ahci_ata_port.cmd_table_virt = cmd_table_virt;
+    g_ahci_ata_port.initialized = 1;
+}
+
+static void ahci_read_sector(void)
+{
+    if (!g_ahci_ata_port.initialized) {
+        serial_write("AHCI: read_sector: FATAL - port belum di-init\r\n");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    volatile uint32_t *hba = g_ahci_ata_port.hba;
+    uint32_t port = g_ahci_ata_port.port;
+    uint32_t port_base = 0x100 + (port * 0x80);
+
+    volatile uint32_t *pci_reg = &hba[(port_base + 0x38) / 4];
+    volatile uint32_t *ptfd    = &hba[(port_base + 0x20) / 4];
+    volatile uint32_t *pclb    = &hba[(port_base + 0x00) / 4];
+
+    uint64_t data_buf_phys = pmm_alloc();
+
+    if (data_buf_phys == 0) {
+        serial_write("AHCI: read_sector: FATAL - pmm_alloc gagal (data buffer)\r\n");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    uint8_t *data_buf_virt = (uint8_t *)(data_buf_phys + hhdm_offset);
+
+    for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
+        data_buf_virt[i] = 0xAA;
+    }
+
+    uint8_t *cmd_table_virt = g_ahci_ata_port.cmd_table_virt;
+
+    for (uint64_t i = 0; i < 0x90; i++) {
+        cmd_table_virt[i] = 0;
+    }
+
+    cmd_table_virt[0x00] = 0x27;
+    cmd_table_virt[0x01] = 0x80;
+    cmd_table_virt[0x02] = 0x25;
+    cmd_table_virt[0x03] = 0x00;
+    cmd_table_virt[0x04] = 0x00;
+    cmd_table_virt[0x05] = 0x00;
+    cmd_table_virt[0x06] = 0x00;
+    cmd_table_virt[0x07] = 0x40;
+    cmd_table_virt[0x08] = 0x00;
+    cmd_table_virt[0x09] = 0x00;
+    cmd_table_virt[0x0A] = 0x00;
+    cmd_table_virt[0x0B] = 0x00;
+    cmd_table_virt[0x0C] = 0x01;
+    cmd_table_virt[0x0D] = 0x00;
+    cmd_table_virt[0x0E] = 0x00;
+    cmd_table_virt[0x0F] = 0x00;
+
+    uint32_t *prdt0 = (uint32_t *)(cmd_table_virt + 0x80);
+    prdt0[0] = (uint32_t)(data_buf_phys & 0xFFFFFFFFu);
+    prdt0[1] = (uint32_t)(data_buf_phys >> 32);
+    prdt0[2] = 0;
+    prdt0[3] = 511u;
+
+    uint64_t cmd_list_phys_current = (uint64_t)(*pclb);
+    uint32_t *header0 = (uint32_t *)(cmd_list_phys_current + hhdm_offset);
+
+    header0[0] = 5u;
+    header0[0] |= (1u << 16);
+    header0[1] = 0;
+
+    serial_write("AHCI: read_sector: issuing command, port ");
+    serial_write_hex(port);
+    serial_write("\r\n");
+
+    *pci_reg = (1u << 0);
+
+    while (*pci_reg & (1u << 0)) {
+        /* poll PxCI sampai 0 - TIDAK ADA TIMEOUT, utang teknis */
+    }
+
+    uint32_t prdbc = header0[1];
+
+    serial_write("AHCI: read_sector: PRDBC (byte ditransfer hardware) = ");
+    serial_write_hex(prdbc);
+    serial_write("\r\n");
+
+    uint32_t tfd = *ptfd;
+
+    serial_write("AHCI: read_sector: done, PxTFD=");
+    serial_write_hex(tfd);
+    serial_write("\r\n");
+
+    if (tfd & 0x1) {
+        serial_write("AHCI: read_sector: WARNING - TFD.ERR set, data tidak valid\r\n");
+    } else {
+        serial_write("AHCI: read_sector: first 8 bytes = ");
+        for (int i = 0; i < 8; i++) {
+            serial_write_hex(data_buf_virt[i]);
+            serial_write(" ");
+        }
+        serial_write("\r\n");
+    }
 }
 
 static void ahci_probe_and_log(uint64_t pml4_phys)
@@ -3053,6 +3169,7 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
 
         if (sig == 0x00000101) {
             ahci_port_init(hba, i);
+            ahci_read_sector();
         }
     }
 }
