@@ -2756,6 +2756,25 @@ static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 #define IOAPIC_REG_IOWIN    0x10
 #define IOAPIC_REDTBL_BASE  0x10
 
+// Checkpoint AHCI (discovery): B/D/F di-HARDCODE berdasarkan hasil
+// nyata pci_scan_and_log() di VMware (bus=2 device=4 function=0,
+// vendor=0x15AD VMware, class=0x01 subclass=0x06 prog_if=0x01 = AHCI
+// SATA). UTANG TEKNIS EKSPLISIT: nanti perlu diganti pencarian
+// otomatis (scan ulang cari class/subclass/prog_if yang cocok),
+// supaya tidak rapuh kalau konfigurasi VM atau hardware fisik beda.
+#define AHCI_PCI_BUS      2
+#define AHCI_PCI_DEVICE   4
+#define AHCI_PCI_FUNCTION 0
+#define AHCI_BAR5_OFFSET  0x24
+
+#define AHCI_VIRT 0xFFFF910000002000ULL  // setelah IOAPIC_VIRT (+0x1000)
+
+#define AHCI_REG_CAP  0x00
+#define AHCI_REG_GHC  0x04
+#define AHCI_REG_IS   0x08
+#define AHCI_REG_PI   0x0C
+#define AHCI_REG_VS   0x10
+
 static uint32_t lapic_read(uint32_t reg)
 {
     volatile uint32_t *ptr = (volatile uint32_t *)(LAPIC_VIRT + reg);
@@ -2861,11 +2880,52 @@ static void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t v
     serial_write(" (redirection table diprogram)\r\n");
 }
 
+// Checkpoint AHCI (discovery): map BAR5 (ABAR) ke virtual seperti
+// LAPIC/IOAPIC, baca register generik HBA (CAP/GHC/IS/PI/VS), log ke
+// serial. MURNI observasi -- TIDAK ADA command list, FIS, port init,
+// atau baca/tulis sector apa pun di checkpoint ini. Port yang benar-
+// benar punya device terpasang bisa dilihat dari bit PI yang set DAN
+// PxSSTS port itu (belum dibaca di checkpoint ini -- checkpoint
+// berikutnya).
+static void ahci_probe_and_log(uint64_t pml4_phys)
+{
+    uint32_t bar5 = pci_config_read32(AHCI_PCI_BUS, AHCI_PCI_DEVICE, AHCI_PCI_FUNCTION, AHCI_BAR5_OFFSET);
+    uint64_t abar_phys = bar5 & 0xFFFFFFF0ULL;
 
+    serial_write("AHCI: BAR5 raw = ");
+    serial_write_hex(bar5);
+    serial_write(", ABAR phys = ");
+    serial_write_hex(abar_phys);
+    serial_write("\r\n");
 
+    if (abar_phys == 0) {
+        serial_write("AHCI: ABAR physical address 0, skip (device tidak ditemukan di B/D/F ini?)\r\n");
+        return;
+    }
 
+    vmm_map(pml4_phys, AHCI_VIRT, abar_phys,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE);
 
+    volatile uint32_t *hba = (volatile uint32_t *)AHCI_VIRT;
 
+    uint32_t cap = hba[AHCI_REG_CAP / 4];
+    uint32_t ghc = hba[AHCI_REG_GHC / 4];
+    uint32_t is_reg = hba[AHCI_REG_IS / 4];
+    uint32_t pi = hba[AHCI_REG_PI / 4];
+    uint32_t vs = hba[AHCI_REG_VS / 4];
+
+    serial_write("AHCI: CAP=");
+    serial_write_hex(cap);
+    serial_write(" GHC=");
+    serial_write_hex(ghc);
+    serial_write(" IS=");
+    serial_write_hex(is_reg);
+    serial_write(" PI=");
+    serial_write_hex(pi);
+    serial_write(" VS=");
+    serial_write_hex(vs);
+    serial_write("\r\n");
+}
 
 void kmain(void)
 {
@@ -3160,6 +3220,7 @@ void kmain(void)
     acpi_init();
     serial_write("=== APIC: enable Local APIC + program IOAPIC redirection ===\r\n");
     apic_enable_local_apic(pml4_phys);
+    ahci_probe_and_log(pml4_phys);
     ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, 0);
     serial_write("\r\n");
     pic_remap();
