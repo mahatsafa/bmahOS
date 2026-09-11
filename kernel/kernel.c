@@ -3001,13 +3001,34 @@ static void ahci_port_init(volatile uint32_t *hba, uint32_t port)
     g_ahci_ata_port.initialized = 1;
 }
 
-static void ahci_read_sector(void)
+#define AHCI_OK              0
+#define AHCI_ERR_LBA        -1
+#define AHCI_ERR_COUNT      -2
+#define AHCI_ERR_ALLOC      -3
+#define AHCI_ERR_NOT_INIT   -4
+#define AHCI_ERR_DEVICE     -5
+
+// Block-device style read: LBA + jumlah sektor -> buffer virtual (HHDM).
+// count dibatasi 1..8 (1 halaman fisik = 4096 byte = 8 sektor 512 byte),
+// karena buffer dialokasikan sebagai SATU frame pmm_alloc() -- dua
+// pmm_alloc() berturut-turut TIDAK dijamin contiguous secara fisik,
+// jadi kita sengaja tidak mendukung count > 8 di checkpoint ini
+// (utang teknis eksplisit, bukan lupa: perlu multi-PRDT/scatter-gather
+// untuk mendukung lebih dari 1 halaman).
+static int ahci_read(uint64_t lba, uint32_t count, uint8_t **out_buf)
 {
     if (!g_ahci_ata_port.initialized) {
-        serial_write("AHCI: read_sector: FATAL - port belum di-init\r\n");
-        for (;;) {
-            __asm__ volatile ("hlt");
-        }
+        return AHCI_ERR_NOT_INIT;
+    }
+
+    if (count == 0 || count > 8) {
+        return AHCI_ERR_COUNT;
+    }
+
+    uint64_t lba_end = lba + (uint64_t)(count - 1);
+
+    if (lba_end > 0x0000FFFFFFFFFFFFULL) {
+        return AHCI_ERR_LBA;
     }
 
     volatile uint32_t *hba = g_ahci_ata_port.hba;
@@ -3021,10 +3042,7 @@ static void ahci_read_sector(void)
     uint64_t data_buf_phys = pmm_alloc();
 
     if (data_buf_phys == 0) {
-        serial_write("AHCI: read_sector: FATAL - pmm_alloc gagal (data buffer)\r\n");
-        for (;;) {
-            __asm__ volatile ("hlt");
-        }
+        return AHCI_ERR_ALLOC;
     }
 
     uint8_t *data_buf_virt = (uint8_t *)(data_buf_phys + hhdm_offset);
@@ -3039,20 +3057,22 @@ static void ahci_read_sector(void)
         cmd_table_virt[i] = 0;
     }
 
+    uint32_t byte_count = count * 512u;
+
     cmd_table_virt[0x00] = 0x27;
     cmd_table_virt[0x01] = 0x80;
     cmd_table_virt[0x02] = 0x25;
     cmd_table_virt[0x03] = 0x00;
-    cmd_table_virt[0x04] = 0x00;
-    cmd_table_virt[0x05] = 0x00;
-    cmd_table_virt[0x06] = 0x00;
+    cmd_table_virt[0x04] = (uint8_t)((lba >> 0) & 0xFF);
+    cmd_table_virt[0x05] = (uint8_t)((lba >> 8) & 0xFF);
+    cmd_table_virt[0x06] = (uint8_t)((lba >> 16) & 0xFF);
     cmd_table_virt[0x07] = 0x40;
-    cmd_table_virt[0x08] = 0x00;
-    cmd_table_virt[0x09] = 0x00;
-    cmd_table_virt[0x0A] = 0x00;
+    cmd_table_virt[0x08] = (uint8_t)((lba >> 24) & 0xFF);
+    cmd_table_virt[0x09] = (uint8_t)((lba >> 32) & 0xFF);
+    cmd_table_virt[0x0A] = (uint8_t)((lba >> 40) & 0xFF);
     cmd_table_virt[0x0B] = 0x00;
-    cmd_table_virt[0x0C] = 0x01;
-    cmd_table_virt[0x0D] = 0x00;
+    cmd_table_virt[0x0C] = (uint8_t)(count & 0xFF);
+    cmd_table_virt[0x0D] = (uint8_t)((count >> 8) & 0xFF);
     cmd_table_virt[0x0E] = 0x00;
     cmd_table_virt[0x0F] = 0x00;
 
@@ -3060,7 +3080,7 @@ static void ahci_read_sector(void)
     prdt0[0] = (uint32_t)(data_buf_phys & 0xFFFFFFFFu);
     prdt0[1] = (uint32_t)(data_buf_phys >> 32);
     prdt0[2] = 0;
-    prdt0[3] = 511u;
+    prdt0[3] = (byte_count - 1);
 
     uint64_t cmd_list_phys_current = (uint64_t)(*pclb);
     uint32_t *header0 = (uint32_t *)(cmd_list_phys_current + hhdm_offset);
@@ -3069,38 +3089,21 @@ static void ahci_read_sector(void)
     header0[0] |= (1u << 16);
     header0[1] = 0;
 
-    serial_write("AHCI: read_sector: issuing command, port ");
-    serial_write_hex(port);
-    serial_write("\r\n");
-
     *pci_reg = (1u << 0);
 
     while (*pci_reg & (1u << 0)) {
         /* poll PxCI sampai 0 - TIDAK ADA TIMEOUT, utang teknis */
     }
 
-    uint32_t prdbc = header0[1];
-
-    serial_write("AHCI: read_sector: PRDBC (byte ditransfer hardware) = ");
-    serial_write_hex(prdbc);
-    serial_write("\r\n");
-
     uint32_t tfd = *ptfd;
 
-    serial_write("AHCI: read_sector: done, PxTFD=");
-    serial_write_hex(tfd);
-    serial_write("\r\n");
-
     if (tfd & 0x1) {
-        serial_write("AHCI: read_sector: WARNING - TFD.ERR set, data tidak valid\r\n");
-    } else {
-        serial_write("AHCI: read_sector: first 8 bytes = ");
-        for (int i = 0; i < 8; i++) {
-            serial_write_hex(data_buf_virt[i]);
-            serial_write(" ");
-        }
-        serial_write("\r\n");
+        return AHCI_ERR_DEVICE;
     }
+
+    *out_buf = data_buf_virt;
+
+    return AHCI_OK;
 }
 
 static void ahci_probe_and_log(uint64_t pml4_phys)
@@ -3169,7 +3172,41 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
 
         if (sig == 0x00000101) {
             ahci_port_init(hba, i);
-            ahci_read_sector();
+
+            uint8_t *test_buf = 0;
+            int rc = ahci_read(0, 1, &test_buf);
+
+            serial_write("AHCI: ahci_read(lba=0, count=1) rc=");
+            serial_write_hex((uint64_t)(int64_t)rc);
+            serial_write("\r\n");
+
+            if (rc == AHCI_OK) {
+                serial_write("AHCI: ahci_read: first 8 bytes = ");
+                for (int j = 0; j < 8; j++) {
+                    serial_write_hex(test_buf[j]);
+                    serial_write(" ");
+                }
+                serial_write("\r\n");
+            }
+
+            uint8_t *test_buf2 = 0;
+            int rc2 = ahci_read(0, 2, &test_buf2);
+
+            serial_write("AHCI: ahci_read(lba=0, count=2) rc=");
+            serial_write_hex((uint64_t)(int64_t)rc2);
+            serial_write("\r\n");
+
+            if (rc2 == AHCI_OK) {
+                serial_write("AHCI: ahci_read: byte offset 512 (awal sektor ke-2) = ");
+                serial_write_hex(test_buf2[512]);
+                serial_write("\r\n");
+            }
+
+            int rc3 = ahci_read(0, 9, &test_buf2);
+
+            serial_write("AHCI: ahci_read(lba=0, count=9, HARUS DITOLAK) rc=");
+            serial_write_hex((uint64_t)(int64_t)rc3);
+            serial_write("\r\n");
         }
     }
 }
