@@ -2925,6 +2925,32 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
     serial_write(" VS=");
     serial_write_hex(vs);
     serial_write("\r\n");
+
+    serial_write("AHCI: Port detection (PxSSTS/PxSIG per implemented port)\r\n");
+
+    for (uint32_t i = 0; i < 32; i++) {
+        if (!(pi & (1u << i))) {
+            continue;
+        }
+
+        uint32_t port_base = 0x100 + (i * 0x80);
+        uint32_t ssts = hba[(port_base + 0x28) / 4];
+        uint32_t det = ssts & 0xF;
+
+        if (det != 0x3) {
+            continue;
+        }
+
+        uint32_t sig = hba[(port_base + 0x24) / 4];
+
+        serial_write("AHCI: Port ");
+        serial_write_hex(i);
+        serial_write(" DET=3 (device attached) SSTS=");
+        serial_write_hex(ssts);
+        serial_write(" SIG=");
+        serial_write_hex(sig);
+        serial_write("\r\n");
+    }
 }
 
 void kmain(void)
