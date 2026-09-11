@@ -3172,41 +3172,6 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
 
         if (sig == 0x00000101) {
             ahci_port_init(hba, i);
-
-            uint8_t *test_buf = 0;
-            int rc = ahci_read(0, 1, &test_buf);
-
-            serial_write("AHCI: ahci_read(lba=0, count=1) rc=");
-            serial_write_hex((uint64_t)(int64_t)rc);
-            serial_write("\r\n");
-
-            if (rc == AHCI_OK) {
-                serial_write("AHCI: ahci_read: first 8 bytes = ");
-                for (int j = 0; j < 8; j++) {
-                    serial_write_hex(test_buf[j]);
-                    serial_write(" ");
-                }
-                serial_write("\r\n");
-            }
-
-            uint8_t *test_buf2 = 0;
-            int rc2 = ahci_read(0, 2, &test_buf2);
-
-            serial_write("AHCI: ahci_read(lba=0, count=2) rc=");
-            serial_write_hex((uint64_t)(int64_t)rc2);
-            serial_write("\r\n");
-
-            if (rc2 == AHCI_OK) {
-                serial_write("AHCI: ahci_read: byte offset 512 (awal sektor ke-2) = ");
-                serial_write_hex(test_buf2[512]);
-                serial_write("\r\n");
-            }
-
-            int rc3 = ahci_read(0, 9, &test_buf2);
-
-            serial_write("AHCI: ahci_read(lba=0, count=9, HARUS DITOLAK) rc=");
-            serial_write_hex((uint64_t)(int64_t)rc3);
-            serial_write("\r\n");
         }
     }
 }
