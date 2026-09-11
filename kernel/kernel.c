@@ -2887,6 +2887,106 @@ static void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t v
 // benar punya device terpasang bisa dilihat dari bit PI yang set DAN
 // PxSSTS port itu (belum dibaca di checkpoint ini -- checkpoint
 // berikutnya).
+static void ahci_port_init(volatile uint32_t *hba, uint32_t port)
+{
+    uint32_t port_base = 0x100 + (port * 0x80);
+
+    volatile uint32_t *pclb  = &hba[(port_base + 0x00) / 4];
+    volatile uint32_t *pclbu = &hba[(port_base + 0x04) / 4];
+    volatile uint32_t *pfb   = &hba[(port_base + 0x08) / 4];
+    volatile uint32_t *pfbu  = &hba[(port_base + 0x0C) / 4];
+    volatile uint32_t *pis   = &hba[(port_base + 0x10) / 4];
+    volatile uint32_t *pcmd  = &hba[(port_base + 0x18) / 4];
+    volatile uint32_t *ptfd  = &hba[(port_base + 0x20) / 4];
+
+    serial_write("AHCI: port_init start, port ");
+    serial_write_hex(port);
+    serial_write("\r\n");
+
+    uint32_t cmd = *pcmd;
+
+    if (cmd & (1u << 0)) {
+        cmd &= ~(1u << 0);
+        *pcmd = cmd;
+    }
+
+    while (*pcmd & (1u << 15)) {
+        /* poll PxCMD.CR sampai 0 - TIDAK ADA TIMEOUT, utang teknis */
+    }
+
+    cmd = *pcmd;
+
+    if (cmd & (1u << 4)) {
+        cmd &= ~(1u << 4);
+        *pcmd = cmd;
+    }
+
+    while (*pcmd & (1u << 14)) {
+        /* poll PxCMD.FR sampai 0 - TIDAK ADA TIMEOUT, utang teknis */
+    }
+
+    serial_write("AHCI: port_init: port stopped (CR=0, FR=0)\r\n");
+
+    uint64_t cmd_list_phys  = pmm_alloc();
+    uint64_t fis_phys       = pmm_alloc();
+    uint64_t cmd_table_phys = pmm_alloc();
+
+    if (cmd_list_phys == 0 || fis_phys == 0 || cmd_table_phys == 0) {
+        serial_write("AHCI: port_init: FATAL - pmm_alloc gagal\r\n");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    uint8_t *cmd_list_virt  = (uint8_t *)(cmd_list_phys + hhdm_offset);
+    uint8_t *fis_virt       = (uint8_t *)(fis_phys + hhdm_offset);
+    uint8_t *cmd_table_virt = (uint8_t *)(cmd_table_phys + hhdm_offset);
+
+    for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
+        cmd_list_virt[i] = 0;
+        fis_virt[i] = 0;
+        cmd_table_virt[i] = 0;
+    }
+
+    uint32_t *cmd_header0 = (uint32_t *)cmd_list_virt;
+    cmd_header0[2] = (uint32_t)(cmd_table_phys & 0xFFFFFFFFu);
+    cmd_header0[3] = (uint32_t)(cmd_table_phys >> 32);
+
+    *pclb  = (uint32_t)(cmd_list_phys & 0xFFFFFFFFu);
+    *pclbu = (uint32_t)(cmd_list_phys >> 32);
+    *pfb   = (uint32_t)(fis_phys & 0xFFFFFFFFu);
+    *pfbu  = (uint32_t)(fis_phys >> 32);
+
+    uint32_t is_val = *pis;
+    *pis = is_val;
+
+    cmd = *pcmd;
+    cmd |= (1u << 4);
+    *pcmd = cmd;
+
+    cmd = *pcmd;
+    cmd |= (1u << 0);
+    *pcmd = cmd;
+
+    uint32_t tfd = *ptfd;
+
+    serial_write("AHCI: port_init: PxTFD=");
+    serial_write_hex(tfd);
+    serial_write("\r\n");
+
+    if (tfd & 0x1) {
+        serial_write("AHCI: port_init: WARNING - TFD.ERR set\r\n");
+    }
+
+    serial_write("AHCI: port_init: done, port ready (CLB=");
+    serial_write_hex(cmd_list_phys);
+    serial_write(" FB=");
+    serial_write_hex(fis_phys);
+    serial_write(" CTBA=");
+    serial_write_hex(cmd_table_phys);
+    serial_write(")\r\n");
+}
+
 static void ahci_probe_and_log(uint64_t pml4_phys)
 {
     uint32_t bar5 = pci_config_read32(AHCI_PCI_BUS, AHCI_PCI_DEVICE, AHCI_PCI_FUNCTION, AHCI_BAR5_OFFSET);
@@ -2950,6 +3050,10 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
         serial_write(" SIG=");
         serial_write_hex(sig);
         serial_write("\r\n");
+
+        if (sig == 0x00000101) {
+            ahci_port_init(hba, i);
+        }
     }
 }
 
