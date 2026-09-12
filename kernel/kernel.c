@@ -2887,16 +2887,27 @@ static void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t v
 // benar punya device terpasang bisa dilihat dari bit PI yang set DAN
 // PxSSTS port itu (belum dibaca di checkpoint ini -- checkpoint
 // berikutnya).
+#define AHCI_MAX_ATA_PORTS 4
+
 static struct {
     volatile uint32_t *hba;
     uint32_t port;
     uint64_t cmd_table_phys;
     uint8_t *cmd_table_virt;
     int initialized;
-} g_ahci_ata_port;
+} g_ahci_ata_ports[AHCI_MAX_ATA_PORTS];
+
+static int g_ahci_ata_port_count = 0;
 
 static void ahci_port_init(volatile uint32_t *hba, uint32_t port)
 {
+    if (g_ahci_ata_port_count >= AHCI_MAX_ATA_PORTS) {
+        serial_write("AHCI: port_init: WARNING - AHCI_MAX_ATA_PORTS tercapai, port ");
+        serial_write_hex(port);
+        serial_write(" dilewati\r\n");
+        return;
+    }
+
     uint32_t port_base = 0x100 + (port * 0x80);
 
     volatile uint32_t *pclb  = &hba[(port_base + 0x00) / 4];
@@ -2994,11 +3005,19 @@ static void ahci_port_init(volatile uint32_t *hba, uint32_t port)
     serial_write_hex(cmd_table_phys);
     serial_write(")\r\n");
 
-    g_ahci_ata_port.hba = hba;
-    g_ahci_ata_port.port = port;
-    g_ahci_ata_port.cmd_table_phys = cmd_table_phys;
-    g_ahci_ata_port.cmd_table_virt = cmd_table_virt;
-    g_ahci_ata_port.initialized = 1;
+    int slot = g_ahci_ata_port_count;
+
+    g_ahci_ata_ports[slot].hba = hba;
+    g_ahci_ata_ports[slot].port = port;
+    g_ahci_ata_ports[slot].cmd_table_phys = cmd_table_phys;
+    g_ahci_ata_ports[slot].cmd_table_virt = cmd_table_virt;
+    g_ahci_ata_ports[slot].initialized = 1;
+
+    g_ahci_ata_port_count++;
+
+    serial_write("AHCI: port_init: terdaftar sebagai port_index ");
+    serial_write_hex((uint64_t)slot);
+    serial_write("\r\n");
 }
 
 #define AHCI_OK              0
@@ -3015,9 +3034,15 @@ static void ahci_port_init(volatile uint32_t *hba, uint32_t port)
 // jadi kita sengaja tidak mendukung count > 8 di checkpoint ini
 // (utang teknis eksplisit, bukan lupa: perlu multi-PRDT/scatter-gather
 // untuk mendukung lebih dari 1 halaman).
-static int ahci_read(uint64_t lba, uint32_t count, uint8_t **out_buf)
+#define AHCI_ERR_BAD_PORT   -6
+
+static int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_buf)
 {
-    if (!g_ahci_ata_port.initialized) {
+    if (port_index >= (uint32_t)g_ahci_ata_port_count) {
+        return AHCI_ERR_BAD_PORT;
+    }
+
+    if (!g_ahci_ata_ports[port_index].initialized) {
         return AHCI_ERR_NOT_INIT;
     }
 
@@ -3031,8 +3056,8 @@ static int ahci_read(uint64_t lba, uint32_t count, uint8_t **out_buf)
         return AHCI_ERR_LBA;
     }
 
-    volatile uint32_t *hba = g_ahci_ata_port.hba;
-    uint32_t port = g_ahci_ata_port.port;
+    volatile uint32_t *hba = g_ahci_ata_ports[port_index].hba;
+    uint32_t port = g_ahci_ata_ports[port_index].port;
     uint32_t port_base = 0x100 + (port * 0x80);
 
     volatile uint32_t *pci_reg = &hba[(port_base + 0x38) / 4];
@@ -3051,7 +3076,7 @@ static int ahci_read(uint64_t lba, uint32_t count, uint8_t **out_buf)
         data_buf_virt[i] = 0xAA;
     }
 
-    uint8_t *cmd_table_virt = g_ahci_ata_port.cmd_table_virt;
+    uint8_t *cmd_table_virt = g_ahci_ata_ports[port_index].cmd_table_virt;
 
     for (uint64_t i = 0; i < 0x90; i++) {
         cmd_table_virt[i] = 0;
@@ -3104,6 +3129,94 @@ static int ahci_read(uint64_t lba, uint32_t count, uint8_t **out_buf)
     *out_buf = data_buf_virt;
 
     return AHCI_OK;
+}
+
+// FAT32-1: scan semua port ATA yang sudah di-init, coba baca boot sector
+// (LBA 0), validasi signature 0x55AA DAN field BPB (RootEntryCount==0
+// dan FATSz16==0) untuk memastikan ini benar-benar FAT32, bukan FAT12/16
+// yang kebetulan punya signature sama. Murni parsing + logging, belum
+// baca FAT table atau directory sama sekali (checkpoint berikutnya).
+static void ahci_fat32_probe_and_log(void)
+{
+    serial_write("FAT32: scanning ATA ports untuk boot sector valid\r\n");
+
+    for (int idx = 0; idx < g_ahci_ata_port_count; idx++) {
+        uint8_t *buf = 0;
+        int rc = ahci_read((uint32_t)idx, 0, 1, &buf);
+
+        serial_write("FAT32: port_index ");
+        serial_write_hex((uint64_t)idx);
+        serial_write(" ahci_read rc=");
+        serial_write_hex((uint64_t)(int64_t)rc);
+        serial_write("\r\n");
+
+        if (rc != AHCI_OK) {
+            continue;
+        }
+
+        if (buf[0x1FE] != 0x55 || buf[0x1FF] != 0xAA) {
+            serial_write("FAT32: port_index ");
+            serial_write_hex((uint64_t)idx);
+            serial_write(" - signature 0x55AA tidak ada, skip\r\n");
+            continue;
+        }
+
+        uint16_t bytes_per_sector = (uint16_t)buf[0x0B] | ((uint16_t)buf[0x0C] << 8);
+        uint8_t sectors_per_cluster = buf[0x0D];
+        uint16_t reserved_sector_count = (uint16_t)buf[0x0E] | ((uint16_t)buf[0x0F] << 8);
+        uint8_t num_fats = buf[0x10];
+        uint16_t root_entry_count = (uint16_t)buf[0x11] | ((uint16_t)buf[0x12] << 8);
+        uint16_t fat_sz16 = (uint16_t)buf[0x16] | ((uint16_t)buf[0x17] << 8);
+        uint32_t fat_sz32 = (uint32_t)buf[0x24] | ((uint32_t)buf[0x25] << 8) |
+                             ((uint32_t)buf[0x26] << 16) | ((uint32_t)buf[0x27] << 24);
+        uint32_t root_cluster = (uint32_t)buf[0x2C] | ((uint32_t)buf[0x2D] << 8) |
+                                 ((uint32_t)buf[0x2E] << 16) | ((uint32_t)buf[0x2F] << 24);
+
+        serial_write("FAT32: port_index ");
+        serial_write_hex((uint64_t)idx);
+        serial_write(" BytesPerSector=");
+        serial_write_hex(bytes_per_sector);
+        serial_write(" SectorsPerCluster=");
+        serial_write_hex(sectors_per_cluster);
+        serial_write(" ReservedSectorCount=");
+        serial_write_hex(reserved_sector_count);
+        serial_write(" NumFATs=");
+        serial_write_hex(num_fats);
+        serial_write(" RootEntryCount=");
+        serial_write_hex(root_entry_count);
+        serial_write(" FATSz16=");
+        serial_write_hex(fat_sz16);
+        serial_write(" FATSz32=");
+        serial_write_hex(fat_sz32);
+        serial_write(" RootCluster=");
+        serial_write_hex(root_cluster);
+        serial_write("\r\n");
+
+        if (root_entry_count != 0 || fat_sz16 != 0) {
+            serial_write("FAT32: port_index ");
+            serial_write_hex((uint64_t)idx);
+            serial_write(" - RootEntryCount/FATSz16 tidak nol (ini FAT12/16, bukan FAT32), skip\r\n");
+            continue;
+        }
+
+        if (bytes_per_sector != 512) {
+            serial_write("FAT32: port_index ");
+            serial_write_hex((uint64_t)idx);
+            serial_write(" - BytesPerSector bukan 512, skip\r\n");
+            continue;
+        }
+
+        if (fat_sz32 == 0) {
+            serial_write("FAT32: port_index ");
+            serial_write_hex((uint64_t)idx);
+            serial_write(" - FATSz32 nol, bukan FAT32 valid, skip\r\n");
+            continue;
+        }
+
+        serial_write("FAT32: port_index ");
+        serial_write_hex((uint64_t)idx);
+        serial_write(" - VALID FAT32 volume ditemukan\r\n");
+    }
 }
 
 static void ahci_probe_and_log(uint64_t pml4_phys)
@@ -3174,6 +3287,8 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
             ahci_port_init(hba, i);
         }
     }
+
+    ahci_fat32_probe_and_log();
 }
 
 void kmain(void)
