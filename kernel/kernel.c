@@ -3136,6 +3136,19 @@ static int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t 
 // dan FATSz16==0) untuk memastikan ini benar-benar FAT32, bukan FAT12/16
 // yang kebetulan punya signature sama. Murni parsing + logging, belum
 // baca FAT table atau directory sama sekali (checkpoint berikutnya).
+static struct {
+    int valid;
+    uint32_t port_index;
+    uint32_t bytes_per_sector;
+    uint32_t sectors_per_cluster;
+    uint32_t reserved_sector_count;
+    uint32_t num_fats;
+    uint32_t fat_sz32;
+    uint32_t root_cluster;
+    uint64_t fat_start_lba;
+    uint64_t data_start_lba;
+} g_fat32_volume;
+
 static void ahci_fat32_probe_and_log(void)
 {
     serial_write("FAT32: scanning ATA ports untuk boot sector valid\r\n");
@@ -3213,9 +3226,97 @@ static void ahci_fat32_probe_and_log(void)
             continue;
         }
 
+        g_fat32_volume.valid = 1;
+        g_fat32_volume.port_index = (uint32_t)idx;
+        g_fat32_volume.bytes_per_sector = bytes_per_sector;
+        g_fat32_volume.sectors_per_cluster = sectors_per_cluster;
+        g_fat32_volume.reserved_sector_count = reserved_sector_count;
+        g_fat32_volume.num_fats = num_fats;
+        g_fat32_volume.fat_sz32 = fat_sz32;
+        g_fat32_volume.root_cluster = root_cluster;
+        g_fat32_volume.fat_start_lba = (uint64_t)reserved_sector_count;
+        g_fat32_volume.data_start_lba = (uint64_t)reserved_sector_count +
+            ((uint64_t)num_fats * (uint64_t)fat_sz32);
+
         serial_write("FAT32: port_index ");
         serial_write_hex((uint64_t)idx);
         serial_write(" - VALID FAT32 volume ditemukan\r\n");
+    }
+}
+
+// FAT32-2: konversi RootCluster (nomor cluster dari BPB) menjadi LBA
+// sebenarnya, lalu baca satu entry FAT table untuk cluster tersebut.
+// Belum membaca isi directory sama sekali (checkpoint berikutnya).
+static void fat32_probe_root_cluster(void)
+{
+    if (!g_fat32_volume.valid) {
+        serial_write("FAT32-2: tidak ada volume FAT32 valid, skip\r\n");
+        return;
+    }
+
+    uint32_t root_cluster = g_fat32_volume.root_cluster;
+
+    if (root_cluster < 2) {
+        serial_write("FAT32-2: root_cluster < 2, volume tidak valid\r\n");
+        return;
+    }
+
+    uint64_t root_lba = g_fat32_volume.data_start_lba +
+        (uint64_t)(root_cluster - 2) * (uint64_t)g_fat32_volume.sectors_per_cluster;
+
+    serial_write("FAT32-2: fat_start_lba=");
+    serial_write_hex(g_fat32_volume.fat_start_lba);
+    serial_write(" data_start_lba=");
+    serial_write_hex(g_fat32_volume.data_start_lba);
+    serial_write("\r\n");
+
+    serial_write("FAT32-2: root_cluster=");
+    serial_write_hex(root_cluster);
+    serial_write(" -> root_lba=");
+    serial_write_hex(root_lba);
+    serial_write("\r\n");
+
+    uint64_t byte_offset = (uint64_t)root_cluster * 4;
+    uint64_t fat_sector = g_fat32_volume.fat_start_lba +
+        (byte_offset / (uint64_t)g_fat32_volume.bytes_per_sector);
+    uint64_t offset_in_sector = byte_offset % (uint64_t)g_fat32_volume.bytes_per_sector;
+
+    serial_write("FAT32-2: fat_sector=");
+    serial_write_hex(fat_sector);
+    serial_write(" offset_in_sector=");
+    serial_write_hex(offset_in_sector);
+    serial_write("\r\n");
+
+    uint8_t *buf = 0;
+    int rc = ahci_read(g_fat32_volume.port_index, fat_sector, 1, &buf);
+
+    serial_write("FAT32-2: ahci_read(fat_sector) rc=");
+    serial_write_hex((uint64_t)(int64_t)rc);
+    serial_write("\r\n");
+
+    if (rc != AHCI_OK) {
+        return;
+    }
+
+    uint32_t raw_entry = (uint32_t)buf[offset_in_sector] |
+                          ((uint32_t)buf[offset_in_sector + 1] << 8) |
+                          ((uint32_t)buf[offset_in_sector + 2] << 16) |
+                          ((uint32_t)buf[offset_in_sector + 3] << 24);
+
+    uint32_t next_cluster = raw_entry & 0x0FFFFFFFu;
+
+    serial_write("FAT32-2: raw_entry=");
+    serial_write_hex(raw_entry);
+    serial_write(" next_cluster(masked)=");
+    serial_write_hex(next_cluster);
+    serial_write("\r\n");
+
+    if (next_cluster >= 0x0FFFFFF8u) {
+        serial_write("FAT32-2: next_cluster = END OF CHAIN (root directory 1 cluster)\r\n");
+    } else if (next_cluster == 0) {
+        serial_write("FAT32-2: WARNING - next_cluster = 0 (free), tidak wajar untuk cluster aktif\r\n");
+    } else {
+        serial_write("FAT32-2: next_cluster menunjuk cluster lain dalam rantai\r\n");
     }
 }
 
@@ -3289,6 +3390,7 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
     }
 
     ahci_fat32_probe_and_log();
+    fat32_probe_root_cluster();
 }
 
 void kmain(void)
