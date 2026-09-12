@@ -3244,6 +3244,191 @@ static void ahci_fat32_probe_and_log(void)
     }
 }
 
+static uint32_t fat32_read_fat_entry(uint32_t cluster);
+
+// FAT32-4A: cari file di root directory berdasar nama 8.3 EXACT 11 byte
+// (format directory entry apa adanya, contoh "HELLO   TXT" -- BUKAN
+// "HELLO.TXT"). Konversi otomatis nama biasa -> 8.3 sengaja TIDAK
+// dilakukan di checkpoint ini, supaya kontrak fungsi deterministic
+// dan tidak menambah satu sumber bug baru sekaligus.
+static int fat32_find_file(const char *name_83, uint32_t *out_cluster, uint32_t *out_size)
+{
+    if (!g_fat32_volume.valid) {
+        return 0;
+    }
+
+    uint32_t root_cluster = g_fat32_volume.root_cluster;
+
+    if (root_cluster < 2) {
+        return 0;
+    }
+
+    uint64_t root_lba = g_fat32_volume.data_start_lba +
+        (uint64_t)(root_cluster - 2) * (uint64_t)g_fat32_volume.sectors_per_cluster;
+
+    uint32_t sectors_to_read = g_fat32_volume.sectors_per_cluster;
+
+    if (sectors_to_read == 0 || sectors_to_read > 8) {
+        return 0;
+    }
+
+    uint8_t *buf = 0;
+    int rc = ahci_read(g_fat32_volume.port_index, root_lba, sectors_to_read, &buf);
+
+    if (rc != AHCI_OK) {
+        return 0;
+    }
+
+    uint32_t cluster_size_bytes = sectors_to_read * g_fat32_volume.bytes_per_sector;
+    uint32_t entry_count = cluster_size_bytes / 32;
+
+    for (uint32_t i = 0; i < entry_count; i++) {
+        uint8_t *entry = buf + (i * 32);
+
+        if (entry[0x00] == 0x00) {
+            break;
+        }
+
+        if (entry[0x00] == 0xE5) {
+            continue;
+        }
+
+        uint8_t attr = entry[0x0B];
+
+        if (attr == 0x0F) {
+            continue;
+        }
+
+        int match = 1;
+
+        for (int c = 0; c < 11; c++) {
+            if (entry[c] != (uint8_t)name_83[c]) {
+                match = 0;
+                break;
+            }
+        }
+
+        if (!match) {
+            continue;
+        }
+
+        uint16_t cluster_high = (uint16_t)entry[0x14] | ((uint16_t)entry[0x15] << 8);
+        uint16_t cluster_low  = (uint16_t)entry[0x1A] | ((uint16_t)entry[0x1B] << 8);
+        uint32_t first_cluster = ((uint32_t)cluster_high << 16) | (uint32_t)cluster_low;
+        uint32_t file_size = (uint32_t)entry[0x1C] | ((uint32_t)entry[0x1D] << 8) |
+                              ((uint32_t)entry[0x1E] << 16) | ((uint32_t)entry[0x1F] << 24);
+
+        *out_cluster = first_cluster;
+        *out_size = file_size;
+
+        return 1;
+    }
+
+    return 0;
+}
+
+// FAT32-4A: alokasi 1 halaman via pmm_alloc(), isi dengan konten file
+// (mengikuti cluster chain, SAMA seperti fat32_read_file() tapi tulis
+// ke buffer alih-alih serial_putc()). Return pointer HHDM ke buffer,
+// atau NULL kalau gagal. file_size==0 ditangani sebagai kasus khusus:
+// buffer tetap dialokasikan tapi tidak ada cluster yang dibaca sama
+// sekali (first_cluster untuk file kosong sering bernilai 0 di FAT32,
+// itu bukan error).
+static uint8_t *fat32_load_file(uint32_t first_cluster, uint32_t file_size)
+{
+    if (!g_fat32_volume.valid) {
+        return 0;
+    }
+
+    if (file_size > PMM_PAGE_SIZE) {
+        serial_write("FAT32-4A: FATAL - file_size melebihi 1 halaman, dibatalkan\r\n");
+        return 0;
+    }
+
+    uint64_t buf_phys = pmm_alloc();
+
+    if (buf_phys == 0) {
+        return 0;
+    }
+
+    uint8_t *buf_virt = (uint8_t *)(buf_phys + hhdm_offset);
+
+    for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
+        buf_virt[i] = 0;
+    }
+
+    if (file_size == 0) {
+        return buf_virt;
+    }
+
+    if (first_cluster < 2) {
+        serial_write("FAT32-4A: FATAL - first_cluster < 2 padahal file_size > 0\r\n");
+        return 0;
+    }
+
+    uint32_t sectors_per_cluster = g_fat32_volume.sectors_per_cluster;
+
+    if (sectors_per_cluster == 0 || sectors_per_cluster > 8) {
+        return 0;
+    }
+
+    uint32_t cluster_size_bytes = sectors_per_cluster * g_fat32_volume.bytes_per_sector;
+
+    uint32_t cluster = first_cluster;
+    uint32_t bytes_remaining = file_size;
+    uint32_t buf_offset = 0;
+    int iteration_guard = 0;
+
+    while (bytes_remaining > 0 && cluster < 0x0FFFFFF8u) {
+        iteration_guard++;
+
+        if (iteration_guard > 1000) {
+            serial_write("FAT32-4A: FATAL - lebih dari 1000 iterasi cluster chain\r\n");
+            return 0;
+        }
+
+        uint64_t lba = g_fat32_volume.data_start_lba +
+            (uint64_t)(cluster - 2) * (uint64_t)sectors_per_cluster;
+
+        uint8_t *sector_buf = 0;
+        int rc = ahci_read(g_fat32_volume.port_index, lba, sectors_per_cluster, &sector_buf);
+
+        if (rc != AHCI_OK) {
+            return 0;
+        }
+
+        uint32_t to_copy = bytes_remaining;
+
+        if (to_copy > cluster_size_bytes) {
+            to_copy = cluster_size_bytes;
+        }
+
+        for (uint32_t i = 0; i < to_copy; i++) {
+            buf_virt[buf_offset + i] = sector_buf[i];
+        }
+
+        buf_offset += to_copy;
+        bytes_remaining -= to_copy;
+
+        if (bytes_remaining == 0) {
+            break;
+        }
+
+        cluster = fat32_read_fat_entry(cluster);
+
+        if (cluster == 0xFFFFFFFFu) {
+            return 0;
+        }
+    }
+
+    if (bytes_remaining > 0) {
+        serial_write("FAT32-4A: WARNING - chain berakhir tapi masih ada byte tersisa\r\n");
+        return 0;
+    }
+
+    return buf_virt;
+}
+
 // FAT32-2: konversi RootCluster (nomor cluster dari BPB) menjadi LBA
 // sebenarnya, lalu baca satu entry FAT table untuk cluster tersebut.
 // Belum membaca isi directory sama sekali (checkpoint berikutnya).
@@ -3605,6 +3790,34 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
     fat32_probe_root_cluster();
     fat32_list_root_directory();
     fat32_read_file(3, 0x1D);
+
+    uint32_t found_cluster = 0;
+    uint32_t found_size = 0;
+    int found = fat32_find_file("HELLO   TXT", &found_cluster, &found_size);
+
+    serial_write("FAT32-4A: fat32_find_file(\"HELLO   TXT\") found=");
+    serial_write_hex((uint64_t)found);
+    serial_write(" cluster=");
+    serial_write_hex(found_cluster);
+    serial_write(" size=");
+    serial_write_hex(found_size);
+    serial_write("\r\n");
+
+    if (found) {
+        uint8_t *loaded = fat32_load_file(found_cluster, found_size);
+
+        serial_write("FAT32-4A: fat32_load_file() -> ");
+        serial_write(loaded ? "sukses" : "GAGAL");
+        serial_write("\r\n");
+
+        if (loaded) {
+            serial_write("FAT32-4A: buffer isi = \"");
+            for (uint32_t i = 0; i < found_size; i++) {
+                serial_putc((char)loaded[i]);
+            }
+            serial_write("\"\r\n");
+        }
+    }
 }
 
 void kmain(void)
