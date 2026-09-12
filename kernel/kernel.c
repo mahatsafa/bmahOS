@@ -3320,6 +3320,100 @@ static void fat32_probe_root_cluster(void)
     }
 }
 
+// FAT32-3: baca isi cluster root directory, parse 32-byte directory
+// entries (short filename / 8.3 format), list nama yang ditemukan.
+// LFN (Long File Name) entries (attribute 0x0F) di-skip, dicatat saja --
+// tidak diproses, karena nama file test kita (HELLO.TXT, TEST) muat
+// pas di format 8.3 sehingga tidak seharusnya menghasilkan LFN entry.
+static void fat32_list_root_directory(void)
+{
+    if (!g_fat32_volume.valid) {
+        serial_write("FAT32-3: tidak ada volume FAT32 valid, skip\r\n");
+        return;
+    }
+
+    uint32_t root_cluster = g_fat32_volume.root_cluster;
+
+    if (root_cluster < 2) {
+        serial_write("FAT32-3: root_cluster < 2, volume tidak valid\r\n");
+        return;
+    }
+
+    uint64_t root_lba = g_fat32_volume.data_start_lba +
+        (uint64_t)(root_cluster - 2) * (uint64_t)g_fat32_volume.sectors_per_cluster;
+
+    uint32_t sectors_to_read = g_fat32_volume.sectors_per_cluster;
+
+    if (sectors_to_read == 0 || sectors_to_read > 8) {
+        serial_write("FAT32-3: sectors_per_cluster di luar jangkauan ahci_read (utang teknis), skip\r\n");
+        return;
+    }
+
+    uint8_t *buf = 0;
+    int rc = ahci_read(g_fat32_volume.port_index, root_lba, sectors_to_read, &buf);
+
+    serial_write("FAT32-3: ahci_read(root_lba, ");
+    serial_write_hex(sectors_to_read);
+    serial_write(" sektor) rc=");
+    serial_write_hex((uint64_t)(int64_t)rc);
+    serial_write("\r\n");
+
+    if (rc != AHCI_OK) {
+        return;
+    }
+
+    uint32_t cluster_size_bytes = sectors_to_read * g_fat32_volume.bytes_per_sector;
+    uint32_t entry_count = cluster_size_bytes / 32;
+
+    serial_write("FAT32-3: listing root directory (max ");
+    serial_write_hex(entry_count);
+    serial_write(" slot):\r\n");
+
+    for (uint32_t i = 0; i < entry_count; i++) {
+        uint8_t *entry = buf + (i * 32);
+
+        if (entry[0x00] == 0x00) {
+            serial_write("FAT32-3: end of directory (slot ");
+            serial_write_hex(i);
+            serial_write(")\r\n");
+            break;
+        }
+
+        if (entry[0x00] == 0xE5) {
+            continue;
+        }
+
+        uint8_t attr = entry[0x0B];
+
+        if (attr == 0x0F) {
+            serial_write("FAT32-3: slot ");
+            serial_write_hex(i);
+            serial_write(" - LFN entry (di-skip, tidak diproses)\r\n");
+            continue;
+        }
+
+        uint16_t cluster_high = (uint16_t)entry[0x14] | ((uint16_t)entry[0x15] << 8);
+        uint16_t cluster_low  = (uint16_t)entry[0x1A] | ((uint16_t)entry[0x1B] << 8);
+        uint32_t first_cluster = ((uint32_t)cluster_high << 16) | (uint32_t)cluster_low;
+        uint32_t file_size = (uint32_t)entry[0x1C] | ((uint32_t)entry[0x1D] << 8) |
+                              ((uint32_t)entry[0x1E] << 16) | ((uint32_t)entry[0x1F] << 24);
+
+        serial_write("FAT32-3: slot ");
+        serial_write_hex(i);
+        serial_write(" name=\"");
+        for (int c = 0; c < 11; c++) {
+            serial_putc((char)entry[c]);
+        }
+        serial_write("\" attr=");
+        serial_write_hex(attr);
+        serial_write(" first_cluster=");
+        serial_write_hex(first_cluster);
+        serial_write(" size=");
+        serial_write_hex(file_size);
+        serial_write((attr & 0x10) ? " [DIRECTORY]\r\n" : " [FILE]\r\n");
+    }
+}
+
 static void ahci_probe_and_log(uint64_t pml4_phys)
 {
     uint32_t bar5 = pci_config_read32(AHCI_PCI_BUS, AHCI_PCI_DEVICE, AHCI_PCI_FUNCTION, AHCI_BAR5_OFFSET);
@@ -3391,6 +3485,7 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
 
     ahci_fat32_probe_and_log();
     fat32_probe_root_cluster();
+    fat32_list_root_directory();
 }
 
 void kmain(void)
