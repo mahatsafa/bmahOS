@@ -3414,6 +3414,124 @@ static void fat32_list_root_directory(void)
     }
 }
 
+// Baca satu FAT entry untuk nomor cluster tertentu, kembalikan
+// next_cluster yang sudah di-mask 0x0FFFFFFF. Return 0xFFFFFFFF
+// (sentinel, bukan nilai FAT valid karena sudah di-mask 28 bit)
+// kalau ahci_read gagal.
+static uint32_t fat32_read_fat_entry(uint32_t cluster)
+{
+    uint64_t byte_offset = (uint64_t)cluster * 4;
+    uint64_t fat_sector = g_fat32_volume.fat_start_lba +
+        (byte_offset / (uint64_t)g_fat32_volume.bytes_per_sector);
+    uint64_t offset_in_sector = byte_offset % (uint64_t)g_fat32_volume.bytes_per_sector;
+
+    uint8_t *buf = 0;
+    int rc = ahci_read(g_fat32_volume.port_index, fat_sector, 1, &buf);
+
+    if (rc != AHCI_OK) {
+        return 0xFFFFFFFFu;
+    }
+
+    uint32_t raw_entry = (uint32_t)buf[offset_in_sector] |
+                          ((uint32_t)buf[offset_in_sector + 1] << 8) |
+                          ((uint32_t)buf[offset_in_sector + 2] << 16) |
+                          ((uint32_t)buf[offset_in_sector + 3] << 24);
+
+    return raw_entry & 0x0FFFFFFFu;
+}
+
+// FAT32-4: baca isi file dengan mengikuti cluster chain, mulai dari
+// first_cluster (didapat dari directory entry di FAT32-3), berhenti
+// setelah file_size byte terbaca atau chain mencapai EOC.
+static void fat32_read_file(uint32_t first_cluster, uint32_t file_size)
+{
+    if (!g_fat32_volume.valid) {
+        serial_write("FAT32-4: tidak ada volume FAT32 valid, skip\r\n");
+        return;
+    }
+
+    if (first_cluster < 2) {
+        serial_write("FAT32-4: first_cluster < 2, tidak valid\r\n");
+        return;
+    }
+
+    uint32_t sectors_per_cluster = g_fat32_volume.sectors_per_cluster;
+
+    if (sectors_per_cluster == 0 || sectors_per_cluster > 8) {
+        serial_write("FAT32-4: sectors_per_cluster di luar jangkauan ahci_read (utang teknis), skip\r\n");
+        return;
+    }
+
+    uint32_t cluster_size_bytes = sectors_per_cluster * g_fat32_volume.bytes_per_sector;
+
+    serial_write("FAT32-4: membaca file, first_cluster=");
+    serial_write_hex(first_cluster);
+    serial_write(" file_size=");
+    serial_write_hex(file_size);
+    serial_write(" byte\r\n");
+
+    uint32_t cluster = first_cluster;
+    uint32_t bytes_remaining = file_size;
+    int iteration_guard = 0;
+
+    serial_write("FAT32-4: isi file = \"");
+
+    while (bytes_remaining > 0 && cluster < 0x0FFFFFF8u) {
+        iteration_guard++;
+
+        if (iteration_guard > 1000) {
+            serial_write("\"\r\nFAT32-4: FATAL - lebih dari 1000 iterasi cluster chain, kemungkinan circular chain (FAT corrupt)\r\n");
+            return;
+        }
+
+        uint64_t lba = g_fat32_volume.data_start_lba +
+            (uint64_t)(cluster - 2) * (uint64_t)sectors_per_cluster;
+
+        uint8_t *buf = 0;
+        int rc = ahci_read(g_fat32_volume.port_index, lba, sectors_per_cluster, &buf);
+
+        if (rc != AHCI_OK) {
+            serial_write("\"\r\nFAT32-4: ahci_read gagal di tengah pembacaan file, rc=");
+            serial_write_hex((uint64_t)(int64_t)rc);
+            serial_write("\r\n");
+            return;
+        }
+
+        uint32_t to_copy = bytes_remaining;
+
+        if (to_copy > cluster_size_bytes) {
+            to_copy = cluster_size_bytes;
+        }
+
+        for (uint32_t i = 0; i < to_copy; i++) {
+            serial_putc((char)buf[i]);
+        }
+
+        bytes_remaining -= to_copy;
+
+        if (bytes_remaining == 0) {
+            break;
+        }
+
+        cluster = fat32_read_fat_entry(cluster);
+
+        if (cluster == 0xFFFFFFFFu) {
+            serial_write("\"\r\nFAT32-4: fat32_read_fat_entry gagal di tengah pembacaan file\r\n");
+            return;
+        }
+    }
+
+    serial_write("\"\r\n");
+
+    if (bytes_remaining > 0) {
+        serial_write("FAT32-4: WARNING - chain berakhir (EOC) tapi masih ");
+        serial_write_hex(bytes_remaining);
+        serial_write(" byte tersisa\r\n");
+    } else {
+        serial_write("FAT32-4: file selesai dibaca, seluruh byte cocok dengan file_size\r\n");
+    }
+}
+
 static void ahci_probe_and_log(uint64_t pml4_phys)
 {
     uint32_t bar5 = pci_config_read32(AHCI_PCI_BUS, AHCI_PCI_DEVICE, AHCI_PCI_FUNCTION, AHCI_BAR5_OFFSET);
@@ -3486,6 +3604,7 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
     ahci_fat32_probe_and_log();
     fat32_probe_root_cluster();
     fat32_list_root_directory();
+    fat32_read_file(3, 0x1D);
 }
 
 void kmain(void)
