@@ -3818,6 +3818,35 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
             serial_write("\"\r\n");
         }
     }
+
+    // FAT32-4B: find + load PROG.BIN (biner x86-64 nyata, bukan teks),
+    // lalu spawn() sungguhan dari buffer yang datang dari disk. Ini
+    // pengujian pertama yang membuktikan rantai penuh:
+    // disk -> FAT32 -> buffer -> spawn() -> eksekusi user-mode nyata.
+    uint32_t prog_cluster = 0;
+    uint32_t prog_size = 0;
+    int prog_found = fat32_find_file("PROG    BIN", &prog_cluster, &prog_size);
+
+    serial_write("FAT32-4B: fat32_find_file(\"PROG    BIN\") found=");
+    serial_write_hex((uint64_t)prog_found);
+    serial_write(" cluster=");
+    serial_write_hex(prog_cluster);
+    serial_write(" size=");
+    serial_write_hex(prog_size);
+    serial_write("\r\n");
+
+    if (prog_found) {
+        uint8_t *prog_buf = fat32_load_file(prog_cluster, prog_size);
+
+        serial_write("FAT32-4B: fat32_load_file(PROG.BIN) -> ");
+        serial_write(prog_buf ? "sukses" : "GAGAL");
+        serial_write("\r\n");
+
+        if (prog_buf) {
+            serial_write("FAT32-4B: memanggil spawn() dengan buffer dari disk\r\n");
+            spawn(prog_buf, prog_size);
+        }
+    }
 }
 
 void kmain(void)
