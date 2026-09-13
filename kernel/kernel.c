@@ -2776,6 +2776,18 @@ static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 #define E1000_REG_STATUS   0x0008
 #define E1000_REG_RAL0     0x5400
 #define E1000_REG_RAH0     0x5404
+#define E1000_REG_TCTL     0x0400
+#define E1000_REG_TDBAL    0x3800
+#define E1000_REG_TDBAH    0x3804
+#define E1000_REG_TDLEN    0x3808
+#define E1000_REG_TDH      0x3810
+#define E1000_REG_TDT      0x3818
+
+#define E1000_TCTL_EN      (1u << 1)
+
+#define E1000_TXD_CMD_EOP  (1u << 0)
+#define E1000_TXD_CMD_RS   (1u << 3)
+#define E1000_TXD_STA_DD   (1u << 0)
 
 #define AHCI_VIRT 0xFFFF910000002000ULL  // setelah IOAPIC_VIRT (+0x1000)
 #define E1000_VIRT 0xFFFF910000003000ULL  // setelah AHCI_VIRT (+0x1000)
@@ -3734,6 +3746,8 @@ static void fat32_read_file(uint32_t first_cluster, uint32_t file_size)
 // dibandingkan dengan MAC yang tertera di VMware VM Settings.
 // Murni discovery, belum setup TX/RX descriptor ring sama sekali
 // (checkpoint berikutnya, Net-2).
+static uint8_t g_e1000_mac[6];
+
 static void e1000_probe_and_log(uint64_t pml4_phys)
 {
     uint32_t bar0 = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE, E1000_PCI_FUNCTION, E1000_BAR0_OFFSET);
@@ -3799,6 +3813,111 @@ static void e1000_probe_and_log(uint64_t pml4_phys)
             serial_write(":");
         }
     }
+    serial_write("\r\n");
+
+    for (int i = 0; i < 6; i++) {
+        g_e1000_mac[i] = mac[i];
+    }
+}
+
+// Net-2: setup TX descriptor ring (8 slot, cuma slot 0 dipakai),
+// bangun 1 Ethernet frame broadcast, kirim lewat TDT trigger, poll
+// sampai NIC set bit DD (Descriptor Done) di STA. EtherType 0x88B5
+// dipilih karena termasuk rentang "experimental" yang aman dipakai
+// testing, tidak bentrok dengan protokol nyata yang mungkin lewat
+// di jaringan yang sama.
+static void e1000_send_test_packet(void)
+{
+    uint64_t ring_phys = pmm_alloc();
+    uint64_t pkt_phys = pmm_alloc();
+
+    if (ring_phys == 0 || pkt_phys == 0) {
+        serial_write("Net-2: FATAL - pmm_alloc gagal\r\n");
+        return;
+    }
+
+    uint8_t *ring_virt = (uint8_t *)(ring_phys + hhdm_offset);
+    uint8_t *pkt_virt = (uint8_t *)(pkt_phys + hhdm_offset);
+
+    for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
+        ring_virt[i] = 0;
+        pkt_virt[i] = 0;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        pkt_virt[i] = 0xFF;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        pkt_virt[6 + i] = g_e1000_mac[i];
+    }
+
+    pkt_virt[12] = 0x88;
+    pkt_virt[13] = 0xB5;
+
+    const char *payload = "bmahOS network test";
+    int payload_len = 0;
+    while (payload[payload_len] != 0) {
+        pkt_virt[14 + payload_len] = (uint8_t)payload[payload_len];
+        payload_len++;
+    }
+
+    uint32_t frame_len = 14 + (uint32_t)payload_len;
+
+    if (frame_len < 60) {
+        frame_len = 60;
+    }
+
+    serial_write("Net-2: mengirim frame, panjang=");
+    serial_write_hex(frame_len);
+    serial_write(" byte, isi (hex) = ");
+    for (uint32_t i = 0; i < frame_len; i++) {
+        serial_write_hex(pkt_virt[i]);
+        serial_write(" ");
+    }
+    serial_write("\r\n");
+
+    uint8_t *desc0 = ring_virt;
+
+    uint64_t *desc_addr = (uint64_t *)(desc0 + 0x00);
+    *desc_addr = pkt_phys;
+
+    desc0[0x08] = (uint8_t)(frame_len & 0xFF);
+    desc0[0x09] = (uint8_t)((frame_len >> 8) & 0xFF);
+    desc0[0x0A] = 0;
+    desc0[0x0B] = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+    desc0[0x0C] = 0;
+    desc0[0x0D] = 0;
+    desc0[0x0E] = 0;
+    desc0[0x0F] = 0;
+
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+
+    mmio[E1000_REG_TDBAL / 4] = (uint32_t)(ring_phys & 0xFFFFFFFFu);
+    mmio[E1000_REG_TDBAH / 4] = (uint32_t)(ring_phys >> 32);
+    mmio[E1000_REG_TDLEN / 4] = 8 * 16;
+
+    mmio[E1000_REG_TCTL / 4] = E1000_TCTL_EN;
+
+    serial_write("Net-2: TDH sebelum kirim = ");
+    serial_write_hex(mmio[E1000_REG_TDH / 4]);
+    serial_write("\r\n");
+
+    mmio[E1000_REG_TDT / 4] = 1;
+
+    int guard = 0;
+    while (!(desc0[0x0C] & E1000_TXD_STA_DD)) {
+        guard++;
+        if (guard > 1000000) {
+            serial_write("Net-2: FATAL - timeout menunggu DD (Descriptor Done)\r\n");
+            return;
+        }
+    }
+
+    serial_write("Net-2: DD set, STA=");
+    serial_write_hex(desc0[0x0C]);
+    serial_write(" TDH sesudah kirim = ");
+    serial_write_hex(mmio[E1000_REG_TDH / 4]);
     serial_write("\r\n");
 }
 
@@ -4230,6 +4349,7 @@ void kmain(void)
     ahci_probe_and_log(pml4_phys);
 
     e1000_probe_and_log(pml4_phys);
+    e1000_send_test_packet();
     ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, 0);
     serial_write("\r\n");
     pic_remap();
