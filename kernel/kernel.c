@@ -2767,7 +2767,18 @@ static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 #define AHCI_PCI_FUNCTION 0
 #define AHCI_BAR5_OFFSET  0x24
 
+#define E1000_PCI_BUS      2
+#define E1000_PCI_DEVICE   1
+#define E1000_PCI_FUNCTION 0
+#define E1000_BAR0_OFFSET  0x10
+
+#define E1000_REG_CTRL     0x0000
+#define E1000_REG_STATUS   0x0008
+#define E1000_REG_RAL0     0x5400
+#define E1000_REG_RAH0     0x5404
+
 #define AHCI_VIRT 0xFFFF910000002000ULL  // setelah IOAPIC_VIRT (+0x1000)
+#define E1000_VIRT 0xFFFF910000003000ULL  // setelah AHCI_VIRT (+0x1000)
 
 #define AHCI_REG_CAP  0x00
 #define AHCI_REG_GHC  0x04
@@ -3717,6 +3728,80 @@ static void fat32_read_file(uint32_t first_cluster, uint32_t file_size)
     }
 }
 
+// Net-1: E1000 NIC discovery. Baca BAR0, map MMIO, baca STATUS dan
+// RAL0/RAH0 (Receive Address Low/High -- register yang menyimpan MAC
+// address NIC) sebagai bukti independen chip yang benar terbaca,
+// dibandingkan dengan MAC yang tertera di VMware VM Settings.
+// Murni discovery, belum setup TX/RX descriptor ring sama sekali
+// (checkpoint berikutnya, Net-2).
+static void e1000_probe_and_log(uint64_t pml4_phys)
+{
+    uint32_t bar0 = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE, E1000_PCI_FUNCTION, E1000_BAR0_OFFSET);
+    uint64_t mmio_phys = bar0 & 0xFFFFFFF0ULL;
+
+    serial_write("E1000: BAR0 raw = ");
+    serial_write_hex(bar0);
+    serial_write(", MMIO phys = ");
+    serial_write_hex(mmio_phys);
+    serial_write("\r\n");
+
+    if (mmio_phys == 0) {
+        serial_write("E1000: MMIO physical address 0, skip (device tidak ditemukan di B/D/F ini?)\r\n");
+        return;
+    }
+
+    // E1000 register RAL0/RAH0 (MAC address) ada di offset 0x5400/0x5404,
+    // jauh melebihi 1 halaman (0x1000). Map 6 halaman (0x6000 byte,
+    // mencakup sampai offset 0x5FFF) supaya semua register yang kita
+    // pakai di checkpoint ini ter-cover. Utang teknis: masih hardcode
+    // 6 halaman, bukan dihitung dari ukuran BAR sebenarnya (yang bisa
+    // dibaca dari PCI config space kalau mau presisi).
+    for (uint64_t page = 0; page < 6; page++) {
+        vmm_map(pml4_phys, E1000_VIRT + (page * PMM_PAGE_SIZE),
+                mmio_phys + (page * PMM_PAGE_SIZE),
+                VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE);
+    }
+
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+
+    uint32_t status = mmio[E1000_REG_STATUS / 4];
+    uint32_t ral0 = mmio[E1000_REG_RAL0 / 4];
+    uint32_t rah0 = mmio[E1000_REG_RAH0 / 4];
+
+    serial_write("E1000: STATUS=");
+    serial_write_hex(status);
+    serial_write(" (link_up=");
+    serial_write_hex((uint64_t)((status >> 1) & 0x1));
+    serial_write(")\r\n");
+
+    uint8_t mac[6];
+    mac[0] = (uint8_t)(ral0 & 0xFF);
+    mac[1] = (uint8_t)((ral0 >> 8) & 0xFF);
+    mac[2] = (uint8_t)((ral0 >> 16) & 0xFF);
+    mac[3] = (uint8_t)((ral0 >> 24) & 0xFF);
+    mac[4] = (uint8_t)(rah0 & 0xFF);
+    mac[5] = (uint8_t)((rah0 >> 8) & 0xFF);
+
+    uint32_t rah0_valid = (rah0 >> 31) & 0x1;
+
+    serial_write("E1000: RAL0=");
+    serial_write_hex(ral0);
+    serial_write(" RAH0=");
+    serial_write_hex(rah0);
+    serial_write(" (valid=");
+    serial_write_hex((uint64_t)rah0_valid);
+    serial_write(")\r\n");
+
+    serial_write("E1000: MAC address = ");
+    for (int i = 0; i < 6; i++) {
+        serial_write_hex(mac[i]);
+        if (i < 5) {
+            serial_write(":");
+        }
+    }
+    serial_write("\r\n");
+}
+
 static void ahci_probe_and_log(uint64_t pml4_phys)
 {
     uint32_t bar5 = pci_config_read32(AHCI_PCI_BUS, AHCI_PCI_DEVICE, AHCI_PCI_FUNCTION, AHCI_BAR5_OFFSET);
@@ -4143,6 +4228,8 @@ void kmain(void)
     serial_write("=== APIC: enable Local APIC + program IOAPIC redirection ===\r\n");
     apic_enable_local_apic(pml4_phys);
     ahci_probe_and_log(pml4_phys);
+
+    e1000_probe_and_log(pml4_phys);
     ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, 0);
     serial_write("\r\n");
     pic_remap();
