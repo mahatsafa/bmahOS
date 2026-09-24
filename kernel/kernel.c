@@ -2782,8 +2782,26 @@ static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 #define E1000_REG_TDLEN    0x3808
 #define E1000_REG_TDH      0x3810
 #define E1000_REG_TDT      0x3818
+#define E1000_REG_TXDCTL   0x3828
+#define E1000_REG_TIPG     0x0410
+#define E1000_REG_IMC      0x00D8
+
+#define E1000_CTRL_RST     (1u << 26)
+
+#define E1000_CTRL_FD    (1u << 0)
+#define E1000_CTRL_ASDE  (1u << 5)
+#define E1000_CTRL_SLU   (1u << 6)
 
 #define E1000_TCTL_EN      (1u << 1)
+#define E1000_TCTL_PSP     (1u << 3)
+#define E1000_TCTL_CT_SHIFT   4
+#define E1000_TCTL_COLD_SHIFT 12
+#define E1000_TCTL_STANDARD ( \
+    E1000_TCTL_EN | \
+    E1000_TCTL_PSP | \
+    (0x0Fu << E1000_TCTL_CT_SHIFT) | \
+    (0x40u << E1000_TCTL_COLD_SHIFT) \
+)
 
 #define E1000_TXD_CMD_EOP  (1u << 0)
 #define E1000_TXD_CMD_RS   (1u << 3)
@@ -3748,6 +3766,89 @@ static void fat32_read_file(uint32_t first_cluster, uint32_t file_size)
 // (checkpoint berikutnya, Net-2).
 static uint8_t g_e1000_mac[6];
 
+static uint64_t g_e1000_tx_ring_phys = 0;
+static uint8_t *g_e1000_tx_ring_virt = 0;
+static int g_e1000_tx_initialized = 0;
+
+// TX ring HANYA di-setup SEKALI (dipanggil dari e1000_probe_and_log()).
+// Sebelumnya setiap fungsi kirim reprogram TDBAL/TDBAH/TDLEN/TCTL dari
+// nol -- ini salah secara arsitektur: driver asli setup ring sekali,
+// lalu pengiriman berikutnya CUMA sentuh TDT. Reprogram base address
+// ring yang sedang aktif berpotensi bikin NIC bingung state internal
+// meski DD tetap ter-set (DD cuma bukti "descriptor terbaca", bukan
+// "paket benar-benar dikirim ke wire").
+static void e1000_tx_init(volatile uint32_t *mmio)
+{
+    g_e1000_tx_ring_phys = pmm_alloc();
+
+    if (g_e1000_tx_ring_phys == 0) {
+        serial_write("E1000: FATAL - pmm_alloc gagal untuk TX ring\r\n");
+        return;
+    }
+
+    g_e1000_tx_ring_virt = (uint8_t *)(g_e1000_tx_ring_phys + hhdm_offset);
+
+    for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
+        g_e1000_tx_ring_virt[i] = 0;
+    }
+
+    mmio[E1000_REG_TDBAL / 4] = (uint32_t)(g_e1000_tx_ring_phys & 0xFFFFFFFFu);
+    mmio[E1000_REG_TDBAH / 4] = (uint32_t)(g_e1000_tx_ring_phys >> 32);
+    mmio[E1000_REG_TDLEN / 4] = 8 * 16;
+    mmio[E1000_REG_TDH / 4] = 0;
+    mmio[E1000_REG_TDT / 4] = 0;
+
+    mmio[E1000_REG_TCTL / 4] = E1000_TCTL_STANDARD;
+    mmio[E1000_REG_TXDCTL / 4] = mmio[E1000_REG_TXDCTL / 4] | (1u << 25);
+
+    g_e1000_tx_initialized = 1;
+
+    serial_write("E1000: TX ring init selesai (satu kali), ring_phys=");
+    serial_write_hex(g_e1000_tx_ring_phys);
+    serial_write("\r\n");
+}
+
+// Kirim 1 frame yang sudah lengkap (pkt_virt/pkt_phys), pakai ring
+// yang sudah di-init sekali oleh e1000_tx_init(). HANYA sentuh TDT,
+// tidak pernah reprogram TDBAL/TDBAH/TDLEN/TCTL lagi.
+static int e1000_tx_send(uint64_t pkt_phys, uint32_t frame_len)
+{
+    if (!g_e1000_tx_initialized) {
+        serial_write("E1000: FATAL - TX ring belum di-init\r\n");
+        return 0;
+    }
+
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+
+    uint32_t tdt_now = mmio[E1000_REG_TDT / 4];
+    uint8_t *desc = g_e1000_tx_ring_virt + (tdt_now * 16);
+
+    uint64_t *desc_addr = (uint64_t *)(desc + 0x00);
+    *desc_addr = pkt_phys;
+
+    desc[0x08] = (uint8_t)(frame_len & 0xFF);
+    desc[0x09] = (uint8_t)((frame_len >> 8) & 0xFF);
+    desc[0x0A] = 0;
+    desc[0x0B] = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+    desc[0x0C] = 0;
+    desc[0x0D] = 0;
+    desc[0x0E] = 0;
+    desc[0x0F] = 0;
+
+    mmio[E1000_REG_TDT / 4] = (tdt_now + 1) % 8;
+
+    int guard = 0;
+    while (!(desc[0x0C] & E1000_TXD_STA_DD)) {
+        guard++;
+        if (guard > 1000000) {
+            serial_write("E1000: FATAL - timeout menunggu DD di e1000_tx_send\r\n");
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 static void e1000_probe_and_log(uint64_t pml4_phys)
 {
     uint32_t bar0 = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE, E1000_PCI_FUNCTION, E1000_BAR0_OFFSET);
@@ -3777,6 +3878,30 @@ static void e1000_probe_and_log(uint64_t pml4_phys)
     }
 
     volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+
+    // Full device reset -- BELUM PERNAH dilakukan sama sekali sebelum
+    // checkpoint ini. Driver nyata SELALU reset device di awal init
+    // (langkah pertama di datasheet Intel 8254x), bukan opsional.
+    // Kemungkinan ada state internal sisa startup VMware yang perlu
+    // dibersihkan sebelum konfigurasi TX benar-benar valid. Dilakukan
+    // SEBELUM baca STATUS/RAL0/RAH0 supaya MAC yang disimpan adalah
+    // hasil pasca-reset (dibaca ulang dari EEPROM oleh hardware).
+    mmio[E1000_REG_CTRL / 4] = mmio[E1000_REG_CTRL / 4] | E1000_CTRL_RST;
+
+    int reset_guard = 0;
+    while (mmio[E1000_REG_CTRL / 4] & E1000_CTRL_RST) {
+        reset_guard++;
+        if (reset_guard > 1000000) {
+            serial_write("E1000: WARNING - RST tidak clear sendiri setelah timeout\r\n");
+            break;
+        }
+    }
+
+    serial_write("E1000: device reset selesai (CTRL=");
+    serial_write_hex(mmio[E1000_REG_CTRL / 4]);
+    serial_write(")\r\n");
+
+    mmio[E1000_REG_IMC / 4] = 0xFFFFFFFFu;
 
     uint32_t status = mmio[E1000_REG_STATUS / 4];
     uint32_t ral0 = mmio[E1000_REG_RAL0 / 4];
@@ -3818,6 +3943,69 @@ static void e1000_probe_and_log(uint64_t pml4_phys)
     for (int i = 0; i < 6; i++) {
         g_e1000_mac[i] = mac[i];
     }
+
+    uint32_t ctrl_before = mmio[E1000_REG_CTRL / 4];
+
+    serial_write("E1000: CTRL sebelum = ");
+    serial_write_hex(ctrl_before);
+    serial_write("\r\n");
+
+    uint32_t ctrl_after = ctrl_before | E1000_CTRL_SLU | E1000_CTRL_ASDE;
+    mmio[E1000_REG_CTRL / 4] = ctrl_after;
+
+    serial_write("E1000: CTRL sesudah (SLU|ASDE dipaksa) = ");
+    serial_write_hex(mmio[E1000_REG_CTRL / 4]);
+    serial_write("\r\n");
+
+    serial_write("E1000: TXDCTL = ");
+    serial_write_hex(mmio[E1000_REG_TXDCTL / 4]);
+    serial_write(" TIPG = ");
+    serial_write_hex(mmio[E1000_REG_TIPG / 4]);
+    serial_write("\r\n");
+
+    // TIPG kosong (0x0) ditemukan sebagai kemungkinan penyebab paket
+    // tidak keluar ke wire meski DD selalu ter-set -- nilai standar
+    // dari datasheet Intel untuk full-duplex.
+    mmio[E1000_REG_TIPG / 4] = 0x0060200Au;
+
+    mmio[E1000_REG_TXDCTL / 4] = mmio[E1000_REG_TXDCTL / 4] | (1u << 25);
+
+    serial_write("E1000: TIPG sesudah = ");
+    serial_write_hex(mmio[E1000_REG_TIPG / 4]);
+    serial_write(" TXDCTL sesudah = ");
+    serial_write_hex(mmio[E1000_REG_TXDCTL / 4]);
+    serial_write("\r\n");
+
+    // Setelah CTRL.RST, link_up sempat balik ke 0 (ditemukan lewat log
+    // boot nyata: STATUS.LU=0 tepat sesudah reset, padahal SEBELUM
+    // reset selalu 1 sejak awal boot). PHY butuh waktu renegosiasi
+    // ulang link setelah reset -- ini normal untuk hardware nyata
+    // maupun emulasi yang meniru perilaku hardware. Tunggu sampai
+    // STATUS.LU kembali 1 sebelum lanjut ke TX, supaya paket tidak
+    // diam-diam dibuang karena link belum benar-benar up.
+    serial_write("E1000: menunggu link up kembali setelah reset...\r\n");
+
+    int link_guard = 0;
+    uint32_t status_now = mmio[E1000_REG_STATUS / 4];
+
+    while (!((status_now >> 1) & 0x1)) {
+        link_guard++;
+        if (link_guard > 5000000) {
+            serial_write("E1000: WARNING - link tidak kembali up setelah timeout\r\n");
+            break;
+        }
+        status_now = mmio[E1000_REG_STATUS / 4];
+    }
+
+    serial_write("E1000: STATUS setelah tunggu link = ");
+    serial_write_hex(status_now);
+    serial_write(" (link_up=");
+    serial_write_hex((uint64_t)((status_now >> 1) & 0x1));
+    serial_write(", iterasi=");
+    serial_write_hex((uint64_t)link_guard);
+    serial_write(")\r\n");
+
+    e1000_tx_init(mmio);
 }
 
 // Net-2: setup TX descriptor ring (8 slot, cuma slot 0 dipakai),
@@ -3828,19 +4016,16 @@ static void e1000_probe_and_log(uint64_t pml4_phys)
 // di jaringan yang sama.
 static void e1000_send_test_packet(void)
 {
-    uint64_t ring_phys = pmm_alloc();
     uint64_t pkt_phys = pmm_alloc();
 
-    if (ring_phys == 0 || pkt_phys == 0) {
+    if (pkt_phys == 0) {
         serial_write("Net-2: FATAL - pmm_alloc gagal\r\n");
         return;
     }
 
-    uint8_t *ring_virt = (uint8_t *)(ring_phys + hhdm_offset);
     uint8_t *pkt_virt = (uint8_t *)(pkt_phys + hhdm_offset);
 
     for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
-        ring_virt[i] = 0;
         pkt_virt[i] = 0;
     }
 
@@ -3870,54 +4055,94 @@ static void e1000_send_test_packet(void)
 
     serial_write("Net-2: mengirim frame, panjang=");
     serial_write_hex(frame_len);
-    serial_write(" byte, isi (hex) = ");
-    for (uint32_t i = 0; i < frame_len; i++) {
-        serial_write_hex(pkt_virt[i]);
-        serial_write(" ");
-    }
+    serial_write(" byte\r\n");
+
+    int ok = e1000_tx_send(pkt_phys, frame_len);
+
+    serial_write("Net-2: e1000_tx_send -> ");
+    serial_write(ok ? "sukses (DD set)" : "GAGAL");
     serial_write("\r\n");
+}
 
-    uint8_t *desc0 = ring_virt;
+// Net-3: kirim ARP request sungguhan (EtherType 0x0806) untuk menguji
+// dugaan dari Net-2 bahwa NAT device VMware memfilter EtherType asing.
+// Sender IP pakai placeholder 192.168.115.200 (bmahOS BELUM punya IP
+// stack sungguhan -- ini murni supaya format paket valid, bukan klaim
+// kepemilikan IP). Target 192.168.115.254 (gateway NAT, sudah terbukti
+// aktif dari capture Wireshark sebelumnya).
+static void e1000_send_arp_request(void)
+{
+    uint64_t pkt_phys = pmm_alloc();
 
-    uint64_t *desc_addr = (uint64_t *)(desc0 + 0x00);
-    *desc_addr = pkt_phys;
-
-    desc0[0x08] = (uint8_t)(frame_len & 0xFF);
-    desc0[0x09] = (uint8_t)((frame_len >> 8) & 0xFF);
-    desc0[0x0A] = 0;
-    desc0[0x0B] = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
-    desc0[0x0C] = 0;
-    desc0[0x0D] = 0;
-    desc0[0x0E] = 0;
-    desc0[0x0F] = 0;
-
-    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
-
-    mmio[E1000_REG_TDBAL / 4] = (uint32_t)(ring_phys & 0xFFFFFFFFu);
-    mmio[E1000_REG_TDBAH / 4] = (uint32_t)(ring_phys >> 32);
-    mmio[E1000_REG_TDLEN / 4] = 8 * 16;
-
-    mmio[E1000_REG_TCTL / 4] = E1000_TCTL_EN;
-
-    serial_write("Net-2: TDH sebelum kirim = ");
-    serial_write_hex(mmio[E1000_REG_TDH / 4]);
-    serial_write("\r\n");
-
-    mmio[E1000_REG_TDT / 4] = 1;
-
-    int guard = 0;
-    while (!(desc0[0x0C] & E1000_TXD_STA_DD)) {
-        guard++;
-        if (guard > 1000000) {
-            serial_write("Net-2: FATAL - timeout menunggu DD (Descriptor Done)\r\n");
-            return;
-        }
+    if (pkt_phys == 0) {
+        serial_write("Net-3: FATAL - pmm_alloc gagal\r\n");
+        return;
     }
 
-    serial_write("Net-2: DD set, STA=");
-    serial_write_hex(desc0[0x0C]);
-    serial_write(" TDH sesudah kirim = ");
-    serial_write_hex(mmio[E1000_REG_TDH / 4]);
+    uint8_t *pkt_virt = (uint8_t *)(pkt_phys + hhdm_offset);
+
+    for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
+        pkt_virt[i] = 0;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        pkt_virt[i] = 0xFF;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        pkt_virt[6 + i] = g_e1000_mac[i];
+    }
+
+    pkt_virt[12] = 0x08;
+    pkt_virt[13] = 0x06;
+
+    uint32_t a = 14;
+
+    pkt_virt[a + 0x00] = 0x00;
+    pkt_virt[a + 0x01] = 0x01;
+
+    pkt_virt[a + 0x02] = 0x08;
+    pkt_virt[a + 0x03] = 0x00;
+
+    pkt_virt[a + 0x04] = 6;
+    pkt_virt[a + 0x05] = 4;
+
+    pkt_virt[a + 0x06] = 0x00;
+    pkt_virt[a + 0x07] = 0x01;
+
+    for (int i = 0; i < 6; i++) {
+        pkt_virt[a + 0x08 + i] = g_e1000_mac[i];
+    }
+
+    pkt_virt[a + 0x0E] = 192;
+    pkt_virt[a + 0x0F] = 168;
+    pkt_virt[a + 0x10] = 115;
+    pkt_virt[a + 0x11] = 200;
+
+    for (int i = 0; i < 6; i++) {
+        pkt_virt[a + 0x12 + i] = 0x00;
+    }
+
+    pkt_virt[a + 0x16] = 192;
+    pkt_virt[a + 0x17] = 168;
+    pkt_virt[a + 0x18] = 115;
+    pkt_virt[a + 0x19] = 254;
+
+    uint32_t frame_len = 14 + 28;
+
+    if (frame_len < 60) {
+        frame_len = 60;
+    }
+
+    serial_write("Net-3: mengirim ARP request, panjang=");
+    serial_write_hex(frame_len);
+    serial_write(" byte\r\n");
+    serial_write("Net-3: sender_ip=192.168.115.200 target_ip=192.168.115.254\r\n");
+
+    int ok = e1000_tx_send(pkt_phys, frame_len);
+
+    serial_write("Net-3: e1000_tx_send -> ");
+    serial_write(ok ? "sukses (DD set)" : "GAGAL");
     serial_write("\r\n");
 }
 
@@ -4350,6 +4575,7 @@ void kmain(void)
 
     e1000_probe_and_log(pml4_phys);
     e1000_send_test_packet();
+    e1000_send_arp_request();
     ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, 0);
     serial_write("\r\n");
     pic_remap();
