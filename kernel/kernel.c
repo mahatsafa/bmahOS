@@ -4520,6 +4520,180 @@ static void net_icmp_send_echo_reply(volatile uint8_t *req, uint32_t ihl,
     irq_restore(lf);
 }
 
+// ---- Net-8: UDP echo (port 7777) ----
+#define NET_UDP_ECHO_PORT 7777
+
+static uint32_t g_net_udp_echo_count = 0;
+
+static uint32_t net_sum16(const volatile uint8_t *p, uint32_t len, uint32_t sum)
+{
+    while (len > 1) {
+        sum += ((uint32_t)p[0] << 8) | (uint32_t)p[1];
+        p += 2;
+        len -= 2;
+    }
+
+    if (len == 1) {
+        sum += (uint32_t)p[0] << 8;
+    }
+
+    return sum;
+}
+
+// Checksum UDP dengan pseudo-header (src IP, dst IP, proto 17, panjang UDP).
+// Data yang sudah berisi checksum valid -> hasil 0. Field checksum = 0 saat
+// menghitung -> hasil adalah nilai yang ditulis ke field checksum.
+static uint16_t net_udp_checksum(const volatile uint8_t *src_ip,
+                                 const volatile uint8_t *dst_ip,
+                                 const volatile uint8_t *udp,
+                                 uint32_t udp_len)
+{
+    uint32_t sum = 0;
+
+    sum = net_sum16(src_ip, 4, sum);
+    sum = net_sum16(dst_ip, 4, sum);
+    sum += 17;
+    sum += udp_len;
+    sum = net_sum16(udp, udp_len, sum);
+
+    while (sum >> 16) {
+        sum = (sum & 0xFFFFu) + (sum >> 16);
+    }
+
+    return (uint16_t)(~sum);
+}
+
+// req = awal frame Ethernet request, ihl = panjang header IP request,
+// udp_len = panjang datagram UDP (header 8 byte + payload).
+static void net_udp_send_echo(volatile uint8_t *req, uint32_t ihl,
+                              uint32_t udp_len)
+{
+    if (udp_len > 1472) {
+        serial_write("Net-8: UDP terlalu besar, drop\r\n");
+        return;
+    }
+
+    if (g_net_tx_buf_phys == 0) {
+        g_net_tx_buf_phys = pmm_alloc();
+
+        if (g_net_tx_buf_phys == 0) {
+            serial_write("Net-8: FATAL - pmm_alloc gagal untuk TX buffer\r\n");
+            return;
+        }
+    }
+
+    uint8_t *p = (uint8_t *)(g_net_tx_buf_phys + hhdm_offset);
+    uint32_t r = 14 + ihl;
+
+    uint32_t frame_len = 14 + 20 + udp_len;
+    uint32_t send_len = frame_len < 60 ? 60 : frame_len;
+
+    for (uint32_t i = 0; i < send_len; i++) {
+        p[i] = 0;
+    }
+
+    // Ethernet
+    for (int i = 0; i < 6; i++) {
+        p[i] = req[6 + i];
+        p[6 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0x00;
+
+    // IPv4 header, protocol 17
+    p[14] = 0x45;
+    p[15] = 0x00;
+    p[16] = (uint8_t)((20 + udp_len) >> 8);
+    p[17] = (uint8_t)((20 + udp_len) & 0xFF);
+    p[18] = (uint8_t)(g_net_ip_id >> 8);
+    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
+    g_net_ip_id++;
+    p[20] = 0x40;
+    p[21] = 0x00;
+    p[22] = 64;
+    p[23] = 17;
+
+    for (int i = 0; i < 4; i++) {
+        p[26 + i] = g_net_ip[i];
+        p[30 + i] = req[26 + i];
+    }
+
+    uint16_t ipc = net_checksum16(p + 14, 20);
+    p[24] = (uint8_t)(ipc >> 8);
+    p[25] = (uint8_t)(ipc & 0xFF);
+
+    // UDP: port ditukar (src <- dst request, dst <- src request)
+    p[34] = req[r + 2];
+    p[35] = req[r + 3];
+    p[36] = req[r + 0];
+    p[37] = req[r + 1];
+    p[38] = (uint8_t)(udp_len >> 8);
+    p[39] = (uint8_t)(udp_len & 0xFF);
+
+    for (uint32_t i = 0; i + 8 < udp_len; i++) {
+        p[42 + i] = req[r + 8 + i];
+    }
+
+    uint16_t uc = net_udp_checksum(p + 26, p + 30, p + 34, udp_len);
+    if (uc == 0) {
+        uc = 0xFFFF;
+    }
+    p[40] = (uint8_t)(uc >> 8);
+    p[41] = (uint8_t)(uc & 0xFF);
+
+    int ok = e1000_tx_send(g_net_tx_buf_phys, send_len);
+
+    if (ok) {
+        g_net_udp_echo_count++;
+    }
+
+    uint64_t lf = irq_save();
+    serial_write("Net-8: UDP echo reply -> ");
+    serial_write(ok ? "terkirim (DD set)" : "GAGAL");
+    serial_write("\r\n");
+    irq_restore(lf);
+}
+
+static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
+                           uint32_t ip_payload_len)
+{
+    if (ip_payload_len < 8) {
+        return;
+    }
+
+    uint32_t r = 14 + ihl;
+    uint32_t src_port = ((uint32_t)buf[r + 0] << 8) | (uint32_t)buf[r + 1];
+    uint32_t dst_port = ((uint32_t)buf[r + 2] << 8) | (uint32_t)buf[r + 3];
+    uint32_t udp_len = ((uint32_t)buf[r + 4] << 8) | (uint32_t)buf[r + 5];
+    uint32_t csum = ((uint32_t)buf[r + 6] << 8) | (uint32_t)buf[r + 7];
+
+    if (udp_len < 8 || udp_len > ip_payload_len) {
+        return;
+    }
+
+    if (dst_port != NET_UDP_ECHO_PORT) {
+        return;
+    }
+
+    if (csum != 0 &&
+        net_udp_checksum(buf + 26, buf + 30, buf + r, udp_len) != 0) {
+        serial_write("Net-8: UDP checksum salah, drop\r\n");
+        return;
+    }
+
+    uint64_t lf = irq_save();
+    serial_write("Net-8: UDP echo port 7777 dari ");
+    e1000_log_ip(buf + 26);
+    serial_write(" src_port=");
+    serial_write_hex((uint64_t)src_port);
+    serial_write(" payload=");
+    serial_write_hex((uint64_t)(udp_len - 8));
+    serial_write(" byte\r\n");
+    irq_restore(lf);
+
+    net_udp_send_echo(buf, ihl, udp_len);
+}
+
 static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
 {
     if (len < 14 + 20) {
@@ -4545,6 +4719,11 @@ static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
 
     if (net_checksum16(buf + 14, ihl) != 0) {
         serial_write("Net-6: IPv4 header checksum salah, drop\r\n");
+        return;
+    }
+
+    if (buf[23] == 17) {
+        net_handle_udp(buf, ihl, total_len - ihl);
         return;
     }
 
