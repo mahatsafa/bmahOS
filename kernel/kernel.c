@@ -4585,7 +4585,7 @@ static void net_rx_dispatch(volatile uint8_t *buf, uint32_t len)
 
 // Konsumsi ring RX berurutan mulai g_e1000_rx_next. Tiap slot DD:
 // log ringkas, decode ARP, recycle descriptor, update RDT.
-static void e1000_rx_listen(uint64_t max_iter, int max_packets)
+static void __attribute__((unused)) e1000_rx_listen(uint64_t max_iter, int max_packets)
 {
     if (!g_e1000_rx_initialized) {
         serial_write("E1000: RX listen dibatalkan - RX belum di-init\r\n");
@@ -4649,6 +4649,79 @@ static void e1000_rx_listen(uint64_t max_iter, int max_packets)
     serial_write("E1000: RX listen selesai, paket=");
     serial_write_hex((uint64_t)got);
     serial_write("\r\n");
+}
+
+// Net-7: proses SEMUA slot RX yang siap (DD set), lalu return.
+// Tidak memblok. Return = jumlah paket yang diproses.
+static int net_poll(void)
+{
+    if (!g_e1000_rx_initialized) {
+        return 0;
+    }
+
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+    int processed = 0;
+
+    while (processed < E1000_RX_RING_SIZE) {
+        volatile uint8_t *desc =
+            (volatile uint8_t *)(g_e1000_rx_ring_virt + (g_e1000_rx_next * 16));
+
+        if (!(desc[0x0C] & E1000_RXD_STA_DD)) {
+            break;
+        }
+
+        uint32_t len = (uint32_t)desc[0x08] | ((uint32_t)desc[0x09] << 8);
+        volatile uint8_t *buf =
+            (volatile uint8_t *)(g_e1000_rx_buf_phys[g_e1000_rx_next] + hhdm_offset);
+
+        if (desc[0x0D] == 0) {
+            net_rx_dispatch(buf, len);
+        }
+
+        desc[0x0C] = 0;
+        desc[0x0D] = 0;
+        mmio[E1000_REG_RDT / 4] = g_e1000_rx_next;
+        g_e1000_rx_next = (g_e1000_rx_next + 1) % E1000_RX_RING_SIZE;
+        processed++;
+    }
+
+    return processed;
+}
+
+// Kernel task jaringan: polling terus, dipreempt scheduler (timer).
+// Utang teknis: busy-poll (pause), belum interrupt-driven, jadi CPU
+// tidak pernah idle. Akan diganti IRQ E1000 via IOAPIC.
+static void net_task_entry(void)
+{
+    if (!g_e1000_rx_initialized) {
+        serial_write("Net-7: RX belum di-init, net task berhenti\r\n");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    uint64_t rf_before;
+    __asm__ volatile ("pushfq; popq %0" : "=r"(rf_before));
+
+    // Task kernel baru masuk lewat ret dari context_switch (bukan iretq),
+    // jadi mewarisi IF dari konteks pemanggil. Kalau dipanggil dari dalam
+    // handler timer, IF=0 -> tanpa sti loop ini tidak pernah dipreempt.
+    __asm__ volatile ("sti");
+
+    uint64_t rf_after;
+    __asm__ volatile ("pushfq; popq %0" : "=r"(rf_after));
+
+    serial_write("Net-7: net task dimulai (polling permanen) RFLAGS sebelum=");
+    serial_write_hex(rf_before);
+    serial_write(" sesudah sti=");
+    serial_write_hex(rf_after);
+    serial_write("\r\n");
+
+    for (;;) {
+        if (net_poll() == 0) {
+            __asm__ volatile ("pause");
+        }
+    }
 }
 
 static void e1000_send_arp_request(void)
@@ -4726,7 +4799,6 @@ static void e1000_send_arp_request(void)
     serial_write(ok ? "sukses (DD set)" : "GAGAL");
     serial_write("\r\n");
 
-    e1000_rx_listen(6000000000ULL, 100000);
 }
 
 static void ahci_probe_and_log(uint64_t pml4_phys)
@@ -5235,6 +5307,16 @@ void kmain(void)
 
     serial_write("Task A, B, dan user task dibuat, mulai jalankan lewat scheduler...\r\n");
     serial_write("\r\n");
+
+    if (task_count < MAX_TASKS) {
+        task_create(&tasks[task_count], net_task_entry, 8192);
+        serial_write("Net-7: net task dibuat di slot ");
+        serial_write_hex((uint64_t)task_count);
+        serial_write("\r\n");
+        task_count++;
+    } else {
+        serial_write("Net-7: WARNING - slot task penuh, net task tidak dibuat\r\n");
+    }
 
     static task_t kernel_dummy_task;
     // current_index WAJIB di-set sebelum switch pertama -- kalau
