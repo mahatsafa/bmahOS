@@ -2785,6 +2785,21 @@ static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 #define E1000_REG_TXDCTL   0x3828
 #define E1000_REG_TIPG     0x0410
 #define E1000_REG_IMC      0x00D8
+#define E1000_REG_RCTL     0x0100
+#define E1000_REG_RDBAL    0x2800
+#define E1000_REG_RDBAH    0x2804
+#define E1000_REG_RDLEN    0x2808
+#define E1000_REG_RDH      0x2810
+#define E1000_REG_RDT      0x2818
+
+#define E1000_RCTL_EN      (1u << 1)
+#define E1000_RCTL_UPE     (1u << 3)
+#define E1000_RCTL_MPE     (1u << 4)
+#define E1000_RCTL_BAM     (1u << 15)
+#define E1000_RCTL_STANDARD (E1000_RCTL_EN | E1000_RCTL_UPE | \
+                             E1000_RCTL_MPE | E1000_RCTL_BAM)
+#define E1000_RX_RING_SIZE 8
+#define E1000_RXD_STA_DD   0x01
 
 #define E1000_CTRL_RST     (1u << 26)
 
@@ -3808,9 +3823,143 @@ static void e1000_tx_init(volatile uint32_t *mmio)
     serial_write("\r\n");
 }
 
+static uint64_t g_e1000_rx_ring_phys = 0;
+static uint8_t *g_e1000_rx_ring_virt = 0;
+static uint64_t g_e1000_rx_buf_phys[E1000_RX_RING_SIZE];
+static int g_e1000_rx_initialized = 0;
+
+// RX ring di-setup SEKALI. 8 descriptor, 8 buffer @2048 byte
+// (4 halaman pmm, tiap halaman = 2 buffer, tidak ada buffer yang
+// melintasi batas halaman). RCTL: EN|UPE|MPE|BAM, BSIZE=00 (2048).
+static void e1000_rx_init(volatile uint32_t *mmio)
+{
+    g_e1000_rx_ring_phys = pmm_alloc();
+
+    if (g_e1000_rx_ring_phys == 0) {
+        serial_write("E1000: FATAL - pmm_alloc gagal untuk RX ring\r\n");
+        return;
+    }
+
+    g_e1000_rx_ring_virt = (uint8_t *)(g_e1000_rx_ring_phys + hhdm_offset);
+
+    for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
+        g_e1000_rx_ring_virt[i] = 0;
+    }
+
+    for (int p = 0; p < E1000_RX_RING_SIZE / 2; p++) {
+        uint64_t page_phys = pmm_alloc();
+
+        if (page_phys == 0) {
+            serial_write("E1000: FATAL - pmm_alloc gagal untuk RX buffer\r\n");
+            return;
+        }
+
+        uint8_t *page_virt = (uint8_t *)(page_phys + hhdm_offset);
+
+        for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
+            page_virt[i] = 0;
+        }
+
+        g_e1000_rx_buf_phys[p * 2] = page_phys;
+        g_e1000_rx_buf_phys[p * 2 + 1] = page_phys + 2048;
+    }
+
+    for (int i = 0; i < E1000_RX_RING_SIZE; i++) {
+        uint64_t *desc_addr = (uint64_t *)(g_e1000_rx_ring_virt + (i * 16));
+        *desc_addr = g_e1000_rx_buf_phys[i];
+    }
+
+    mmio[E1000_REG_RDBAL / 4] = (uint32_t)(g_e1000_rx_ring_phys & 0xFFFFFFFFu);
+    mmio[E1000_REG_RDBAH / 4] = (uint32_t)(g_e1000_rx_ring_phys >> 32);
+    mmio[E1000_REG_RDLEN / 4] = E1000_RX_RING_SIZE * 16;
+    mmio[E1000_REG_RDH / 4] = 0;
+    mmio[E1000_REG_RDT / 4] = 0;
+
+    mmio[E1000_REG_RCTL / 4] = E1000_RCTL_STANDARD;
+
+    mmio[E1000_REG_RDT / 4] = E1000_RX_RING_SIZE - 1;
+
+    g_e1000_rx_initialized = 1;
+
+    serial_write("E1000: RX ring init selesai, ring_phys=");
+    serial_write_hex(g_e1000_rx_ring_phys);
+    serial_write(" RCTL=");
+    serial_write_hex((uint64_t)mmio[E1000_REG_RCTL / 4]);
+    serial_write(" RDH=");
+    serial_write_hex((uint64_t)mmio[E1000_REG_RDH / 4]);
+    serial_write(" RDT=");
+    serial_write_hex((uint64_t)mmio[E1000_REG_RDT / 4]);
+    serial_write("\r\n");
+}
+
+static void e1000_log_hexbyte(uint8_t b)
+{
+    static const char h[] = "0123456789ABCDEF";
+    serial_putc(h[b >> 4]);
+    serial_putc(h[b & 0xF]);
+}
+
+// Polling slot 0 sampai NIC set DD (ada paket masuk), lalu dump
+// sampai 64 byte pertama dari buffer 0.
+static void __attribute__((unused)) e1000_rx_poll_test(void)
+{
+    if (!g_e1000_rx_initialized) {
+        serial_write("E1000: RX poll dibatalkan - RX ring belum di-init\r\n");
+        return;
+    }
+
+    volatile uint8_t *desc = (volatile uint8_t *)g_e1000_rx_ring_virt;
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+
+    serial_write("E1000: RX poll menunggu paket di slot 0...\r\n");
+
+    uint64_t guard = 0;
+
+    while (!(desc[0x0C] & E1000_RXD_STA_DD)) {
+        guard++;
+        if (guard > 2000000000ULL) {
+            serial_write("E1000: RX poll TIMEOUT, tidak ada paket. RDH=");
+            serial_write_hex((uint64_t)mmio[E1000_REG_RDH / 4]);
+            serial_write(" RDT=");
+            serial_write_hex((uint64_t)mmio[E1000_REG_RDT / 4]);
+            serial_write("\r\n");
+            return;
+        }
+    }
+
+    uint32_t len = (uint32_t)desc[0x08] | ((uint32_t)desc[0x09] << 8);
+
+    serial_write("E1000: RX paket diterima! len=");
+    serial_write_hex((uint64_t)len);
+    serial_write(" status=");
+    serial_write_hex((uint64_t)desc[0x0C]);
+    serial_write(" errors=");
+    serial_write_hex((uint64_t)desc[0x0D]);
+    serial_write(" RDH=");
+    serial_write_hex((uint64_t)mmio[E1000_REG_RDH / 4]);
+    serial_write("\r\n");
+
+    volatile uint8_t *buf =
+        (volatile uint8_t *)(g_e1000_rx_buf_phys[0] + hhdm_offset);
+
+    uint32_t dump_len = len > 64 ? 64 : len;
+
+    serial_write("E1000: RX dump:");
+    for (uint32_t i = 0; i < dump_len; i++) {
+        if ((i % 16) == 0) {
+            serial_write("\r\n  ");
+        }
+        e1000_log_hexbyte(buf[i]);
+        serial_putc(' ');
+    }
+    serial_write("\r\n");
+}
+
 // Kirim 1 frame yang sudah lengkap (pkt_virt/pkt_phys), pakai ring
 // yang sudah di-init sekali oleh e1000_tx_init(). HANYA sentuh TDT,
 // tidak pernah reprogram TDBAL/TDBAH/TDLEN/TCTL lagi.
+static void e1000_diag_dump(const char *tag);
+
 static int e1000_tx_send(uint64_t pkt_phys, uint32_t frame_len)
 {
     if (!g_e1000_tx_initialized) {
@@ -3823,13 +3972,26 @@ static int e1000_tx_send(uint64_t pkt_phys, uint32_t frame_len)
     uint32_t tdt_now = mmio[E1000_REG_TDT / 4];
     uint8_t *desc = g_e1000_tx_ring_virt + (tdt_now * 16);
 
+    serial_write("E1000: TX frame dump (32 byte pertama):");
+    {
+        volatile uint8_t *pv = (volatile uint8_t *)(pkt_phys + hhdm_offset);
+        for (uint32_t i = 0; i < 32; i++) {
+            if ((i % 16) == 0) {
+                serial_write("\r\n  ");
+            }
+            e1000_log_hexbyte(pv[i]);
+            serial_putc(' ');
+        }
+        serial_write("\r\n");
+    }
+
     uint64_t *desc_addr = (uint64_t *)(desc + 0x00);
     *desc_addr = pkt_phys;
 
     desc[0x08] = (uint8_t)(frame_len & 0xFF);
     desc[0x09] = (uint8_t)((frame_len >> 8) & 0xFF);
     desc[0x0A] = 0;
-    desc[0x0B] = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+    desc[0x0B] = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS | 0x02u; /* IFCS */
     desc[0x0C] = 0;
     desc[0x0D] = 0;
     desc[0x0E] = 0;
@@ -3846,7 +4008,61 @@ static int e1000_tx_send(uint64_t pkt_phys, uint32_t frame_len)
         }
     }
 
+    for (volatile uint64_t d = 0; d < 200000000ULL; d++) {
+    }
+    e1000_diag_dump("SESUDAH tx_send");
+
     return 1;
+}
+
+static void e1000_pci_cmd_write(uint16_t cmd)
+{
+    uint32_t addr = 0x80000000u
+                  | ((uint32_t)E1000_PCI_BUS << 16)
+                  | ((uint32_t)E1000_PCI_DEVICE << 11)
+                  | ((uint32_t)E1000_PCI_FUNCTION << 8)
+                  | 0x04u;
+
+    __asm__ volatile ("outl %0, %1" : : "a"(addr), "Nd"((uint16_t)0xCF8));
+    __asm__ volatile ("outl %0, %1" : : "a"((uint32_t)cmd), "Nd"((uint16_t)0xCFC));
+}
+
+static void e1000_diag_reg(const char *name, uint64_t value)
+{
+    serial_write("DIAG ");
+    serial_write(name);
+    serial_write("=");
+    serial_write_hex(value);
+    serial_write("\r\n");
+}
+
+static void e1000_diag_dump(const char *tag)
+{
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+
+    serial_write("DIAG ---- ");
+    serial_write(tag);
+    serial_write(" ----\r\n");
+
+    uint32_t pci04 = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE,
+                                       E1000_PCI_FUNCTION, 0x04);
+
+    e1000_diag_reg("PCI_CMD", (uint64_t)(pci04 & 0xFFFF));
+    e1000_diag_reg("PCI_STATUS", (uint64_t)(pci04 >> 16));
+    e1000_diag_reg("STATUS", (uint64_t)mmio[E1000_REG_STATUS / 4]);
+    e1000_diag_reg("CTRL", (uint64_t)mmio[E1000_REG_CTRL / 4]);
+    e1000_diag_reg("RCTL", (uint64_t)mmio[E1000_REG_RCTL / 4]);
+    e1000_diag_reg("RDH", (uint64_t)mmio[E1000_REG_RDH / 4]);
+    e1000_diag_reg("RDT", (uint64_t)mmio[E1000_REG_RDT / 4]);
+    e1000_diag_reg("TDH", (uint64_t)mmio[E1000_REG_TDH / 4]);
+    e1000_diag_reg("TDT", (uint64_t)mmio[E1000_REG_TDT / 4]);
+    e1000_diag_reg("CRCERRS", (uint64_t)mmio[0x4000 / 4]);
+    e1000_diag_reg("MPC", (uint64_t)mmio[0x4010 / 4]);
+    e1000_diag_reg("RNBC", (uint64_t)mmio[0x40A0 / 4]);
+    e1000_diag_reg("GPRC", (uint64_t)mmio[0x4074 / 4]);
+    e1000_diag_reg("GPTC", (uint64_t)mmio[0x4080 / 4]);
+    e1000_diag_reg("TPR", (uint64_t)mmio[0x40D0 / 4]);
+    e1000_diag_reg("TPT", (uint64_t)mmio[0x40D4 / 4]);
 }
 
 static void e1000_probe_and_log(uint64_t pml4_phys)
@@ -4005,7 +4221,19 @@ static void e1000_probe_and_log(uint64_t pml4_phys)
     serial_write_hex((uint64_t)link_guard);
     serial_write(")\r\n");
 
+    e1000_diag_dump("SEBELUM enable bus master");
+
+    // PCI Command: bit1 Memory Space + bit2 Bus Master. Status di
+    // upper 16 bit bersifat write-1-to-clear, jadi hanya tulis 16 bit bawah.
+    uint32_t pci_cmd_now = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE,
+                                             E1000_PCI_FUNCTION, 0x04) & 0xFFFFu;
+    e1000_pci_cmd_write((uint16_t)(pci_cmd_now | 0x0006u));
+
+    e1000_diag_dump("SESUDAH enable bus master");
+
     e1000_tx_init(mmio);
+    e1000_rx_init(mmio);
+    e1000_diag_dump("SESUDAH rx poll");
 }
 
 // Net-2: setup TX descriptor ring (8 slot, cuma slot 0 dipakai),
@@ -4070,6 +4298,104 @@ static void e1000_send_test_packet(void)
 // stack sungguhan -- ini murni supaya format paket valid, bukan klaim
 // kepemilikan IP). Target 192.168.115.254 (gateway NAT, sudah terbukti
 // aktif dari capture Wireshark sebelumnya).
+static uint32_t g_e1000_rx_next = 0;
+
+static void e1000_log_dec8(uint8_t v)
+{
+    if (v >= 100) {
+        serial_putc((char)('0' + v / 100));
+    }
+    if (v >= 10) {
+        serial_putc((char)('0' + (v / 10) % 10));
+    }
+    serial_putc((char)('0' + v % 10));
+}
+
+static void e1000_log_ip(volatile uint8_t *p)
+{
+    for (int i = 0; i < 4; i++) {
+        e1000_log_dec8(p[i]);
+        if (i < 3) {
+            serial_putc('.');
+        }
+    }
+}
+
+static void e1000_log_mac(volatile uint8_t *p)
+{
+    for (int i = 0; i < 6; i++) {
+        e1000_log_hexbyte(p[i]);
+        if (i < 5) {
+            serial_putc(':');
+        }
+    }
+}
+
+// Konsumsi ring RX berurutan mulai g_e1000_rx_next. Tiap slot DD:
+// log ringkas, decode ARP, recycle descriptor, update RDT.
+static void e1000_rx_listen(uint64_t max_iter, int max_packets)
+{
+    if (!g_e1000_rx_initialized) {
+        serial_write("E1000: RX listen dibatalkan - RX belum di-init\r\n");
+        return;
+    }
+
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+    int got = 0;
+    uint64_t guard = 0;
+
+    serial_write("E1000: RX listen mulai\r\n");
+
+    while (got < max_packets && guard < max_iter) {
+        volatile uint8_t *desc =
+            (volatile uint8_t *)(g_e1000_rx_ring_virt + (g_e1000_rx_next * 16));
+
+        if (!(desc[0x0C] & E1000_RXD_STA_DD)) {
+            guard++;
+            continue;
+        }
+
+        uint32_t len = (uint32_t)desc[0x08] | ((uint32_t)desc[0x09] << 8);
+        volatile uint8_t *buf =
+            (volatile uint8_t *)(g_e1000_rx_buf_phys[g_e1000_rx_next] + hhdm_offset);
+        uint32_t ethertype = ((uint32_t)buf[12] << 8) | (uint32_t)buf[13];
+
+        serial_write("E1000: RX slot=");
+        serial_write_hex((uint64_t)g_e1000_rx_next);
+        serial_write(" len=");
+        serial_write_hex((uint64_t)len);
+        serial_write(" ethertype=");
+        serial_write_hex((uint64_t)ethertype);
+        serial_write(" src=");
+        e1000_log_mac(buf + 6);
+        serial_write("\r\n");
+
+        if (ethertype == 0x0806 && len >= 42) {
+            uint32_t oper = ((uint32_t)buf[20] << 8) | (uint32_t)buf[21];
+
+            serial_write("E1000: RX ARP ");
+            serial_write(oper == 2 ? "REPLY" : (oper == 1 ? "REQUEST" : "OPER-?"));
+            serial_write(" sender_mac=");
+            e1000_log_mac(buf + 22);
+            serial_write(" sender_ip=");
+            e1000_log_ip(buf + 28);
+            serial_write(" target_ip=");
+            e1000_log_ip(buf + 38);
+            serial_write("\r\n");
+        }
+
+        desc[0x0C] = 0;
+        desc[0x0D] = 0;
+        mmio[E1000_REG_RDT / 4] = g_e1000_rx_next;
+        g_e1000_rx_next = (g_e1000_rx_next + 1) % E1000_RX_RING_SIZE;
+        got++;
+    }
+
+    serial_write("E1000: RX listen selesai, paket=");
+    serial_write_hex((uint64_t)got);
+    serial_write("\r\n");
+}
+
 static void e1000_send_arp_request(void)
 {
     uint64_t pkt_phys = pmm_alloc();
@@ -4116,17 +4442,17 @@ static void e1000_send_arp_request(void)
 
     pkt_virt[a + 0x0E] = 192;
     pkt_virt[a + 0x0F] = 168;
-    pkt_virt[a + 0x10] = 115;
+    pkt_virt[a + 0x10] = 50;
     pkt_virt[a + 0x11] = 200;
 
     for (int i = 0; i < 6; i++) {
         pkt_virt[a + 0x12 + i] = 0x00;
     }
 
-    pkt_virt[a + 0x16] = 192;
-    pkt_virt[a + 0x17] = 168;
-    pkt_virt[a + 0x18] = 115;
-    pkt_virt[a + 0x19] = 254;
+    pkt_virt[a + 0x18] = 192;
+    pkt_virt[a + 0x19] = 168;
+    pkt_virt[a + 0x1A] = 50;
+    pkt_virt[a + 0x1B] = 1;
 
     uint32_t frame_len = 14 + 28;
 
@@ -4137,13 +4463,15 @@ static void e1000_send_arp_request(void)
     serial_write("Net-3: mengirim ARP request, panjang=");
     serial_write_hex(frame_len);
     serial_write(" byte\r\n");
-    serial_write("Net-3: sender_ip=192.168.115.200 target_ip=192.168.115.254\r\n");
+    serial_write("Net-3: sender_ip=192.168.50.200 target_ip=192.168.50.1\r\n");
 
     int ok = e1000_tx_send(pkt_phys, frame_len);
 
     serial_write("Net-3: e1000_tx_send -> ");
     serial_write(ok ? "sukses (DD set)" : "GAGAL");
     serial_write("\r\n");
+
+    e1000_rx_listen(1500000000ULL, 6);
 }
 
 static void ahci_probe_and_log(uint64_t pml4_phys)
