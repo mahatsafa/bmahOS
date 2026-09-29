@@ -3972,19 +3972,6 @@ static int e1000_tx_send(uint64_t pkt_phys, uint32_t frame_len)
     uint32_t tdt_now = mmio[E1000_REG_TDT / 4];
     uint8_t *desc = g_e1000_tx_ring_virt + (tdt_now * 16);
 
-    serial_write("E1000: TX frame dump (32 byte pertama):");
-    {
-        volatile uint8_t *pv = (volatile uint8_t *)(pkt_phys + hhdm_offset);
-        for (uint32_t i = 0; i < 32; i++) {
-            if ((i % 16) == 0) {
-                serial_write("\r\n  ");
-            }
-            e1000_log_hexbyte(pv[i]);
-            serial_putc(' ');
-        }
-        serial_write("\r\n");
-    }
-
     uint64_t *desc_addr = (uint64_t *)(desc + 0x00);
     *desc_addr = pkt_phys;
 
@@ -4007,10 +3994,6 @@ static int e1000_tx_send(uint64_t pkt_phys, uint32_t frame_len)
             return 0;
         }
     }
-
-    for (volatile uint64_t d = 0; d < 200000000ULL; d++) {
-    }
-    e1000_diag_dump("SESUDAH tx_send");
 
     return 1;
 }
@@ -4331,6 +4314,108 @@ static void e1000_log_mac(volatile uint8_t *p)
     }
 }
 
+// ---- Net-5: konfigurasi IP statis + ARP responder + dispatch RX ----
+static const uint8_t g_net_ip[4] = {192, 168, 50, 200};
+static uint32_t g_net_arp_replies_sent = 0;
+static uint64_t g_net_tx_buf_phys = 0;
+
+static int net_ip_equal(volatile uint8_t *a, const uint8_t *b)
+{
+    for (int i = 0; i < 4; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// req = pointer ke awal frame ARP request di buffer RX.
+static void net_arp_send_reply(volatile uint8_t *req)
+{
+    if (g_net_tx_buf_phys == 0) {
+        g_net_tx_buf_phys = pmm_alloc();
+
+        if (g_net_tx_buf_phys == 0) {
+            serial_write("Net-5: FATAL - pmm_alloc gagal untuk TX buffer\r\n");
+            return;
+        }
+    }
+
+    uint8_t *p = (uint8_t *)(g_net_tx_buf_phys + hhdm_offset);
+
+    for (uint64_t i = 0; i < 64; i++) {
+        p[i] = 0;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        p[i] = req[6 + i];
+        p[6 + i] = g_e1000_mac[i];
+    }
+
+    p[12] = 0x08;
+    p[13] = 0x06;
+
+    p[14] = 0x00;
+    p[15] = 0x01;
+    p[16] = 0x08;
+    p[17] = 0x00;
+    p[18] = 6;
+    p[19] = 4;
+    p[20] = 0x00;
+    p[21] = 0x02;
+
+    for (int i = 0; i < 6; i++) {
+        p[22 + i] = g_e1000_mac[i];
+        p[32 + i] = req[22 + i];
+    }
+
+    for (int i = 0; i < 4; i++) {
+        p[28 + i] = g_net_ip[i];
+        p[38 + i] = req[28 + i];
+    }
+
+    int ok = e1000_tx_send(g_net_tx_buf_phys, 60);
+
+    if (ok) {
+        g_net_arp_replies_sent++;
+    }
+
+    serial_write("Net-5: ARP reply -> ");
+    serial_write(ok ? "terkirim (DD set)" : "GAGAL");
+    serial_write("\r\n");
+}
+
+static void net_handle_arp(volatile uint8_t *buf)
+{
+    uint32_t htype = ((uint32_t)buf[14] << 8) | (uint32_t)buf[15];
+    uint32_t ptype = ((uint32_t)buf[16] << 8) | (uint32_t)buf[17];
+    uint32_t oper = ((uint32_t)buf[20] << 8) | (uint32_t)buf[21];
+
+    if (htype != 1 || ptype != 0x0800 || buf[18] != 6 || buf[19] != 4) {
+        return;
+    }
+
+    if (oper == 1 && net_ip_equal(buf + 38, g_net_ip)) {
+        serial_write("Net-5: ARP request untuk IP kita dari ");
+        e1000_log_ip(buf + 28);
+        serial_write("\r\n");
+        net_arp_send_reply(buf);
+    }
+}
+
+static void net_rx_dispatch(volatile uint8_t *buf, uint32_t len)
+{
+    if (len < 14) {
+        return;
+    }
+
+    uint32_t ethertype = ((uint32_t)buf[12] << 8) | (uint32_t)buf[13];
+
+    if (ethertype == 0x0806 && len >= 42) {
+        net_handle_arp(buf);
+    }
+}
+
 // Konsumsi ring RX berurutan mulai g_e1000_rx_next. Tiap slot DD:
 // log ringkas, decode ARP, recycle descriptor, update RDT.
 static void e1000_rx_listen(uint64_t max_iter, int max_packets)
@@ -4346,7 +4431,8 @@ static void e1000_rx_listen(uint64_t max_iter, int max_packets)
 
     serial_write("E1000: RX listen mulai\r\n");
 
-    while (got < max_packets && guard < max_iter) {
+    while (got < max_packets && guard < max_iter &&
+           g_net_arp_replies_sent < 3) {
         volatile uint8_t *desc =
             (volatile uint8_t *)(g_e1000_rx_ring_virt + (g_e1000_rx_next * 16));
 
@@ -4383,6 +4469,8 @@ static void e1000_rx_listen(uint64_t max_iter, int max_packets)
             e1000_log_ip(buf + 38);
             serial_write("\r\n");
         }
+
+        net_rx_dispatch(buf, len);
 
         desc[0x0C] = 0;
         desc[0x0D] = 0;
@@ -4471,7 +4559,7 @@ static void e1000_send_arp_request(void)
     serial_write(ok ? "sukses (DD set)" : "GAGAL");
     serial_write("\r\n");
 
-    e1000_rx_listen(1500000000ULL, 6);
+    e1000_rx_listen(6000000000ULL, 200);
 }
 
 static void ahci_probe_and_log(uint64_t pml4_phys)
