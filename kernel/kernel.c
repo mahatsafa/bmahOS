@@ -4403,6 +4403,171 @@ static void net_handle_arp(volatile uint8_t *buf)
     }
 }
 
+// ---- Net-6: checksum, IPv4 parse, ICMP echo reply ----
+static uint32_t g_net_icmp_replies_sent = 0;
+static uint16_t g_net_ip_id = 1;
+
+// Internet checksum (RFC 1071). Hitung atas data yang sudah berisi field
+// checksum -> hasil 0 kalau valid. Hitung dengan field checksum = 0 ->
+// hasilnya nilai yang ditulis (big-endian) ke field checksum.
+static uint16_t net_checksum16(volatile uint8_t *p, uint32_t len)
+{
+    uint32_t sum = 0;
+
+    while (len > 1) {
+        sum += ((uint32_t)p[0] << 8) | (uint32_t)p[1];
+        p += 2;
+        len -= 2;
+    }
+
+    if (len == 1) {
+        sum += (uint32_t)p[0] << 8;
+    }
+
+    while (sum >> 16) {
+        sum = (sum & 0xFFFFu) + (sum >> 16);
+    }
+
+    return (uint16_t)(~sum);
+}
+
+// req = awal frame Ethernet request (IPv4 header di offset 14),
+// ihl = panjang header IP request (byte), icmp_len = panjang pesan ICMP.
+static void net_icmp_send_echo_reply(volatile uint8_t *req, uint32_t ihl,
+                                     uint32_t icmp_len)
+{
+    if (icmp_len > 1480) {
+        serial_write("Net-6: ICMP terlalu besar, drop\r\n");
+        return;
+    }
+
+    if (g_net_tx_buf_phys == 0) {
+        g_net_tx_buf_phys = pmm_alloc();
+
+        if (g_net_tx_buf_phys == 0) {
+            serial_write("Net-6: FATAL - pmm_alloc gagal untuk TX buffer\r\n");
+            return;
+        }
+    }
+
+    uint8_t *p = (uint8_t *)(g_net_tx_buf_phys + hhdm_offset);
+
+    uint32_t frame_len = 14 + 20 + icmp_len;
+    uint32_t send_len = frame_len < 60 ? 60 : frame_len;
+
+    for (uint32_t i = 0; i < send_len; i++) {
+        p[i] = 0;
+    }
+
+    // Ethernet
+    for (int i = 0; i < 6; i++) {
+        p[i] = req[6 + i];
+        p[6 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0x00;
+
+    // IPv4 header (20 byte, tanpa options)
+    p[14] = 0x45;
+    p[15] = 0x00;
+    p[16] = (uint8_t)((20 + icmp_len) >> 8);
+    p[17] = (uint8_t)((20 + icmp_len) & 0xFF);
+    p[18] = (uint8_t)(g_net_ip_id >> 8);
+    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
+    g_net_ip_id++;
+    p[20] = 0x40;
+    p[21] = 0x00;
+    p[22] = 64;
+    p[23] = 1;
+    p[24] = 0;
+    p[25] = 0;
+
+    for (int i = 0; i < 4; i++) {
+        p[26 + i] = g_net_ip[i];
+        p[30 + i] = req[26 + i];
+    }
+
+    uint16_t ipc = net_checksum16(p + 14, 20);
+    p[24] = (uint8_t)(ipc >> 8);
+    p[25] = (uint8_t)(ipc & 0xFF);
+
+    // ICMP: salin pesan request, ubah type -> 0 (echo reply)
+    for (uint32_t i = 0; i < icmp_len; i++) {
+        p[34 + i] = req[14 + ihl + i];
+    }
+    p[34] = 0;
+    p[36] = 0;
+    p[37] = 0;
+
+    uint16_t icc = net_checksum16(p + 34, icmp_len);
+    p[36] = (uint8_t)(icc >> 8);
+    p[37] = (uint8_t)(icc & 0xFF);
+
+    int ok = e1000_tx_send(g_net_tx_buf_phys, send_len);
+
+    if (ok) {
+        g_net_icmp_replies_sent++;
+    }
+
+    serial_write("Net-6: ICMP echo reply -> ");
+    serial_write(ok ? "terkirim (DD set)" : "GAGAL");
+    serial_write("\r\n");
+}
+
+static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
+{
+    if (len < 14 + 20) {
+        return;
+    }
+
+    uint32_t ver = buf[14] >> 4;
+    uint32_t ihl = (uint32_t)(buf[14] & 0x0F) * 4;
+    uint32_t total_len = ((uint32_t)buf[16] << 8) | (uint32_t)buf[17];
+    uint32_t frag = ((uint32_t)(buf[20] & 0x3F) << 8) | (uint32_t)buf[21];
+
+    if (ver != 4 || ihl < 20 || total_len < ihl || 14 + total_len > len) {
+        return;
+    }
+
+    if (frag != 0) {
+        return;
+    }
+
+    if (!net_ip_equal(buf + 30, g_net_ip)) {
+        return;
+    }
+
+    if (net_checksum16(buf + 14, ihl) != 0) {
+        serial_write("Net-6: IPv4 header checksum salah, drop\r\n");
+        return;
+    }
+
+    if (buf[23] != 1) {
+        return;
+    }
+
+    uint32_t icmp_len = total_len - ihl;
+
+    if (icmp_len < 8) {
+        return;
+    }
+
+    if (net_checksum16(buf + 14 + ihl, icmp_len) != 0) {
+        serial_write("Net-6: ICMP checksum salah, drop\r\n");
+        return;
+    }
+
+    if (buf[14 + ihl] == 8 && buf[14 + ihl + 1] == 0) {
+        serial_write("Net-6: ICMP echo request dari ");
+        e1000_log_ip(buf + 26);
+        serial_write(" seq=");
+        serial_write_hex((uint64_t)(((uint32_t)buf[14 + ihl + 6] << 8) |
+                                    (uint32_t)buf[14 + ihl + 7]));
+        serial_write("\r\n");
+        net_icmp_send_echo_reply(buf, ihl, icmp_len);
+    }
+}
+
 static void net_rx_dispatch(volatile uint8_t *buf, uint32_t len)
 {
     if (len < 14) {
@@ -4413,6 +4578,8 @@ static void net_rx_dispatch(volatile uint8_t *buf, uint32_t len)
 
     if (ethertype == 0x0806 && len >= 42) {
         net_handle_arp(buf);
+    } else if (ethertype == 0x0800) {
+        net_handle_ipv4(buf, len);
     }
 }
 
@@ -4432,7 +4599,7 @@ static void e1000_rx_listen(uint64_t max_iter, int max_packets)
     serial_write("E1000: RX listen mulai\r\n");
 
     while (got < max_packets && guard < max_iter &&
-           g_net_arp_replies_sent < 3) {
+           g_net_icmp_replies_sent < 8) {
         volatile uint8_t *desc =
             (volatile uint8_t *)(g_e1000_rx_ring_virt + (g_e1000_rx_next * 16));
 
@@ -4559,7 +4726,7 @@ static void e1000_send_arp_request(void)
     serial_write(ok ? "sukses (DD set)" : "GAGAL");
     serial_write("\r\n");
 
-    e1000_rx_listen(6000000000ULL, 200);
+    e1000_rx_listen(6000000000ULL, 100000);
 }
 
 static void ahci_probe_and_log(uint64_t pml4_phys)
