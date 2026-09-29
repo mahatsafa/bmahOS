@@ -8,3 +8,4 @@ kernel/*.serial-*
 linker.ld.backup
 kernel/*.pmm-working
 patches/
+testdisk/
