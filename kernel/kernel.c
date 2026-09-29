@@ -4273,6 +4273,68 @@ static void crypto_selftest(void)
                     : "Crypto: self-test GAGAL, kripto dinonaktifkan\r\n");
 }
 
+// ---- Net-11b: kunci autentikasi dari disk FAT32 (KEY.TXT) ----
+static uint8_t g_auth_key[64];
+static uint32_t g_auth_key_len = 0;
+static uint64_t g_auth_last_counter = 0;
+
+static void auth_load_key(void)
+{
+    if (!g_crypto_ok) {
+        serial_write("Net-11: kripto tidak lulus self-test, auth tidak aktif\r\n");
+        return;
+    }
+
+    uint32_t cluster = 0;
+    uint32_t size = 0;
+
+    // Return value tidak dipakai untuk memutuskan: konvensinya belum
+    // dipastikan. Yang dipercaya adalah output cluster/size (diinit 0).
+    int rc = fat32_find_file("KEY     TXT", &cluster, &size);
+
+    serial_write("Net-11: cari KEY.TXT rc=");
+    serial_write_hex((uint64_t)(uint32_t)rc);
+    serial_write(" cluster=");
+    serial_write_hex((uint64_t)cluster);
+    serial_write(" size=");
+    serial_write_hex((uint64_t)size);
+    serial_write("\r\n");
+
+    if (cluster < 2 || size == 0 || size > 512) {
+        serial_write("Net-11: KEY.TXT tidak ada/tidak valid, semua perintah ditolak\r\n");
+        return;
+    }
+
+    uint8_t *k = fat32_load_file(cluster, size);
+
+    if (k == 0) {
+        serial_write("Net-11: gagal memuat KEY.TXT, semua perintah ditolak\r\n");
+        return;
+    }
+
+    uint32_t n = size;
+
+    while (n > 0 && (k[n - 1] == '\n' || k[n - 1] == '\r' ||
+                     k[n - 1] == ' '  || k[n - 1] == 0)) {
+        n--;
+    }
+
+    if (n < 16 || n > sizeof(g_auth_key)) {
+        serial_write("Net-11: panjang kunci harus 16..64 byte, semua perintah ditolak\r\n");
+        return;
+    }
+
+    for (uint32_t i = 0; i < n; i++) {
+        g_auth_key[i] = k[i];
+    }
+
+    g_auth_key_len = n;
+
+    serial_write("Net-11: kunci dimuat, panjang=");
+    serial_write_hex((uint64_t)n);
+    serial_write("\r\n");
+}
+
 static void e1000_pci_cmd_write(uint16_t cmd)
 {
     uint32_t addr = 0x80000000u
@@ -4326,6 +4388,7 @@ static void e1000_diag_dump(const char *tag)
 static void e1000_probe_and_log(uint64_t pml4_phys)
 {
     crypto_selftest();
+    auth_load_key();
 
     uint32_t bar0 = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE, E1000_PCI_FUNCTION, E1000_BAR0_OFFSET);
     uint64_t mmio_phys = bar0 & 0xFFFFFFF0ULL;
@@ -5159,6 +5222,114 @@ static void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl)
     irq_restore(lf);
 }
 
+static int auth_hexval(uint8_t c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+// Format: "<counter> <perintah> <hmac-hex-64>".
+// Return: 0 OK, 1 auth nonaktif, 2 format salah, 3 HMAC salah, 4 replay.
+static int auth_verify(volatile uint8_t *d, uint32_t len,
+                       volatile uint8_t **cmd_out, uint32_t *cmd_len_out,
+                       uint64_t *counter_out)
+{
+    if (g_auth_key_len == 0) {
+        return 1;
+    }
+
+    // minimum: counter(1) + spasi + perintah(1) + spasi + hmac(64)
+    if (len < 68) {
+        return 2;
+    }
+
+    uint32_t sp = len;
+
+    while (sp > 0 && d[sp - 1] != ' ') {
+        sp--;
+    }
+
+    if (sp == 0 || len - sp != 64) {
+        return 2;
+    }
+
+    uint32_t msg_len = sp - 1;
+
+    if (msg_len == 0 || msg_len > 200) {
+        return 2;
+    }
+
+    uint32_t fs = 0;
+
+    while (fs < msg_len && d[fs] != ' ') {
+        fs++;
+    }
+
+    if (fs == 0 || fs > 19 || fs + 1 >= msg_len) {
+        return 2;
+    }
+
+    uint64_t counter = 0;
+
+    for (uint32_t i = 0; i < fs; i++) {
+        if (d[i] < '0' || d[i] > '9') {
+            return 2;
+        }
+        counter = counter * 10 + (uint64_t)(d[i] - '0');
+    }
+
+    uint8_t rx[32];
+
+    for (uint32_t i = 0; i < 32; i++) {
+        int hi = auth_hexval(d[sp + i * 2]);
+        int lo = auth_hexval(d[sp + i * 2 + 1]);
+
+        if (hi < 0 || lo < 0) {
+            return 2;
+        }
+
+        rx[i] = (uint8_t)((hi << 4) | lo);
+    }
+
+    uint8_t m[200];
+
+    for (uint32_t i = 0; i < msg_len; i++) {
+        m[i] = d[i];
+    }
+
+    uint8_t mac[32];
+    hmac_sha256(g_auth_key, g_auth_key_len, m, msg_len, mac);
+
+    uint8_t diff = 0;
+
+    for (uint32_t i = 0; i < 32; i++) {
+        diff |= (uint8_t)(mac[i] ^ rx[i]);
+    }
+
+    if (diff != 0) {
+        return 3;
+    }
+
+    if (counter <= g_auth_last_counter) {
+        return 4;
+    }
+
+    g_auth_last_counter = counter;
+    *cmd_out = d + fs + 1;
+    *cmd_len_out = msg_len - fs - 1;
+    *counter_out = counter;
+
+    return 0;
+}
+
 static void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len)
 {
     volatile uint8_t *cmd = req + 14 + ihl + 8;
@@ -5170,7 +5341,40 @@ static void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len
         len--;
     }
 
-    net_cmd_execute(cmd, len);
+    volatile uint8_t *ac = 0;
+    uint32_t acl = 0;
+    uint64_t actr = 0;
+
+    int arc = auth_verify(cmd, len, &ac, &acl, &actr);
+
+    if (arc == 0) {
+        uint64_t lf = irq_save();
+        serial_write("Net-11: auth OK counter=");
+        serial_write_hex(actr);
+        serial_write("\r\n");
+        irq_restore(lf);
+
+        net_cmd_execute(ac, acl);
+    } else {
+        uint64_t lf = irq_save();
+        serial_write("Net-11: auth DITOLAK kode=");
+        serial_write_hex((uint64_t)arc);
+        serial_write("\r\n");
+        irq_restore(lf);
+
+        g_cmd_len = 0;
+
+        if (arc == 1) {
+            cmd_puts("ERR: auth nonaktif (kunci tidak dimuat)\n");
+        } else if (arc == 2) {
+            cmd_puts("ERR: format: <counter> <perintah> <hmac-hex64>\n");
+        } else if (arc == 3) {
+            cmd_puts("ERR: hmac salah\n");
+        } else {
+            cmd_puts("ERR: counter replay\n");
+        }
+    }
+
     net_udp_send_cmd_reply(req, ihl);
 }
 
