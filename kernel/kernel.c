@@ -4732,13 +4732,16 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     if (len == 0) {
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
-        cmd_puts("perintah: help ping uptime mac ip tasks\n");
+        cmd_puts("perintah: help ping uptime mem mac ip tasks\n");
     } else if (net_cmd_is(cmd, len, "ping")) {
         cmd_puts("pong\n");
     } else if (net_cmd_is(cmd, len, "uptime")) {
+        uint64_t t = timer_ticks;
         cmd_puts("uptime: ");
-        cmd_putdec(timer_ticks);
-        cmd_puts(" tick timer\n");
+        cmd_putdec(t / 100);
+        cmd_puts(" detik (");
+        cmd_putdec(t);
+        cmd_puts(" tick @100Hz)\n");
     } else if (net_cmd_is(cmd, len, "mac")) {
         cmd_puts("mac: ");
         for (int i = 0; i < 6; i++) {
@@ -4757,6 +4760,27 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
             }
         }
         cmd_putc('\n');
+    } else if (net_cmd_is(cmd, len, "mem")) {
+        // Hitung frame bebas dengan scan bitmap. Tidak dikunci terhadap
+        // pmm_alloc() task lain, jadi angkanya perkiraan sesaat.
+        uint64_t free_frames = 0;
+
+        for (uint64_t f = 0; f < PMM_MAX_FRAMES; f++) {
+            if (!pmm_bitmap_test(f)) {
+                free_frames++;
+            }
+        }
+
+        cmd_puts("pmm bebas: ");
+        cmd_putdec(free_frames);
+        cmd_puts(" frame (");
+        cmd_putdec(free_frames * PMM_PAGE_SIZE / 1048576ULL);
+        cmd_puts(" MB)\n");
+        cmd_puts("kheap terpakai: ");
+        cmd_putdec((uint64_t)kheap_current - (uint64_t)KHEAP_START);
+        cmd_puts(" byte, termap: ");
+        cmd_putdec(kheap_mapped_end - (uint64_t)KHEAP_START);
+        cmd_puts(" byte\n");
     } else if (net_cmd_is(cmd, len, "tasks")) {
         for (size_t i = 0; i < task_count; i++) {
             cmd_puts("slot ");
