@@ -4654,6 +4654,225 @@ static void net_udp_send_echo(volatile uint8_t *req, uint32_t ihl,
     irq_restore(lf);
 }
 
+// ---- Net-9: remote command lewat UDP (port 7778), HANYA perintah baca ----
+#define NET_UDP_CMD_PORT 7778
+
+static char g_cmd_out[512];
+static uint32_t g_cmd_len = 0;
+
+static void cmd_putc(char c)
+{
+    if (g_cmd_len < sizeof(g_cmd_out)) {
+        g_cmd_out[g_cmd_len++] = c;
+    }
+}
+
+static void cmd_puts(const char *s)
+{
+    while (*s) {
+        cmd_putc(*s++);
+    }
+}
+
+static void cmd_putdec(uint64_t v)
+{
+    char tmp[21];
+    int n = 0;
+
+    if (v == 0) {
+        tmp[n++] = '0';
+    }
+
+    while (v > 0) {
+        tmp[n++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+
+    while (n > 0) {
+        cmd_putc(tmp[--n]);
+    }
+}
+
+static void cmd_puthex8(uint8_t b)
+{
+    static const char h[] = "0123456789ABCDEF";
+    cmd_putc(h[b >> 4]);
+    cmd_putc(h[b & 0xF]);
+}
+
+static int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name)
+{
+    uint32_t i = 0;
+
+    while (name[i]) {
+        if (i >= len || cmd[i] != (uint8_t)name[i]) {
+            return 0;
+        }
+        i++;
+    }
+
+    return i == len;
+}
+
+static const char *cmd_status_name(task_status_t s)
+{
+    switch (s) {
+    case TASK_READY:    return "READY";
+    case TASK_DEAD:     return "DEAD";
+    case TASK_SLEEPING: return "SLEEPING";
+    case TASK_BLOCKED:  return "BLOCKED";
+    default:            return "?";
+    }
+}
+
+static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
+{
+    g_cmd_len = 0;
+
+    if (len == 0) {
+        cmd_puts("ERR: perintah kosong (ketik help)\n");
+    } else if (net_cmd_is(cmd, len, "help")) {
+        cmd_puts("perintah: help ping uptime mac ip tasks\n");
+    } else if (net_cmd_is(cmd, len, "ping")) {
+        cmd_puts("pong\n");
+    } else if (net_cmd_is(cmd, len, "uptime")) {
+        cmd_puts("uptime: ");
+        cmd_putdec(timer_ticks);
+        cmd_puts(" tick timer\n");
+    } else if (net_cmd_is(cmd, len, "mac")) {
+        cmd_puts("mac: ");
+        for (int i = 0; i < 6; i++) {
+            cmd_puthex8(g_e1000_mac[i]);
+            if (i < 5) {
+                cmd_putc(':');
+            }
+        }
+        cmd_putc('\n');
+    } else if (net_cmd_is(cmd, len, "ip")) {
+        cmd_puts("ip: ");
+        for (int i = 0; i < 4; i++) {
+            cmd_putdec(g_net_ip[i]);
+            if (i < 3) {
+                cmd_putc('.');
+            }
+        }
+        cmd_putc('\n');
+    } else if (net_cmd_is(cmd, len, "tasks")) {
+        for (size_t i = 0; i < task_count; i++) {
+            cmd_puts("slot ");
+            cmd_putdec(i);
+            cmd_puts(": ");
+            cmd_puts(cmd_status_name(tasks[i].status));
+            if (tasks[i].is_user_task) {
+                cmd_puts(" user");
+            }
+            if (i == current_index) {
+                cmd_puts(" (menjalankan perintah ini)");
+            }
+            cmd_putc('\n');
+        }
+    } else {
+        cmd_puts("ERR: perintah tidak dikenal (ketik help)\n");
+    }
+}
+
+// Kirim g_cmd_out sebagai datagram UDP balasan ke pengirim req.
+static void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl)
+{
+    uint32_t plen = g_cmd_len;
+    uint32_t udp_len = 8 + plen;
+
+    if (g_net_tx_buf_phys == 0) {
+        g_net_tx_buf_phys = pmm_alloc();
+
+        if (g_net_tx_buf_phys == 0) {
+            serial_write("Net-9: FATAL - pmm_alloc gagal untuk TX buffer\r\n");
+            return;
+        }
+    }
+
+    uint8_t *p = (uint8_t *)(g_net_tx_buf_phys + hhdm_offset);
+    uint32_t r = 14 + ihl;
+
+    uint32_t frame_len = 14 + 20 + udp_len;
+    uint32_t send_len = frame_len < 60 ? 60 : frame_len;
+
+    for (uint32_t i = 0; i < send_len; i++) {
+        p[i] = 0;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        p[i] = req[6 + i];
+        p[6 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0x00;
+
+    p[14] = 0x45;
+    p[15] = 0x00;
+    p[16] = (uint8_t)((20 + udp_len) >> 8);
+    p[17] = (uint8_t)((20 + udp_len) & 0xFF);
+    p[18] = (uint8_t)(g_net_ip_id >> 8);
+    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
+    g_net_ip_id++;
+    p[20] = 0x40;
+    p[21] = 0x00;
+    p[22] = 64;
+    p[23] = 17;
+
+    for (int i = 0; i < 4; i++) {
+        p[26 + i] = g_net_ip[i];
+        p[30 + i] = req[26 + i];
+    }
+
+    uint16_t ipc = net_checksum16(p + 14, 20);
+    p[24] = (uint8_t)(ipc >> 8);
+    p[25] = (uint8_t)(ipc & 0xFF);
+
+    p[34] = req[r + 2];
+    p[35] = req[r + 3];
+    p[36] = req[r + 0];
+    p[37] = req[r + 1];
+    p[38] = (uint8_t)(udp_len >> 8);
+    p[39] = (uint8_t)(udp_len & 0xFF);
+
+    for (uint32_t i = 0; i < plen; i++) {
+        p[42 + i] = (uint8_t)g_cmd_out[i];
+    }
+
+    uint16_t uc = net_udp_checksum(p + 26, p + 30, p + 34, udp_len);
+    if (uc == 0) {
+        uc = 0xFFFF;
+    }
+    p[40] = (uint8_t)(uc >> 8);
+    p[41] = (uint8_t)(uc & 0xFF);
+
+    int ok = e1000_tx_send(g_net_tx_buf_phys, send_len);
+
+    uint64_t lf = irq_save();
+    serial_write("Net-9: balasan perintah (");
+    serial_write_hex((uint64_t)plen);
+    serial_write(" byte) -> ");
+    serial_write(ok ? "terkirim (DD set)" : "GAGAL");
+    serial_write("\r\n");
+    irq_restore(lf);
+}
+
+static void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len)
+{
+    volatile uint8_t *cmd = req + 14 + ihl + 8;
+    uint32_t len = udp_len - 8;
+
+    // Buang trailing CR/LF/spasi/NUL (nc, PowerShell, dll. sering menambah).
+    while (len > 0 && (cmd[len - 1] == '\n' || cmd[len - 1] == '\r' ||
+                       cmd[len - 1] == ' '  || cmd[len - 1] == 0)) {
+        len--;
+    }
+
+    net_cmd_execute(cmd, len);
+    net_udp_send_cmd_reply(req, ihl);
+}
+
 static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
                            uint32_t ip_payload_len)
 {
@@ -4671,7 +4890,7 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
         return;
     }
 
-    if (dst_port != NET_UDP_ECHO_PORT) {
+    if (dst_port != NET_UDP_ECHO_PORT && dst_port != NET_UDP_CMD_PORT) {
         return;
     }
 
@@ -4682,7 +4901,9 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
     }
 
     uint64_t lf = irq_save();
-    serial_write("Net-8: UDP echo port 7777 dari ");
+    serial_write(dst_port == NET_UDP_CMD_PORT
+                 ? "Net-9: UDP cmd port 7778 dari "
+                 : "Net-8: UDP echo port 7777 dari ");
     e1000_log_ip(buf + 26);
     serial_write(" src_port=");
     serial_write_hex((uint64_t)src_port);
@@ -4691,7 +4912,11 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
     serial_write(" byte\r\n");
     irq_restore(lf);
 
-    net_udp_send_echo(buf, ihl, udp_len);
+    if (dst_port == NET_UDP_CMD_PORT) {
+        net_cmd_handle(buf, ihl, udp_len);
+    } else {
+        net_udp_send_echo(buf, ihl, udp_len);
+    }
 }
 
 static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
