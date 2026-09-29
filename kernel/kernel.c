@@ -4445,6 +4445,76 @@ static void e1000_diag_dump(const char *tag)
     e1000_diag_reg("TPT", (uint64_t)mmio[0x40D4 / 4]);
 }
 
+// Net-13a: diagnostik saja, TIDAK mengubah perilaku. Catat info interrupt
+// PCI (Interrupt Line/Pin di config 0x3C) dan register interrupt E1000.
+// Catatan: membaca ICR meng-clear bit sebab yang tertunda.
+// Net-13b: telusuri PCI capability list (pointer di config 0x34).
+// id: 0x01 PM, 0x05 MSI, 0x07 PCI-X, 0x10 PCIe, 0x11 MSI-X.
+static void e1000_pci_caps_diag(void)
+{
+    uint32_t st = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE,
+                                    E1000_PCI_FUNCTION, 0x04) >> 16;
+
+    uint64_t lf = irq_save();
+
+    serial_write("Caps-diag: PCI status=");
+    serial_write_hex((uint64_t)st);
+
+    if (!(st & 0x10)) {
+        serial_write(" (tidak ada capability list)\r\n");
+        irq_restore(lf);
+        return;
+    }
+
+    serial_write("\r\n");
+
+    uint32_t ptr = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE,
+                                     E1000_PCI_FUNCTION, 0x34) & 0xFC;
+
+    for (int guard = 0; guard < 16 && ptr >= 0x40; guard++) {
+        uint32_t dw = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE,
+                                        E1000_PCI_FUNCTION, (uint8_t)ptr);
+
+        serial_write("Caps-diag: offset=");
+        serial_write_hex((uint64_t)ptr);
+        serial_write(" id=");
+        serial_write_hex((uint64_t)(dw & 0xFF));
+        serial_write(" next=");
+        serial_write_hex((uint64_t)((dw >> 8) & 0xFF));
+        serial_write(" ctrl=");
+        serial_write_hex((uint64_t)(dw >> 16));
+        serial_write("\r\n");
+
+        ptr = ((dw >> 8) & 0xFF) & 0xFC;
+    }
+
+    serial_write("Caps-diag: selesai\r\n");
+    irq_restore(lf);
+}
+
+static void e1000_irq_diag(volatile uint32_t *mmio)
+{
+    uint32_t r3c = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE,
+                                     E1000_PCI_FUNCTION, 0x3C);
+
+    uint64_t lf = irq_save();
+    serial_write("IRQ-diag: PCI 0x3C raw=");
+    serial_write_hex((uint64_t)r3c);
+    serial_write(" interrupt_line=");
+    serial_write_hex((uint64_t)(r3c & 0xFF));
+    serial_write(" interrupt_pin=");
+    serial_write_hex((uint64_t)((r3c >> 8) & 0xFF));
+    serial_write("\r\n");
+    serial_write("IRQ-diag: E1000 IMS=");
+    serial_write_hex((uint64_t)mmio[0x00D0 / 4]);
+    serial_write(" ITR=");
+    serial_write_hex((uint64_t)mmio[0x00C4 / 4]);
+    serial_write(" ICR(clear-on-read)=");
+    serial_write_hex((uint64_t)mmio[0x00C0 / 4]);
+    serial_write("\r\n");
+    irq_restore(lf);
+}
+
 static void e1000_probe_and_log(uint64_t pml4_phys)
 {
     crypto_selftest();
@@ -4617,6 +4687,8 @@ static void e1000_probe_and_log(uint64_t pml4_phys)
     e1000_tx_init(mmio);
     e1000_rx_init(mmio);
     e1000_diag_dump("SESUDAH rx poll");
+    e1000_irq_diag(mmio);
+    e1000_pci_caps_diag();
 }
 
 // Net-2: setup TX descriptor ring (8 slot, cuma slot 0 dipakai),
