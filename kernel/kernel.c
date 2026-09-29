@@ -4380,9 +4380,11 @@ static void net_arp_send_reply(volatile uint8_t *req)
         g_net_arp_replies_sent++;
     }
 
+    uint64_t lf = irq_save();
     serial_write("Net-5: ARP reply -> ");
     serial_write(ok ? "terkirim (DD set)" : "GAGAL");
     serial_write("\r\n");
+    irq_restore(lf);
 }
 
 static void net_handle_arp(volatile uint8_t *buf)
@@ -4396,9 +4398,11 @@ static void net_handle_arp(volatile uint8_t *buf)
     }
 
     if (oper == 1 && net_ip_equal(buf + 38, g_net_ip)) {
+        uint64_t lf = irq_save();
         serial_write("Net-5: ARP request untuk IP kita dari ");
         e1000_log_ip(buf + 28);
         serial_write("\r\n");
+        irq_restore(lf);
         net_arp_send_reply(buf);
     }
 }
@@ -4509,9 +4513,11 @@ static void net_icmp_send_echo_reply(volatile uint8_t *req, uint32_t ihl,
         g_net_icmp_replies_sent++;
     }
 
+    uint64_t lf = irq_save();
     serial_write("Net-6: ICMP echo reply -> ");
     serial_write(ok ? "terkirim (DD set)" : "GAGAL");
     serial_write("\r\n");
+    irq_restore(lf);
 }
 
 static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
@@ -4558,12 +4564,14 @@ static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
     }
 
     if (buf[14 + ihl] == 8 && buf[14 + ihl + 1] == 0) {
+        uint64_t lf = irq_save();
         serial_write("Net-6: ICMP echo request dari ");
         e1000_log_ip(buf + 26);
         serial_write(" seq=");
         serial_write_hex((uint64_t)(((uint32_t)buf[14 + ihl + 6] << 8) |
                                     (uint32_t)buf[14 + ihl + 7]));
         serial_write("\r\n");
+        irq_restore(lf);
         net_icmp_send_echo_reply(buf, ihl, icmp_len);
     }
 }
@@ -4711,11 +4719,13 @@ static void net_task_entry(void)
     uint64_t rf_after;
     __asm__ volatile ("pushfq; popq %0" : "=r"(rf_after));
 
+    uint64_t lf = irq_save();
     serial_write("Net-7: net task dimulai (polling permanen) RFLAGS sebelum=");
     serial_write_hex(rf_before);
     serial_write(" sesudah sti=");
     serial_write_hex(rf_after);
     serial_write("\r\n");
+    irq_restore(lf);
 
     for (;;) {
         if (net_poll() == 0) {
