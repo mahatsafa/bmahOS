@@ -714,12 +714,72 @@ static inline void irq_restore(uint64_t flags)
     }
 }
 
+// ---- Net-12: ring buffer log (disaring: tanpa baris schedule()) ----
+#define LOG_RING_SIZE 8192
+#define LOG_LINE_MAX  160
+
+static char g_log_ring[LOG_RING_SIZE];
+static uint32_t g_log_head = 0;
+static uint64_t g_log_total = 0;
+static char g_log_line[LOG_LINE_MAX];
+static uint32_t g_log_line_len = 0;
+
+// Dipanggil dari serial_putc() dengan interrupt dimatikan. Merakit baris
+// dulu; baris lengkap masuk ring kecuali kosong atau diawali
+// "schedule(): switch" (bising, ~100 baris/detik).
+static void log_capture(char c)
+{
+    static const char noisy[] = "schedule(): switch";
+    const uint32_t noisy_len = sizeof(noisy) - 1;
+
+    if (c == '\r') {
+        return;
+    }
+
+    if (c != '\n') {
+        if (g_log_line_len < LOG_LINE_MAX) {
+            g_log_line[g_log_line_len++] = c;
+        }
+        return;
+    }
+
+    int skip = (g_log_line_len == 0);
+
+    if (!skip && g_log_line_len >= noisy_len) {
+        skip = 1;
+        for (uint32_t i = 0; i < noisy_len; i++) {
+            if (g_log_line[i] != noisy[i]) {
+                skip = 0;
+                break;
+            }
+        }
+    }
+
+    if (!skip) {
+        for (uint32_t i = 0; i < g_log_line_len; i++) {
+            g_log_ring[g_log_head] = g_log_line[i];
+            g_log_head = (g_log_head + 1) & (LOG_RING_SIZE - 1);
+            g_log_total++;
+        }
+
+        g_log_ring[g_log_head] = '\n';
+        g_log_head = (g_log_head + 1) & (LOG_RING_SIZE - 1);
+        g_log_total++;
+    }
+
+    g_log_line_len = 0;
+}
+
 static void serial_putc(char c)
 {
     while (!(inb(COM1 + 5) & 0x20))
         ;
 
     outb(COM1, (uint8_t)c);
+
+    uint64_t lf = irq_save();
+    log_capture(c);
+    irq_restore(lf);
 }
 
 // Versi TANPA lock -- dipakai internal oleh fungsi lain yang SUDAH
@@ -4997,7 +5057,7 @@ static void net_udp_send_echo(volatile uint8_t *req, uint32_t ihl,
 // ---- Net-9: remote command lewat UDP (port 7778), HANYA perintah baca ----
 #define NET_UDP_CMD_PORT 7778
 
-static char g_cmd_out[512];
+static char g_cmd_out[1400];
 static uint32_t g_cmd_len = 0;
 
 static void cmd_putc(char c)
@@ -5072,7 +5132,7 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     if (len == 0) {
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
-        cmd_puts("perintah: help ping uptime mem mac ip tasks\n");
+        cmd_puts("perintah: help ping uptime mem log mac ip tasks\n");
     } else if (net_cmd_is(cmd, len, "ping")) {
         cmd_puts("pong\n");
     } else if (net_cmd_is(cmd, len, "uptime")) {
@@ -5100,6 +5160,36 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
             }
         }
         cmd_putc('\n');
+    } else if (net_cmd_is(cmd, len, "log")) {
+        // Salin di bawah irq_save supaya konsisten terhadap penulisan
+        // ring dari konteks lain (tanpa I/O di dalam bagian ini).
+        uint64_t lf = irq_save();
+        uint64_t avail = g_log_total < LOG_RING_SIZE ? g_log_total : LOG_RING_SIZE;
+        uint64_t want = avail < 1200 ? avail : 1200;
+        uint32_t start = (uint32_t)((g_log_head + LOG_RING_SIZE - want) &
+                                    (LOG_RING_SIZE - 1));
+        uint64_t i = 0;
+
+        if (want < avail) {
+            // Potongan mulai di tengah baris: lewati sampai newline pertama.
+            while (i < want && g_log_ring[(start + i) & (LOG_RING_SIZE - 1)] != '\n') {
+                i++;
+            }
+            if (i < want) {
+                i++;
+            }
+        }
+
+        for (; i < want; i++) {
+            char ch = g_log_ring[(start + i) & (LOG_RING_SIZE - 1)];
+            cmd_putc((ch == '\n' || (ch >= 32 && ch < 127)) ? ch : '?');
+        }
+
+        irq_restore(lf);
+
+        if (g_cmd_len == 0) {
+            cmd_puts("(log kosong)\n");
+        }
     } else if (net_cmd_is(cmd, len, "mem")) {
         // Hitung frame bebas dengan scan bitmap. Tidak dikunci terhadap
         // pmm_alloc() task lain, jadi angkanya perkiraan sesaat.
