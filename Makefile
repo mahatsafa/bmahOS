@@ -9,6 +9,10 @@ LD := ld
 
 CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -m64 -march=x86-64 -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=kernel -Wall -Wextra -I$(KERNEL_DIR) -I$(LIMINE_INC) -c
 
+ifeq ($(PROD),1)
+CFLAGS += -DBMAHOS_PROD
+endif
+
 LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
 C_SRCS := $(KERNEL_DIR)/kernel.c

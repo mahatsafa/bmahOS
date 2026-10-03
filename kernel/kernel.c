@@ -2008,6 +2008,9 @@ static void task_create(task_t *task, void (*entry_function)(void), uint64_t sta
 
 static task_t tasks[MAX_TASKS];
 static size_t task_count = 0;
+// Indeks task idle di tasks[]; (size_t)-1 = belum ada. Tidak ikut round-robin:
+// hanya dipilih scheduler kalau tidak ada task lain yang READY.
+static size_t g_idle_index = (size_t)-1;
 static volatile bool scheduler_started = false;
 static size_t current_index = 0;
 
@@ -2493,7 +2496,8 @@ static void schedule(void)
 
     for (size_t attempt = 0; attempt < task_count; attempt++) {
         next_index = (next_index + 1) % task_count;
-        if (tasks[next_index].status == TASK_READY) {
+        if (tasks[next_index].status == TASK_READY &&
+            next_index != g_idle_index) {
             found = true;
             break;
         }
@@ -2501,8 +2505,12 @@ static void schedule(void)
 
     // Semua task DEAD (atau tidak ada yang READY) -- tidak ada yang
     // bisa dijalankan, jangan context switch ke mana pun.
+    // Kalau ada task idle, pindah ke sana (kecuali sudah di idle).
     if (!found) {
-        return;
+        if (g_idle_index == (size_t)-1 || current_index == g_idle_index) {
+            return;
+        }
+        next_index = g_idle_index;
     }
 
     // Bug tersembunyi yang baru terungkap lewat task_sleep(): bounded
@@ -5477,6 +5485,9 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
             if (tasks[i].is_user_task) {
                 cmd_puts(" user");
             }
+            if (i == g_idle_index) {
+                cmd_puts(" idle");
+            }
             if (i == current_index) {
                 cmd_puts(" (menjalankan perintah ini)");
             }
@@ -5955,6 +5966,17 @@ static int net_poll(void)
 // Kernel task jaringan: polling terus, dipreempt scheduler (timer).
 // Utang teknis: busy-poll (pause), belum interrupt-driven, jadi CPU
 // tidak pernah idle. Akan diganti IRQ E1000 via IOAPIC.
+// Task idle: tidak pernah blok. Task kernel baru mulai dengan IF=0 (lihat
+// Net-7), jadi sti dulu; hlt berhenti sampai interrupt berikutnya (tick).
+static void idle_task_entry(void)
+{
+    __asm__ volatile ("sti");
+
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
+}
+
 static void net_task_entry(void)
 {
     if (!g_e1000_rx_initialized) {
@@ -6599,6 +6621,11 @@ void kmain(void)
     serial_write("Task A, B, dan user task dibuat, mulai jalankan lewat scheduler...\r\n");
     serial_write("\r\n");
 
+#ifdef BMAHOS_PROD
+    task_count = 0;
+    serial_write("PROD: task uji dilewati (task_count direset ke 0)\r\n");
+#endif
+
     if (task_count < MAX_TASKS) {
         task_create(&tasks[task_count], net_task_entry, 8192);
         serial_write("Net-7: net task dibuat di slot ");
@@ -6607,6 +6634,17 @@ void kmain(void)
         task_count++;
     } else {
         serial_write("Net-7: WARNING - slot task penuh, net task tidak dibuat\r\n");
+    }
+
+    if (task_count < MAX_TASKS) {
+        g_idle_index = task_count;
+        task_create(&tasks[task_count], idle_task_entry, 4096);
+        serial_write("Idle: task idle dibuat di slot ");
+        serial_write_hex((uint64_t)task_count);
+        serial_write("\r\n");
+        task_count++;
+    } else {
+        serial_write("Idle: WARNING - slot task penuh, tanpa task idle\r\n");
     }
 
     static task_t kernel_dummy_task;
