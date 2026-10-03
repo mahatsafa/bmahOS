@@ -249,6 +249,7 @@ static void serial_write(const char *s);
 static void serial_write_hex(uint64_t value);
 static void lapic_send_eoi(void);
 static void e1000_irq_service(void);
+static void net_rx_tick_wake(void);
 static void schedule(void);
 static void task_exit(void);
 static void task_sleep(uint64_t ticks);
@@ -1057,6 +1058,7 @@ void irq_handler(struct exception_context *context)
 
     if (irq_num == 0) {
         timer_ticks++;
+        net_rx_tick_wake();
     }
 
     if (irq_num == 1) {
@@ -4462,6 +4464,19 @@ static volatile uint32_t g_e1000_irq_icr_or = 0;
 static volatile uint32_t g_e1000_irq_rirr_or = 0;
 static volatile uint32_t g_e1000_irq_masked = 0;
 static volatile uint32_t g_e1000_irq_last_gsi = 0;
+static volatile uint32_t g_e1000_irq_gsi = 0;
+static volatile uint64_t g_net_loops = 0;
+static semaphore_t g_net_rx_sem = { .count = 0 };
+
+// Cadangan: tiap tick timer membangunkan net task (maks. 1 post tertunda)
+// supaya interrupt yang terlewat paling lama tertunda satu tick. Aktif
+// hanya setelah GSI E1000 terkunci.
+static void net_rx_tick_wake(void)
+{
+    if (g_e1000_irq_gsi != 0 && g_net_rx_sem.count < 1) {
+        sem_post(&g_net_rx_sem);
+    }
+}
 
 // Dipanggil dari irq_handler() (interrupt mati, sebelum EOI). Baca ICR
 // dulu (melepas garis level-triggered), lalu catat GSI mana yang
@@ -4487,13 +4502,41 @@ static void e1000_irq_service(void)
 
     if (icr != 0) {
         g_e1000_irq_rirr_or |= rirr;
+
+        // Tepat satu pin dengan Remote-IRR menyala saat ICR != 0 -> pin itu
+        // INTx E1000. Kunci, lalu mask semua kandidat lain.
+        if (g_e1000_irq_gsi == 0 && rirr != 0 && (rirr & (rirr - 1)) == 0) {
+            uint32_t bit = 0;
+
+            while (!(rirr & (1u << bit))) {
+                bit++;
+            }
+
+            uint32_t locked = 16 + bit;
+
+            for (uint32_t gsi = 16; gsi <= g_e1000_irq_last_gsi; gsi++) {
+                if (gsi != locked) {
+                    uint32_t idx = IOAPIC_REDTBL_BASE + gsi * 2;
+
+                    ioapic_write(idx, ioapic_read(idx) | (1u << 16));
+                    g_e1000_irq_masked |= 1u << (gsi - 16);
+                }
+            }
+
+            g_e1000_irq_gsi = locked;
+        }
+
+        if (g_net_rx_sem.count < 1) {
+            sem_post(&g_net_rx_sem);
+        }
+
         return;
     }
 
     g_e1000_irq_spurious++;
 
     for (uint32_t gsi = 16; gsi <= g_e1000_irq_last_gsi; gsi++) {
-        if (rirr & (1u << (gsi - 16))) {
+        if ((rirr & (1u << (gsi - 16))) && gsi != g_e1000_irq_gsi) {
             uint32_t idx = IOAPIC_REDTBL_BASE + gsi * 2;
             uint32_t low = ioapic_read(idx);
 
@@ -4543,7 +4586,7 @@ static void e1000_irq_experiment(void)
     mmio[0x00D8 / 4] = 0xFFFFFFFFu;
     uint32_t dummy = mmio[0x00C0 / 4];
     (void)dummy;
-    mmio[0x00D0 / 4] = 0x80u;
+    mmio[0x00D0 / 4] = 0xC0u;
 
     serial_write("IRQ-exp: GSI 16..");
     serial_write_hex((uint64_t)last);
@@ -5379,6 +5422,10 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts(" icr_or=0x");
         cmd_puthex8((uint8_t)(g_e1000_irq_icr_or >> 8));
         cmd_puthex8((uint8_t)g_e1000_irq_icr_or);
+        cmd_puts(" gsi_terkunci=");
+        cmd_putdec(g_e1000_irq_gsi);
+        cmd_puts(" net_loop=");
+        cmd_putdec(g_net_loops);
         cmd_puts("\ngsi_aktif:");
 
         for (uint32_t i = 0; i < 8; i++) {
@@ -5953,7 +6000,14 @@ static void net_task_entry(void)
             irq_restore(lf2);
         }
 
-        if (net_poll() == 0) {
+        g_net_loops++;
+
+        while (net_poll() > 0) {
+        }
+
+        if (g_e1000_irq_gsi != 0) {
+            sem_wait(&g_net_rx_sem);
+        } else {
             __asm__ volatile ("pause");
         }
     }
