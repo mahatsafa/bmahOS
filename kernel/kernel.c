@@ -62,6 +62,7 @@ extern void isr18(void);
 extern void isr19(void);
 extern void isr128(void);
 extern void irq32(void);
+extern void irq33(void);
 
 void kmain(void);
 
@@ -247,6 +248,7 @@ static inline uint32_t inl(uint16_t port)
 static void serial_write(const char *s);
 static void serial_write_hex(uint64_t value);
 static void lapic_send_eoi(void);
+static void e1000_irq_service(void);
 static void schedule(void);
 static void task_exit(void);
 static void task_sleep(uint64_t ticks);
@@ -1055,6 +1057,10 @@ void irq_handler(struct exception_context *context)
 
     if (irq_num == 0) {
         timer_ticks++;
+    }
+
+    if (irq_num == 1) {
+        e1000_irq_service();
     }
 
     // LAPIC (bukan legacy PIC) yang mengirim interrupt ini (lewat
@@ -4448,6 +4454,106 @@ static void e1000_diag_dump(const char *tag)
 // Net-13a: diagnostik saja, TIDAK mengubah perilaku. Catat info interrupt
 // PCI (Interrupt Line/Pin di config 0x3C) dan register interrupt E1000.
 // Catatan: membaca ICR meng-clear bit sebab yang tertunda.
+// ---- Net-13c: eksperimen interrupt RX E1000 (cari GSI INTx) ----
+static volatile uint64_t g_e1000_irq_count = 0;
+static volatile uint64_t g_e1000_irq_spurious = 0;
+static volatile uint32_t g_e1000_irq_last_icr = 0;
+static volatile uint32_t g_e1000_irq_icr_or = 0;
+static volatile uint32_t g_e1000_irq_rirr_or = 0;
+static volatile uint32_t g_e1000_irq_masked = 0;
+static volatile uint32_t g_e1000_irq_last_gsi = 0;
+
+// Dipanggil dari irq_handler() (interrupt mati, sebelum EOI). Baca ICR
+// dulu (melepas garis level-triggered), lalu catat GSI mana yang
+// Remote-IRR-nya menyala. Bila ICR = 0 berarti bukan interrupt kita:
+// mask GSI yang menyala supaya tidak jadi interrupt storm.
+static void e1000_irq_service(void)
+{
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+    uint32_t icr = mmio[0x00C0 / 4];
+    uint32_t rirr = 0;
+
+    for (uint32_t gsi = 16; gsi <= g_e1000_irq_last_gsi; gsi++) {
+        uint32_t low = ioapic_read(IOAPIC_REDTBL_BASE + gsi * 2);
+
+        if (low & (1u << 14)) {
+            rirr |= 1u << (gsi - 16);
+        }
+    }
+
+    g_e1000_irq_count++;
+    g_e1000_irq_last_icr = icr;
+    g_e1000_irq_icr_or |= icr;
+
+    if (icr != 0) {
+        g_e1000_irq_rirr_or |= rirr;
+        return;
+    }
+
+    g_e1000_irq_spurious++;
+
+    for (uint32_t gsi = 16; gsi <= g_e1000_irq_last_gsi; gsi++) {
+        if (rirr & (1u << (gsi - 16))) {
+            uint32_t idx = IOAPIC_REDTBL_BASE + gsi * 2;
+            uint32_t low = ioapic_read(idx);
+
+            ioapic_write(idx, low | (1u << 16));
+            g_e1000_irq_masked |= 1u << (gsi - 16);
+        }
+    }
+}
+
+// Dipanggil setelah IOAPIC ter-map, saat interrupt masih mati (sebelum sti).
+// Petakan GSI 16..min(max_entry,23) -> vektor 33, level + active-low,
+// lalu nyalakan IMS.RXT0 di E1000.
+static void e1000_irq_experiment(void)
+{
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+
+    uint64_t lf = irq_save();
+
+    uint32_t ver = ioapic_read(0x01);
+    uint32_t max_entry = (ver >> 16) & 0xFF;
+    uint32_t last = max_entry < 23 ? max_entry : 23;
+
+    serial_write("IRQ-exp: IOAPIC ver=");
+    serial_write_hex((uint64_t)ver);
+    serial_write(" max_entry=");
+    serial_write_hex((uint64_t)max_entry);
+    serial_write(" gsi_base=");
+    serial_write_hex((uint64_t)g_ioapic_gsi_base);
+    serial_write("\r\n");
+
+    if (last < 16) {
+        serial_write("IRQ-exp: IOAPIC tidak punya pin 16+, eksperimen dilewati\r\n");
+        irq_restore(lf);
+        return;
+    }
+
+    g_e1000_irq_last_gsi = last;
+
+    for (uint32_t gsi = 16; gsi <= last; gsi++) {
+        uint32_t idx = IOAPIC_REDTBL_BASE + gsi * 2;
+
+        ioapic_write(idx + 1, 0);
+        // vektor 33, fixed, physical, active-low (bit13), level (bit15), unmasked
+        ioapic_write(idx, 33u | (1u << 13) | (1u << 15));
+    }
+
+    mmio[0x00D8 / 4] = 0xFFFFFFFFu;
+    uint32_t dummy = mmio[0x00C0 / 4];
+    (void)dummy;
+    mmio[0x00D0 / 4] = 0x80u;
+
+    serial_write("IRQ-exp: GSI 16..");
+    serial_write_hex((uint64_t)last);
+    serial_write(" -> vektor 33 (level, active-low), IMS readback=");
+    serial_write_hex((uint64_t)mmio[0x00D0 / 4]);
+    serial_write("\r\n");
+
+    irq_restore(lf);
+}
+
 // Net-13b: telusuri PCI capability list (pointer di config 0x34).
 // id: 0x01 PM, 0x05 MSI, 0x07 PCI-X, 0x10 PCIe, 0x11 MSI-X.
 static void e1000_pci_caps_diag(void)
@@ -5204,7 +5310,7 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     if (len == 0) {
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
-        cmd_puts("perintah: help ping uptime mem log mac ip tasks\n");
+        cmd_puts("perintah: help ping uptime mem log irq mac ip tasks\n");
     } else if (net_cmd_is(cmd, len, "ping")) {
         cmd_puts("pong\n");
     } else if (net_cmd_is(cmd, len, "uptime")) {
@@ -5262,6 +5368,38 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         if (g_cmd_len == 0) {
             cmd_puts("(log kosong)\n");
         }
+    } else if (net_cmd_is(cmd, len, "irq")) {
+        cmd_puts("e1000 irq: count=");
+        cmd_putdec(g_e1000_irq_count);
+        cmd_puts(" spurious=");
+        cmd_putdec(g_e1000_irq_spurious);
+        cmd_puts(" last_icr=0x");
+        cmd_puthex8((uint8_t)(g_e1000_irq_last_icr >> 8));
+        cmd_puthex8((uint8_t)g_e1000_irq_last_icr);
+        cmd_puts(" icr_or=0x");
+        cmd_puthex8((uint8_t)(g_e1000_irq_icr_or >> 8));
+        cmd_puthex8((uint8_t)g_e1000_irq_icr_or);
+        cmd_puts("\ngsi_aktif:");
+
+        for (uint32_t i = 0; i < 8; i++) {
+            if (g_e1000_irq_rirr_or & (1u << i)) {
+                cmd_putc(' ');
+                cmd_putdec(16 + i);
+            }
+        }
+
+        cmd_puts("\ngsi_dimask:");
+
+        for (uint32_t i = 0; i < 8; i++) {
+            if (g_e1000_irq_masked & (1u << i)) {
+                cmd_putc(' ');
+                cmd_putdec(16 + i);
+            }
+        }
+
+        cmd_puts("\nrentang: 16..");
+        cmd_putdec(g_e1000_irq_last_gsi);
+        cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "mem")) {
         // Hitung frame bebas dengan scan bitmap. Tidak dikunci terhadap
         // pmm_alloc() task lain, jadi angkanya perkiraan sesaat.
@@ -5799,6 +5937,22 @@ static void net_task_entry(void)
     irq_restore(lf);
 
     for (;;) {
+        static int irq_reported = 0;
+
+        if (!irq_reported && g_e1000_irq_count > 0) {
+            irq_reported = 1;
+
+            uint64_t lf2 = irq_save();
+            serial_write("IRQ-exp: interrupt E1000 pertama terlihat, count=");
+            serial_write_hex((uint64_t)g_e1000_irq_count);
+            serial_write(" icr_or=");
+            serial_write_hex((uint64_t)g_e1000_irq_icr_or);
+            serial_write(" rirr_or=");
+            serial_write_hex((uint64_t)g_e1000_irq_rirr_or);
+            serial_write("\r\n");
+            irq_restore(lf2);
+        }
+
         if (net_poll() == 0) {
             __asm__ volatile ("pause");
         }
@@ -6044,6 +6198,7 @@ void kmain(void)
 
     idt_init();
     idt_set_entry(32, (uint64_t)irq32, 0x08, 0x8E);
+    idt_set_entry(33, (uint64_t)irq33, 0x08, 0x8E);
     print_idt_entry32();
 
 
@@ -6313,6 +6468,7 @@ void kmain(void)
     e1000_send_test_packet();
     e1000_send_arp_request();
     ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, 0);
+    e1000_irq_experiment();
     serial_write("\r\n");
     pic_remap();
     // pic_unmask_irq(0) SENGAJA TIDAK dipanggil -- IRQ0/GSI2 sekarang

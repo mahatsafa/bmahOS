@@ -238,3 +238,4 @@ irq\num:
 
 # IRQ0 = timer, terhubung ke vektor 32 setelah PIC remap
 IRQ 32, 0
+IRQ 33, 1
