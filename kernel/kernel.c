@@ -6600,7 +6600,11 @@ void kmain(void)
     e1000_send_test_packet();
     e1000_send_arp_request();
     ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, 0);
+#ifndef BMAHOS_NOIRQ
     e1000_irq_experiment();
+#else
+    serial_write("NOIRQ: eksperimen interrupt E1000 dilewati (hanya tick-wake)\r\n");
+#endif
     serial_write("\r\n");
     pic_remap();
     // pic_unmask_irq(0) SENGAJA TIDAK dipanggil -- IRQ0/GSI2 sekarang

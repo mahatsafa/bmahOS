@@ -13,6 +13,10 @@ ifeq ($(PROD),1)
 CFLAGS += -DBMAHOS_PROD
 endif
 
+ifeq ($(NOIRQ),1)
+CFLAGS += -DBMAHOS_NOIRQ
+endif
+
 LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
 C_SRCS := $(KERNEL_DIR)/kernel.c
