@@ -52,6 +52,16 @@ UDP echo tanpa autentikasi ada di port 7777.
 
 Contoh klien (PowerShell) ada di riwayat pengembangan; implementasinya hanya `HMACSHA256` dan `UdpClient`.
 
+## Hardware target (hasil pemeriksaan dari Linux di HP Stream)
+
+- CPU: Intel Celeron N2840
+- Jaringan: hanya Wi-Fi Realtek RTL8723BE (PCIe); driver Linux memuat firmware
+  `rtlwifi/rtl8723befw_36.bin`. Tidak ada Ethernet kabel
+- USB: hanya controller xHCI
+- Penyimpanan internal: eMMC (~29 GB), bukan SATA/AHCI
+- Akibatnya driver E1000 dan AHCI yang ada sekarang tidak berlaku di hardware asli; yang dibutuhkan
+  driver SDHCI (eMMC) dan salah satu dari driver Wi-Fi atau xHCI + USB Ethernet
+
 ## Arah berikutnya (belum dikerjakan)
 
 - Statistik/metrics: satu perintah yang mengembalikan semua counter (paket, error, memori, autentikasi)
