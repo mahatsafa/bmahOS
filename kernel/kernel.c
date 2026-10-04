@@ -2874,7 +2874,7 @@ static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 #define E1000_RCTL_BAM     (1u << 15)
 #define E1000_RCTL_STANDARD (E1000_RCTL_EN | E1000_RCTL_UPE | \
                              E1000_RCTL_MPE | E1000_RCTL_BAM)
-#define E1000_RX_RING_SIZE 8
+#define E1000_RX_RING_SIZE 64
 #define E1000_RXD_STA_DD   0x01
 
 #define E1000_CTRL_RST     (1u << 26)
@@ -5510,6 +5510,8 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(g_net_rx_frames);
         cmd_puts(" rx_err=");
         cmd_putdec(g_net_rx_errors);
+        cmd_puts(" ring=");
+        cmd_putdec(E1000_RX_RING_SIZE);
         cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "mem")) {
         // Hitung frame bebas dengan scan bitmap. Tidak dikunci terhadap
