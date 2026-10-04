@@ -5154,6 +5154,36 @@ static void net_icmp_send_echo_reply(volatile uint8_t *req, uint32_t ihl,
 
 static uint32_t g_net_udp_echo_count = 0;
 
+// ---- Net-15: batas laju datagram UDP + counter (benih "metrics") ----
+// Datagram ke port layanan kita dibatasi NET_UDP_BUDGET_PER_SEC per detik
+// (jendela tetap 100 tick). Sisanya dibuang SEBELUM log dan HMAC. Hanya
+// dipanggil dari net task, jadi tidak perlu lock.
+#define NET_UDP_BUDGET_PER_SEC 100
+
+static uint64_t g_net_budget_window = 0;
+static uint32_t g_net_budget_used = 0;
+static uint64_t g_net_udp_dropped = 0;
+static uint64_t g_auth_ok = 0;
+static uint64_t g_auth_denied[5] = {0, 0, 0, 0, 0};
+
+static int net_udp_budget_ok(void)
+{
+    uint64_t now = timer_ticks;
+
+    if (now - g_net_budget_window >= 100) {
+        g_net_budget_window = now;
+        g_net_budget_used = 0;
+    }
+
+    if (g_net_budget_used >= NET_UDP_BUDGET_PER_SEC) {
+        g_net_udp_dropped++;
+        return 0;
+    }
+
+    g_net_budget_used++;
+    return 1;
+}
+
 static uint32_t net_sum16(const volatile uint8_t *p, uint32_t len, uint32_t sum)
 {
     while (len > 1) {
@@ -5361,7 +5391,7 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     if (len == 0) {
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
-        cmd_puts("perintah: help ping uptime mem log irq mac ip tasks\n");
+        cmd_puts("perintah: help ping uptime mem log irq stats mac ip tasks\n");
     } else if (net_cmd_is(cmd, len, "ping")) {
         cmd_puts("pong\n");
     } else if (net_cmd_is(cmd, len, "uptime")) {
@@ -5454,6 +5484,26 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
 
         cmd_puts("\nrentang: 16..");
         cmd_putdec(g_e1000_irq_last_gsi);
+        cmd_putc('\n');
+    } else if (net_cmd_is(cmd, len, "stats")) {
+        cmd_puts("udp: echo=");
+        cmd_putdec(g_net_udp_echo_count);
+        cmd_puts(" dibuang_batas=");
+        cmd_putdec(g_net_udp_dropped);
+        cmd_puts(" batas/detik=");
+        cmd_putdec(NET_UDP_BUDGET_PER_SEC);
+        cmd_puts("\nauth: ok=");
+        cmd_putdec(g_auth_ok);
+        cmd_puts(" nonaktif=");
+        cmd_putdec(g_auth_denied[1]);
+        cmd_puts(" format=");
+        cmd_putdec(g_auth_denied[2]);
+        cmd_puts(" hmac=");
+        cmd_putdec(g_auth_denied[3]);
+        cmd_puts(" replay=");
+        cmd_putdec(g_auth_denied[4]);
+        cmd_puts("\nrx_irq=");
+        cmd_putdec(g_e1000_irq_count);
         cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "mem")) {
         // Hitung frame bebas dengan scan bitmap. Tidak dikunci terhadap
@@ -5706,6 +5756,12 @@ static void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len
     int arc = auth_verify(cmd, len, &ac, &acl, &actr);
 
     if (arc == 0) {
+        g_auth_ok++;
+    } else if (arc >= 1 && arc <= 4) {
+        g_auth_denied[arc]++;
+    }
+
+    if (arc == 0) {
         uint64_t lf = irq_save();
         serial_write("Net-11: auth OK counter=");
         serial_write_hex(actr);
@@ -5754,6 +5810,10 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
     }
 
     if (dst_port != NET_UDP_ECHO_PORT && dst_port != NET_UDP_CMD_PORT) {
+        return;
+    }
+
+    if (!net_udp_budget_ok()) {
         return;
     }
 
