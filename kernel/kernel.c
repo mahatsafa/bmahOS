@@ -4481,7 +4481,7 @@ static semaphore_t g_net_rx_sem = { .count = 0 };
 // hanya setelah GSI E1000 terkunci.
 static void net_rx_tick_wake(void)
 {
-    if (g_e1000_irq_gsi != 0 && g_net_rx_sem.count < 1) {
+    if (g_net_rx_sem.count < 1) {
         sem_post(&g_net_rx_sem);
     }
 }
@@ -6027,11 +6027,7 @@ static void net_task_entry(void)
         while (net_poll() > 0) {
         }
 
-        if (g_e1000_irq_gsi != 0) {
-            sem_wait(&g_net_rx_sem);
-        } else {
-            __asm__ volatile ("pause");
-        }
+        sem_wait(&g_net_rx_sem);
     }
 }
 
