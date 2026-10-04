@@ -12,7 +12,7 @@ Dikembangkan dan diuji di VMware Workstation. Belum pernah diuji di hardware asl
 - Ringan, headless/server, operasi 24/7
 - Administrasi jarak jauh
 - Jaringan, monitoring sistem dan jaringan
-- Dukungan IoT dan robotika
+- Dapat menjalankan beban kerja IoT dan robotika (jangka panjang, bukan fokus pengembangan saat ini)
 - Open source
 
 ## Status (terverifikasi lewat log serial dan Wireshark di VMware)
@@ -51,6 +51,12 @@ Perintah (hanya baca): `help`, `ping`, `uptime`, `mem`, `log`, `irq`, `mac`, `ip
 UDP echo tanpa autentikasi ada di port 7777.
 
 Contoh klien (PowerShell) ada di riwayat pengembangan; implementasinya hanya `HMACSHA256` dan `UdpClient`.
+
+## Arah berikutnya (belum dikerjakan)
+
+- Statistik/metrics: satu perintah yang mengembalikan semua counter (paket, error, memori, autentikasi)
+- TCP, lalu CLI interaktif di atasnya dengan autentikasi challenge-response
+- SSH hanya dipertimbangkan setelah itu
 
 ## Batasan yang diketahui
 
