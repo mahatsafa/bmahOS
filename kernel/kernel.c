@@ -5163,6 +5163,8 @@ static uint32_t g_net_udp_echo_count = 0;
 static uint64_t g_net_budget_window = 0;
 static uint32_t g_net_budget_used = 0;
 static uint64_t g_net_udp_dropped = 0;
+static uint64_t g_net_rx_frames = 0;
+static uint64_t g_net_rx_errors = 0;
 static uint64_t g_auth_ok = 0;
 static uint64_t g_auth_denied[5] = {0, 0, 0, 0, 0};
 
@@ -5504,6 +5506,10 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(g_auth_denied[4]);
         cmd_puts("\nrx_irq=");
         cmd_putdec(g_e1000_irq_count);
+        cmd_puts(" rx_frames=");
+        cmd_putdec(g_net_rx_frames);
+        cmd_puts(" rx_err=");
+        cmd_putdec(g_net_rx_errors);
         cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "mem")) {
         // Hitung frame bebas dengan scan bitmap. Tidak dikunci terhadap
@@ -6009,8 +6015,12 @@ static int net_poll(void)
         volatile uint8_t *buf =
             (volatile uint8_t *)(g_e1000_rx_buf_phys[g_e1000_rx_next] + hhdm_offset);
 
+        g_net_rx_frames++;
+
         if (desc[0x0D] == 0) {
             net_rx_dispatch(buf, len);
+        } else {
+            g_net_rx_errors++;
         }
 
         desc[0x0C] = 0;
