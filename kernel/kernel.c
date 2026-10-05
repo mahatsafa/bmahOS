@@ -4036,10 +4036,15 @@ static void __attribute__((unused)) e1000_rx_poll_test(void)
 // tidak pernah reprogram TDBAL/TDBAH/TDLEN/TCTL lagi.
 static void e1000_diag_dump(const char *tag);
 
+// Net-19: counter TX (dibaca perintah metrics)
+static uint64_t g_net_tx_ok = 0;
+static uint64_t g_net_tx_fail = 0;
+
 static int e1000_tx_send(uint64_t pkt_phys, uint32_t frame_len)
 {
     if (!g_e1000_tx_initialized) {
         serial_write("E1000: FATAL - TX ring belum di-init\r\n");
+        g_net_tx_fail++;
         return 0;
     }
 
@@ -4067,10 +4072,12 @@ static int e1000_tx_send(uint64_t pkt_phys, uint32_t frame_len)
         guard++;
         if (guard > 1000000) {
             serial_write("E1000: FATAL - timeout menunggu DD di e1000_tx_send\r\n");
+            g_net_tx_fail++;
             return 0;
         }
     }
 
+    g_net_tx_ok++;
     return 1;
 }
 
@@ -5172,6 +5179,11 @@ static uint64_t g_auth_denied[5] = {0, 0, 0, 0, 0};
 static uint64_t g_chal_issued = 0;
 static uint64_t g_priv_ok = 0;
 static uint64_t g_priv_denied[6] = {0, 0, 0, 0, 0, 0};
+// Net-19: frame per jenis + UDP checksum salah
+static uint64_t g_net_rx_arp = 0;
+static uint64_t g_net_rx_ipv4 = 0;
+static uint64_t g_net_rx_other = 0;
+static uint64_t g_net_udp_badsum = 0;
 
 static int net_udp_budget_ok(void)
 {
@@ -5380,6 +5392,15 @@ static int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *nam
     return i == len;
 }
 
+// Net-19: satu baris "kunci=nilai" untuk perintah metrics
+static void cmd_kv(const char *k, uint64_t v)
+{
+    cmd_puts(k);
+    cmd_putc('=');
+    cmd_putdec(v);
+    cmd_putc('\n');
+}
+
 static const char *cmd_status_name(task_status_t s)
 {
     switch (s) {
@@ -5398,7 +5419,7 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     if (len == 0) {
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
-        cmd_puts("perintah: help ping uptime mem log irq stats mac ip tasks\n");
+        cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks\n");
         cmd_puts("berprivilege: kirim CHAL, lalu <nonce> <pping|reboot> <hmac>\n");
     } else if (net_cmd_is(cmd, len, "ping")) {
         cmd_puts("pong\n");
@@ -5533,6 +5554,46 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts(" ring=");
         cmd_putdec(E1000_RX_RING_SIZE);
         cmd_putc('\n');
+    } else if (net_cmd_is(cmd, len, "metrics")) {
+        // Format stabil untuk skrip: satu kunci=nilai per baris.
+        uint64_t free_frames = 0;
+
+        for (uint64_t f = 0; f < PMM_MAX_FRAMES; f++) {
+            if (!pmm_bitmap_test(f)) {
+                free_frames++;
+            }
+        }
+
+        cmd_kv("uptime_ticks", timer_ticks);
+        cmd_kv("mem_free_kb", free_frames * PMM_PAGE_SIZE / 1024ULL);
+        cmd_kv("heap_used", (uint64_t)kheap_current - (uint64_t)KHEAP_START);
+        cmd_kv("tasks", task_count);
+        cmd_kv("log_total", g_log_total);
+        cmd_kv("rx_frames", g_net_rx_frames);
+        cmd_kv("rx_err", g_net_rx_errors);
+        cmd_kv("rx_irq", g_e1000_irq_count);
+        cmd_kv("rx_arp", g_net_rx_arp);
+        cmd_kv("rx_ipv4", g_net_rx_ipv4);
+        cmd_kv("rx_other", g_net_rx_other);
+        cmd_kv("tx_ok", g_net_tx_ok);
+        cmd_kv("tx_fail", g_net_tx_fail);
+        cmd_kv("arp_reply", g_net_arp_replies_sent);
+        cmd_kv("icmp_reply", g_net_icmp_replies_sent);
+        cmd_kv("udp_echo", g_net_udp_echo_count);
+        cmd_kv("udp_dropped", g_net_udp_dropped);
+        cmd_kv("udp_badsum", g_net_udp_badsum);
+        cmd_kv("auth_ok", g_auth_ok);
+        cmd_kv("auth_nonaktif", g_auth_denied[1]);
+        cmd_kv("auth_format", g_auth_denied[2]);
+        cmd_kv("auth_hmac", g_auth_denied[3]);
+        cmd_kv("auth_replay", g_auth_denied[4]);
+        cmd_kv("priv_chal", g_chal_issued);
+        cmd_kv("priv_ok", g_priv_ok);
+        cmd_kv("priv_nonaktif", g_priv_denied[1]);
+        cmd_kv("priv_format", g_priv_denied[2]);
+        cmd_kv("priv_nonce", g_priv_denied[3]);
+        cmd_kv("priv_kedaluwarsa", g_priv_denied[4]);
+        cmd_kv("priv_hmac", g_priv_denied[5]);
     } else if (net_cmd_is(cmd, len, "mem")) {
         // Hitung frame bebas dengan scan bitmap. Tidak dikunci terhadap
         // pmm_alloc() task lain, jadi angkanya perkiraan sesaat.
@@ -6259,6 +6320,7 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
 
     if (csum != 0 &&
         net_udp_checksum(buf + 26, buf + 30, buf + r, udp_len) != 0) {
+        g_net_udp_badsum++;
         serial_write("Net-8: UDP checksum salah, drop\r\n");
         return;
     }
@@ -6352,9 +6414,13 @@ static void net_rx_dispatch(volatile uint8_t *buf, uint32_t len)
     uint32_t ethertype = ((uint32_t)buf[12] << 8) | (uint32_t)buf[13];
 
     if (ethertype == 0x0806 && len >= 42) {
+        g_net_rx_arp++;
         net_handle_arp(buf);
     } else if (ethertype == 0x0800) {
+        g_net_rx_ipv4++;
         net_handle_ipv4(buf, len);
+    } else {
+        g_net_rx_other++;
     }
 }
 

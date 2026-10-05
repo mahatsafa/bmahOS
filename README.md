@@ -25,7 +25,7 @@ Dikembangkan dan diuji di VMware Workstation. Belum pernah diuji di hardware asl
 - Task idle (`hlt`), build produksi tanpa task uji
 - Perintah jarak jauh terautentikasi HMAC-SHA256 (SHA-256/HMAC ditulis sendiri, self-test vektor resmi saat boot)
 - Challenge-response nonce untuk perintah berprivilege, termasuk `reboot` (8042, cadangan triple fault)
-- Batas laju 100 datagram/detik, ring log 8 KB, counter di perintah `stats`
+- Batas laju 100 datagram/detik, ring log 8 KB, counter di perintah `stats` dan `metrics`
 
 ## Build
 
@@ -59,7 +59,10 @@ Datagram: `<counter> <perintah> <hmac-hex-64>`
 - `hmac` = HMAC-SHA256 (kunci dari `KEY.TXT`) atas string `<counter> <perintah>`
 - `counter` harus lebih besar dari counter terakhir yang diterima (anti-replay)
 
-Perintah: `help`, `ping`, `uptime`, `mem`, `log`, `irq`, `stats`, `mac`, `ip`, `tasks`
+Perintah: `help`, `ping`, `uptime`, `mem`, `log`, `irq`, `stats`, `metrics`, `mac`, `ip`, `tasks`
+
+`metrics` mengembalikan semua counter dalam format stabil untuk skrip, satu `kunci=nilai` per baris
+(uptime, memori, frame RX per jenis, TX ok/gagal, ARP/ICMP/UDP, autentikasi, perintah berprivilege).
 
 ### Perintah berprivilege (jalur nonce)
 
@@ -91,7 +94,6 @@ Contoh klien (PowerShell) ada di riwayat pengembangan; implementasinya hanya `HM
 
 ## Arah berikutnya (belum dikerjakan)
 
-- Statistik/metrics: format yang lebih rapi dan mudah diparse untuk semua counter
 - TCP, lalu CLI interaktif di atasnya dengan autentikasi challenge-response
 - SSH hanya dipertimbangkan setelah itu
 
