@@ -5399,7 +5399,7 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
         cmd_puts("perintah: help ping uptime mem log irq stats mac ip tasks\n");
-        cmd_puts("berprivilege: kirim CHAL, lalu <nonce> pping <hmac>\n");
+        cmd_puts("berprivilege: kirim CHAL, lalu <nonce> <pping|reboot> <hmac>\n");
     } else if (net_cmd_is(cmd, len, "ping")) {
         cmd_puts("pong\n");
     } else if (net_cmd_is(cmd, len, "uptime")) {
@@ -6033,14 +6033,59 @@ static int priv_verify(volatile uint8_t *d, uint32_t len,
     return 0;
 }
 
+// ---- Net-18B: reboot berprivilege ----
+// Dipanggil SETELAH balasan terkirim. 8042 pulse reset (0xFE); jika mesin
+// belum reset, cadangan triple fault (IDT limit 0 lalu int3). Reset ACPI
+// (FADT) belum di-parse. NOKBDRESET=1 melewati 8042 untuk menguji cadangan.
+static int g_priv_reboot_pending = 0;
+
+static void priv_do_reboot(void)
+{
+    __asm__ volatile("cli");
+
+#ifndef BMAHOS_NOKBDRESET
+    serial_write("Net-18B: reboot via 8042 (0xFE)\r\n");
+
+    for (uint32_t i = 0; i < 100000; i++) {
+        if ((inb(0x64) & 0x02) == 0) {
+            break;
+        }
+    }
+
+    outb(0x64, 0xFE);
+
+    for (uint32_t i = 0; i < 1000000; i++) {
+        (void)inb(0x64);
+    }
+
+    serial_write("Net-18B: 8042 tidak me-reset, cadangan triple fault\r\n");
+#else
+    serial_write("Net-18B: reboot via triple fault (build NOKBDRESET)\r\n");
+#endif
+
+    struct __attribute__((packed)) {
+        uint16_t limit;
+        uint64_t base;
+    } zero_idt = {0, 0};
+
+    __asm__ volatile("lidt %0; int3" : : "m"(zero_idt));
+
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
 static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
 {
     g_cmd_len = 0;
 
     if (net_cmd_is(cmd, len, "pping")) {
         cmd_puts("ppong\n");
+    } else if (net_cmd_is(cmd, len, "reboot")) {
+        cmd_puts("reboot: dimulai\n");
+        g_priv_reboot_pending = 1;
     } else {
-        cmd_puts("ERR: perintah berprivilege tidak dikenal (ada: pping)\n");
+        cmd_puts("ERR: perintah berprivilege tidak dikenal (ada: pping reboot)\n");
     }
 }
 
@@ -6137,6 +6182,10 @@ static void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len
 
     if (priv_try_handle(cmd, len)) {
         net_udp_send_cmd_reply(req, ihl);
+
+        if (g_priv_reboot_pending) {
+            priv_do_reboot();
+        }
         return;
     }
 
