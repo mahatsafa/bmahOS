@@ -23,6 +23,9 @@ Dikembangkan dan diuji di VMware Workstation. Belum pernah diuji di hardware asl
 - Jaringan (NIC Intel 82545EM / E1000 emulasi VMware): TX/RX ring, ARP, IPv4, ICMP echo, UDP
 - Interrupt RX E1000 via IOAPIC (GSI INTx ditemukan lewat eksperimen), net task tidur sampai ada paket
 - Task idle (`hlt`), build produksi tanpa task uji
+- Perintah jarak jauh terautentikasi HMAC-SHA256 (SHA-256/HMAC ditulis sendiri, self-test vektor resmi saat boot)
+- Challenge-response nonce untuk perintah berprivilege, termasuk `reboot` (8042, cadangan triple fault)
+- Batas laju 100 datagram/detik, ring log 8 KB, counter di perintah `stats`
 
 ## Build
 
@@ -30,6 +33,12 @@ Kebutuhan: `gcc`, `ld`, `xorriso`, dan Limine di `tools/limine` (binary + protoc
 
     make iso            # build biasa (task uji ikut jalan, untuk pengembangan)
     make iso PROD=1     # build produksi (task uji dilewati, hanya net + idle)
+
+Flag uji (bisa digabung):
+
+    NOIRQ=1             # jaringan tanpa interrupt E1000 (hanya dibangunkan tiap tick)
+    NORDRAND=1          # nonce tanpa rdrand (uji jalur cadangan sumber acak)
+    NOKBDRESET=1        # reboot tanpa 8042 (uji jalur cadangan triple fault)
 
 Hasil: `build/bmahOS.iso`.
 
@@ -41,12 +50,30 @@ Hasil: `build/bmahOS.iso`.
 
 ## Perintah jarak jauh (UDP port 7778)
 
+Semua datagram melewati batas laju global (100 per detik); sisanya dibuang sebelum log dan HMAC.
+
+### Perintah baca (jalur counter)
+
 Datagram: `<counter> <perintah> <hmac-hex-64>`
 
 - `hmac` = HMAC-SHA256 (kunci dari `KEY.TXT`) atas string `<counter> <perintah>`
 - `counter` harus lebih besar dari counter terakhir yang diterima (anti-replay)
 
-Perintah (hanya baca): `help`, `ping`, `uptime`, `mem`, `log`, `irq`, `mac`, `ip`, `tasks`
+Perintah: `help`, `ping`, `uptime`, `mem`, `log`, `irq`, `stats`, `mac`, `ip`, `tasks`
+
+### Perintah berprivilege (jalur nonce)
+
+1. Kirim `CHAL`; balasan `nonce: <32 hex>` (16 byte acak dari SHA-256 atas rdrand, TSC, tick, RTC, pool).
+2. Kirim `<nonce> <perintah> <hmac-hex-64>`, `hmac` atas string `<nonce> <perintah>`.
+
+Nonce berlaku 5 detik dan sekali pakai; tabel 4 slot (CHAL baru menggusur yang tertua). Nonce dicari
+sebelum HMAC dihitung, dan baru dihapus setelah HMAC valid. Karena tabel ada di RAM, datagram yang
+direkam sebelum reboot tidak bisa diputar ulang.
+
+Perintah: `pping` (balas `ppong`, untuk uji), `reboot` (balasan dikirim dulu, lalu reset).
+
+Kode tolak (juga dihitung di baris `priv:` perintah `stats`): nonaktif, format, nonce tidak dikenal/
+sudah dipakai, kedaluwarsa, hmac salah.
 
 UDP echo tanpa autentikasi ada di port 7777.
 
@@ -64,15 +91,19 @@ Contoh klien (PowerShell) ada di riwayat pengembangan; implementasinya hanya `HM
 
 ## Arah berikutnya (belum dikerjakan)
 
-- Statistik/metrics: satu perintah yang mengembalikan semua counter (paket, error, memori, autentikasi)
+- Statistik/metrics: format yang lebih rapi dan mudah diparse untuk semua counter
 - TCP, lalu CLI interaktif di atasnya dengan autentikasi challenge-response
 - SSH hanya dipertimbangkan setelah itu
 
 ## Batasan yang diketahui
 
 - Autentikasi hanya menjamin keaslian perintah, bukan kerahasiaan balasan (teks polos)
-- Counter anti-replay disimpan di RAM; setelah reboot datagram lama bisa diputar ulang sekali
-- Belum ada rate limiting untuk datagram dengan autentikasi gagal
+- Counter anti-replay jalur baca disimpan di RAM; setelah reboot datagram baca lama bisa diputar ulang
+  sekali (perintah berprivilege tidak terpengaruh karena memakai nonce)
+- Batas laju bersifat global; saat banjir, perintah sah ikut terbuang
+- Tabel nonce 4 slot: banjir `CHAL` bisa menggusur nonce klien sah (penolakan layanan ringan)
+- Tanpa rdrand, nonce hanya bergantung pada TSC, tick, RTC, dan pool (kualitas entropi belum dinilai)
+- Reset lewat ACPI belum ada (FADT belum di-parse)
 - GSI interrupt E1000 (19) adalah hasil pengamatan di VMware, bukan nilai universal
 - Hanya driver E1000; belum ada driver untuk NIC hardware target
 - Belum ada TCP, DHCP, atau IPv6
