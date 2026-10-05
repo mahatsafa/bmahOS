@@ -17,6 +17,10 @@ ifeq ($(NOIRQ),1)
 CFLAGS += -DBMAHOS_NOIRQ
 endif
 
+ifeq ($(NORDRAND),1)
+CFLAGS += -DBMAHOS_NORDRAND
+endif
+
 LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
 C_SRCS := $(KERNEL_DIR)/kernel.c
