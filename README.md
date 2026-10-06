@@ -1,7 +1,8 @@
 # bmahOS
 
 Sistem operasi eksperimental x86_64 yang ditulis dari nol (freestanding, UEFI via Limine).
-Dikembangkan dan diuji di VMware Workstation. Belum pernah diuji di hardware asli.
+Dikembangkan dan diuji di VMware Workstation, dengan uji otomatis di QEMU (`make test`).
+Belum pernah diuji di hardware asli.
 
 ## Target
 
@@ -19,17 +20,24 @@ Dikembangkan dan diuji di VMware Workstation. Belum pernah diuji di hardware asl
 
 - Boot: Limine UEFI, GDT/TSS, IDT, exception handler, PMM (bitmap), VMM (paging), kernel heap
 - Multitasking preemptive (timer 100 Hz via LAPIC/IOAPIC), semaphore, user mode (ring 3) dengan syscall
-- Storage: PCI, AHCI (baca blok), FAT32 (baca file, root directory), `spawn()` program dari disk
+- PCI: AHCI dan E1000 dicari otomatis (kelas/vendor/device ID), bukan alamat bus tetap
+- Storage: AHCI (baca blok), FAT32 (baca file, root directory), `spawn()` program dari disk
 - Jaringan (NIC Intel 82545EM / E1000 emulasi VMware): TX/RX ring, ARP, IPv4, ICMP echo, UDP
 - Interrupt RX E1000 via IOAPIC (GSI INTx ditemukan lewat eksperimen), net task tidur sampai ada paket
 - Task idle (`hlt`), build produksi tanpa task uji
 - Perintah jarak jauh terautentikasi HMAC-SHA256 (SHA-256/HMAC ditulis sendiri, self-test vektor resmi saat boot)
-- Challenge-response nonce untuk perintah berprivilege, termasuk `reboot` (8042, cadangan triple fault)
+- Challenge-response nonce untuk perintah berprivilege, termasuk `reboot` (register reset ACPI dari
+  FADT, lalu 8042, lalu cadangan triple fault)
 - Batas laju 100 datagram/detik, ring log 8 KB, counter di perintah `stats` dan `metrics`
 
 ## Build
 
-Kebutuhan: `gcc`, `ld`, `xorriso`, dan Limine di `tools/limine` (binary + protocol headers).
+Kebutuhan: `gcc`, `ld`, `xorriso`, dan Limine 12.5.2 di `tools/limine` (`tools/` tidak ikut git):
+
+    git clone --depth=1 --branch=v12.5.2 https://github.com/Limine-Bootloader/Limine.git tools/limine
+    cd tools/limine && ./bootstrap && ./configure && make && cd ../..
+
+Build:
 
     make iso            # build biasa (task uji ikut jalan, untuk pengembangan)
     make iso PROD=1     # build produksi (task uji dilewati, hanya net + idle)
@@ -39,8 +47,22 @@ Flag uji (bisa digabung):
     NOIRQ=1             # jaringan tanpa interrupt E1000 (hanya dibangunkan tiap tick)
     NORDRAND=1          # nonce tanpa rdrand (uji jalur cadangan sumber acak)
     NOKBDRESET=1        # reboot tanpa 8042 (uji jalur cadangan triple fault)
+    NOACPIRESET=1       # reboot tanpa register reset ACPI (uji jalur 8042)
 
 Hasil: `build/bmahOS.iso`.
+
+## Uji otomatis (QEMU)
+
+    make test           # build lalu jalankan tests/qemu-smoke.sh
+    make test PROD=1    # flag build lain juga bisa dipakai
+
+Kebutuhan tambahan: QEMU (`qemu-system-x86_64` atau `qemu-kvm`), OVMF (`edk2-ovmf`), `mkfs.vfat`
+(`dosfstools`), `mcopy` (`mtools`), `python3`. KVM tidak wajib (tanpa KVM lebih lambat).
+
+Skrip membuat disk FAT32 sementara dengan `KEY.TXT` acak (bukan kunci asli), boot ISO di QEMU q35
+dengan E1000 + AHCI, lalu memeriksa: self-test crypto, deteksi PCI, kunci dimuat, `ping`/`uptime`/
+`metrics`, kunci salah dan replay ditolak, `pping` berprivilege, `reboot` lewat reset ACPI, dan log
+tanpa exception. Semua file uji ada di `build/test/`.
 
 ## Konfigurasi saat ini (hardcode)
 
@@ -80,7 +102,18 @@ sudah dipakai, kedaluwarsa, hmac salah.
 
 UDP echo tanpa autentikasi ada di port 7777.
 
-Contoh klien (PowerShell) ada di riwayat pengembangan; implementasinya hanya `HMACSHA256` dan `UdpClient`.
+### Klien: `client/bmctl.py`
+
+Python 3 tanpa pustaka tambahan (Windows dan Linux). File kunci berisi sama dengan `KEY.TXT`.
+
+    python client/bmctl.py --key ~/bmahos-key.txt uptime
+    python client/bmctl.py --key ~/bmahos-key.txt metrics
+    python client/bmctl.py --key ~/bmahos-key.txt --priv pping
+    python client/bmctl.py --key ~/bmahos-key.txt --priv reboot
+
+Alamat default `192.168.50.200:7778` (ubah dengan `--host`/`--port` atau `BMAHOS_HOST`/`BMAHOS_PORT`).
+Jalur baca memakai counter = waktu Unix dalam milidetik. Kode keluar: 0 sukses, 1 balasan `ERR`,
+2 tidak ada balasan.
 
 ## Hardware target (hasil pemeriksaan dari Linux di HP Stream)
 
@@ -105,13 +138,20 @@ Contoh klien (PowerShell) ada di riwayat pengembangan; implementasinya hanya `HM
 - Batas laju bersifat global; saat banjir, perintah sah ikut terbuang
 - Tabel nonce 4 slot: banjir `CHAL` bisa menggusur nonce klien sah (penolakan layanan ringan)
 - Tanpa rdrand, nonce hanya bergantung pada TSC, tick, RTC, dan pool (kualitas entropi belum dinilai)
-- Reset lewat ACPI belum ada (FADT belum di-parse)
+- Reset ACPI hanya mendukung register reset di ruang I/O (umum: port `0xCF9`); ruang memori/PCI
+  belum, reboot lalu memakai 8042
 - GSI interrupt E1000 (19) adalah hasil pengamatan di VMware, bukan nilai universal
-- Hanya driver E1000; belum ada driver untuk NIC hardware target
+- Hanya driver E1000 (device ID `0x100F` 82545EM dan `0x100E` 82540EM yang sudah diuji); belum ada
+  driver untuk NIC hardware target
+- Hanya controller AHCI pertama yang dipakai
 - Belum ada TCP, DHCP, atau IPv6
 
 ## Catatan pengembangan
 
 Perubahan dibuat lewat patch Python yang atomik (semua penggantian teks harus cocok persis sekali,
-kalau tidak file tidak berubah), diverifikasi dengan `git diff`, build, boot di VMware, dan pengecekan
-log serial sebelum commit.
+kalau tidak file tidak berubah), diverifikasi dengan `git diff`, build, `make test`, boot di VMware,
+dan pengecekan log serial sebelum commit.
+
+## Lisensi
+
+MIT, lihat [LICENSE](LICENSE). Limine (di `tools/limine`, tidak ikut repo) memakai lisensinya sendiri.
