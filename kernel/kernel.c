@@ -540,6 +540,61 @@ static void acpi_parse_madt(struct acpi_madt *madt)
     }
 }
 
+// ACPI-R: register reset di FADT (signature "FACP"). Flags offset 112
+// bit 10 = RESET_REG_SUP; RESET_REG (Generic Address Structure 12 byte)
+// di offset 116, RESET_VALUE di offset 128 (FADT revisi 2+, length >= 129).
+// Hanya ruang alamat I/O (space_id 1) yang didukung; memori/PCI dicatat
+// sebagai tidak didukung (reboot lanjut ke 8042).
+static int g_acpi_reset_ok = 0;
+static uint16_t g_acpi_reset_port = 0;
+static uint8_t g_acpi_reset_value = 0;
+
+static void acpi_parse_fadt(struct acpi_sdt_header *fadt)
+{
+    uint8_t *f = (uint8_t *)fadt;
+
+    serial_write("ACPI-R: FADT revision=");
+    serial_write_hex(fadt->revision);
+    serial_write(" length=");
+    serial_write_hex(fadt->length);
+    serial_write("\r\n");
+
+    if (fadt->length < 129) {
+        serial_write("ACPI-R: FADT terlalu pendek, tanpa register reset\r\n");
+        return;
+    }
+
+    uint32_t flags = *(uint32_t *)(f + 112);
+    uint8_t space = f[116];
+    uint64_t addr = *(uint64_t *)(f + 120);
+    uint8_t value = f[128];
+
+    serial_write("ACPI-R: RESET_REG_SUP=");
+    serial_write_hex((flags >> 10) & 1);
+    serial_write(" space=");
+    serial_write_hex(space);
+    serial_write(" addr=");
+    serial_write_hex(addr);
+    serial_write(" value=");
+    serial_write_hex(value);
+    serial_write("\r\n");
+
+    if (!((flags >> 10) & 1) || addr == 0) {
+        serial_write("ACPI-R: register reset tidak tersedia\r\n");
+        return;
+    }
+
+    if (space != 1 || addr > 0xFFFF) {
+        serial_write("ACPI-R: ruang alamat reset bukan I/O, tidak didukung\r\n");
+        return;
+    }
+
+    g_acpi_reset_port = (uint16_t)addr;
+    g_acpi_reset_value = value;
+    g_acpi_reset_ok = 1;
+    serial_write("ACPI-R: reset ACPI siap\r\n");
+}
+
 static void acpi_init(void)
 {
     if (rsdp_request.response == NULL)
@@ -555,6 +610,7 @@ static void acpi_init(void)
     serial_write("\r\n");
 
     struct acpi_madt *madt = NULL;
+    struct acpi_sdt_header *fadt = NULL;
 
     if (rsdp->revision >= 2 && rsdp->xsdt_address != 0)
     {
@@ -563,6 +619,7 @@ static void acpi_init(void)
         serial_write("\r\n");
         void *xsdt = (void *)(rsdp->xsdt_address + hhdm_offset);
         madt = (struct acpi_madt *)acpi_find_table(xsdt, 1, "APIC");
+        fadt = acpi_find_table(xsdt, 1, "FACP");
     }
     else
     {
@@ -571,6 +628,13 @@ static void acpi_init(void)
         serial_write("\r\n");
         void *rsdt = (void *)((uint64_t)rsdp->rsdt_address + hhdm_offset);
         madt = (struct acpi_madt *)acpi_find_table(rsdt, 0, "APIC");
+        fadt = acpi_find_table(rsdt, 0, "FACP");
+    }
+
+    if (fadt != NULL) {
+        acpi_parse_fadt(fadt);
+    } else {
+        serial_write("ACPI-R: FADT (FACP) tidak ditemukan\r\n");
     }
 
     if (madt == NULL)
@@ -2832,21 +2896,99 @@ static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 #define IOAPIC_REG_IOWIN    0x10
 #define IOAPIC_REDTBL_BASE  0x10
 
-// Checkpoint AHCI (discovery): B/D/F di-HARDCODE berdasarkan hasil
-// nyata pci_scan_and_log() di VMware (bus=2 device=4 function=0,
-// vendor=0x15AD VMware, class=0x01 subclass=0x06 prog_if=0x01 = AHCI
-// SATA). UTANG TEKNIS EKSPLISIT: nanti perlu diganti pencarian
-// otomatis (scan ulang cari class/subclass/prog_if yang cocok),
-// supaya tidak rapuh kalau konfigurasi VM atau hardware fisik beda.
-#define AHCI_PCI_BUS      2
-#define AHCI_PCI_DEVICE   4
-#define AHCI_PCI_FUNCTION 0
+// PCI-1: B/D/F AHCI dan E1000 dicari otomatis oleh pci_find_devices()
+// (dulu di-hardcode hasil VMware: AHCI 2:4.0, E1000 2:1.0). AHCI =
+// class 0x01 subclass 0x06 prog_if 0x01; E1000 = vendor 0x8086 dengan
+// device ID yang sudah diuji (0x100F 82545EM VMware, 0x100E 82540EM QEMU).
+// Ambil yang pertama ditemukan. Driver dilewati kalau g_*_found == 0.
+static uint8_t g_ahci_bus, g_ahci_dev, g_ahci_fn;
+static uint8_t g_e1000_bus, g_e1000_dev, g_e1000_fn;
+static int g_ahci_found = 0;
+static int g_e1000_found = 0;
+
+#define AHCI_PCI_BUS      g_ahci_bus
+#define AHCI_PCI_DEVICE   g_ahci_dev
+#define AHCI_PCI_FUNCTION g_ahci_fn
 #define AHCI_BAR5_OFFSET  0x24
 
-#define E1000_PCI_BUS      2
-#define E1000_PCI_DEVICE   1
-#define E1000_PCI_FUNCTION 0
+#define E1000_PCI_BUS      g_e1000_bus
+#define E1000_PCI_DEVICE   g_e1000_dev
+#define E1000_PCI_FUNCTION g_e1000_fn
 #define E1000_BAR0_OFFSET  0x10
+
+static void pci_config_write32(uint8_t bus, uint8_t device, uint8_t function,
+                               uint8_t offset, uint32_t value)
+{
+    uint32_t address =
+        (1U << 31) |
+        ((uint32_t)bus << 16) |
+        ((uint32_t)device << 11) |
+        ((uint32_t)function << 8) |
+        ((uint32_t)offset & 0xFC);
+
+    outl(PCI_CONFIG_ADDRESS, address);
+    outl(PCI_CONFIG_DATA, value);
+}
+
+static void pci_log_bdf(const char *name, uint8_t bus, uint8_t dev, uint8_t fn)
+{
+    serial_write("PCI-1: ");
+    serial_write(name);
+    serial_write(" di bus=");
+    serial_write_hex(bus);
+    serial_write(" device=");
+    serial_write_hex(dev);
+    serial_write(" function=");
+    serial_write_hex(fn);
+    serial_write("\r\n");
+}
+
+static void pci_find_devices(void)
+{
+    for (uint32_t bus = 0; bus < 256; bus++) {
+        for (uint32_t dev = 0; dev < 32; dev++) {
+            for (uint32_t fn = 0; fn < 8; fn++) {
+                uint32_t reg0 = pci_config_read32((uint8_t)bus, (uint8_t)dev,
+                                                  (uint8_t)fn, 0x00);
+                uint16_t vendor = (uint16_t)(reg0 & 0xFFFF);
+                if (vendor == 0xFFFF) {
+                    continue;
+                }
+                uint16_t device_id = (uint16_t)(reg0 >> 16);
+                uint32_t reg8 = pci_config_read32((uint8_t)bus, (uint8_t)dev,
+                                                  (uint8_t)fn, 0x08);
+                uint32_t cls = reg8 >> 8; // class:subclass:prog_if
+
+                if (!g_ahci_found && cls == 0x010601u) {
+                    g_ahci_bus = (uint8_t)bus;
+                    g_ahci_dev = (uint8_t)dev;
+                    g_ahci_fn = (uint8_t)fn;
+                    g_ahci_found = 1;
+                }
+
+                if (!g_e1000_found && vendor == 0x8086 &&
+                    (device_id == 0x100F || device_id == 0x100E)) {
+                    g_e1000_bus = (uint8_t)bus;
+                    g_e1000_dev = (uint8_t)dev;
+                    g_e1000_fn = (uint8_t)fn;
+                    g_e1000_found = 1;
+                }
+            }
+        }
+    }
+
+    if (g_ahci_found) {
+        pci_log_bdf("AHCI", g_ahci_bus, g_ahci_dev, g_ahci_fn);
+    } else {
+        serial_write("PCI-1: AHCI tidak ditemukan\r\n");
+    }
+
+    if (g_e1000_found) {
+        pci_log_bdf("E1000", g_e1000_bus, g_e1000_dev, g_e1000_fn);
+    } else {
+        serial_write("PCI-1: E1000 tidak ditemukan\r\n");
+    }
+}
 
 #define E1000_REG_CTRL     0x0000
 #define E1000_REG_STATUS   0x0008
@@ -4684,6 +4826,11 @@ static void e1000_probe_and_log(uint64_t pml4_phys)
     crypto_selftest();
     auth_load_key();
 
+    if (!g_e1000_found) {
+        serial_write("E1000: perangkat tidak ditemukan, skip\r\n");
+        return;
+    }
+
     uint32_t bar0 = pci_config_read32(E1000_PCI_BUS, E1000_PCI_DEVICE, E1000_PCI_FUNCTION, E1000_BAR0_OFFSET);
     uint64_t mmio_phys = bar0 & 0xFFFFFFF0ULL;
 
@@ -6095,14 +6242,30 @@ static int priv_verify(volatile uint8_t *d, uint32_t len,
 }
 
 // ---- Net-18B: reboot berprivilege ----
-// Dipanggil SETELAH balasan terkirim. 8042 pulse reset (0xFE); jika mesin
-// belum reset, cadangan triple fault (IDT limit 0 lalu int3). Reset ACPI
-// (FADT) belum di-parse. NOKBDRESET=1 melewati 8042 untuk menguji cadangan.
+// Dipanggil SETELAH balasan terkirim. Urutan: register reset ACPI (FADT,
+// ACPI-R), 8042 pulse reset (0xFE), lalu cadangan triple fault (IDT limit 0
+// lalu int3). NOACPIRESET=1 dan NOKBDRESET=1 melewati jalur masing-masing
+// untuk menguji cadangan.
 static int g_priv_reboot_pending = 0;
 
 static void priv_do_reboot(void)
 {
     __asm__ volatile("cli");
+
+#ifndef BMAHOS_NOACPIRESET
+    if (g_acpi_reset_ok) {
+        serial_write("ACPI-R: reboot via register reset FADT\r\n");
+        outb(g_acpi_reset_port, g_acpi_reset_value);
+
+        for (uint32_t i = 0; i < 1000000; i++) {
+            (void)inb(0x64);
+        }
+
+        serial_write("ACPI-R: reset ACPI tidak me-reset, lanjut 8042\r\n");
+    }
+#else
+    serial_write("ACPI-R: reset ACPI dilewati (build NOACPIRESET)\r\n");
+#endif
 
 #ifndef BMAHOS_NOKBDRESET
     serial_write("Net-18B: reboot via 8042 (0xFE)\r\n");
@@ -6680,6 +6843,18 @@ static void e1000_send_arp_request(void)
 
 static void ahci_probe_and_log(uint64_t pml4_phys)
 {
+    if (!g_ahci_found) {
+        serial_write("AHCI: controller tidak ditemukan, skip\r\n");
+        return;
+    }
+
+    // PCI Command bit1 Memory Space + bit2 Bus Master (DMA). Firmware tidak
+    // selalu menyalakannya; status (16 bit atas) write-1-to-clear, tulis 0.
+    uint32_t ahci_cmd = pci_config_read32(AHCI_PCI_BUS, AHCI_PCI_DEVICE,
+                                          AHCI_PCI_FUNCTION, 0x04) & 0xFFFFu;
+    pci_config_write32(AHCI_PCI_BUS, AHCI_PCI_DEVICE, AHCI_PCI_FUNCTION,
+                       0x04, ahci_cmd | 0x0006u);
+
     uint32_t bar5 = pci_config_read32(AHCI_PCI_BUS, AHCI_PCI_DEVICE, AHCI_PCI_FUNCTION, AHCI_BAR5_OFFSET);
     uint64_t abar_phys = bar5 & 0xFFFFFFF0ULL;
 
@@ -6815,6 +6990,7 @@ void kmain(void)
     serial_init();
 
     pci_scan_and_log();
+    pci_find_devices();
 
     gdt_init();
 
