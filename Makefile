@@ -25,6 +25,10 @@ ifeq ($(NOKBDRESET),1)
 CFLAGS += -DBMAHOS_NOKBDRESET
 endif
 
+ifeq ($(NOACPIRESET),1)
+CFLAGS += -DBMAHOS_NOACPIRESET
+endif
+
 LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
 C_SRCS := $(KERNEL_DIR)/kernel.c
@@ -40,7 +44,7 @@ ISO_OUT    := $(BUILD_DIR)/bmahOS.iso
 QEMU := $(shell command -v qemu-system-x86_64 2>/dev/null || echo /usr/libexec/qemu-kvm)
 OVMF := /usr/share/edk2/ovmf/OVMF_CODE.fd
 
-.PHONY: all clean run iso
+.PHONY: all clean run iso test
 
 all: iso
 
@@ -72,6 +76,9 @@ run: iso
 	@mkdir -p $(BUILD_DIR)/ovmf
 	@cp -n /usr/share/edk2/ovmf/OVMF_VARS.fd $(BUILD_DIR)/ovmf/OVMF_VARS.fd
 	$(QEMU) -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd -drive if=pflash,format=raw,file=$(BUILD_DIR)/ovmf/OVMF_VARS.fd -cdrom $(ISO_OUT) -serial stdio -m 512M
+
+test: iso
+	QEMU=$(QEMU) OVMF_CODE=$(OVMF) tests/qemu-smoke.sh
 
 clean:
 	rm -rf $(BUILD_DIR)
