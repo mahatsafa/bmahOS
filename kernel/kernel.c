@@ -1702,6 +1702,11 @@ static void vmm_dump_pml4(uint64_t pml4_phys)
 #define VMM_FLAG_WRITABLE  0x2ULL
 #define VMM_FLAG_NOCACHE   0x10ULL  // PCD bit -- wajib untuk MMIO (Local APIC, IOAPIC)
 #define VMM_FLAG_USER      0x4ULL   // US bit -- wajib untuk halaman yang boleh diakses ring 3
+#define VMM_FLAG_NX        (1ULL << 63) // XD bit -- halaman tidak bisa dieksekusi
+
+// B3: 1 jika EFER.NXE aktif (diisi nx_init()). Tanpa NXE, bit 63 di PTE
+// adalah bit reserved (#PF), jadi vmm_map() membuangnya.
+static int g_vmm_nx_ok = 0;
 #define VMM_ENTRY_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
 static uint64_t vmm_get_or_create_table(uint64_t *table_virt, uint64_t index)
@@ -1746,7 +1751,61 @@ static void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t
     uint64_t pt_phys = vmm_get_or_create_table(pd_virt, pd_idx);
     if (pt_phys == 0) return;
     uint64_t *pt_virt = (uint64_t *)(pt_phys + hhdm_offset);
+    if (!g_vmm_nx_ok) {
+        flags &= ~VMM_FLAG_NX;
+    }
     pt_virt[pt_idx] = (paddr & VMM_ENTRY_ADDR_MASK) | flags;
+}
+
+// B3: NX efektif untuk vaddr = OR bit 63 di semua level sampai entri daun
+// (halaman 1 GB/2 MB berhenti di PDPT/PD). Return -1 jika tidak terpetakan.
+static int vmm_nx_of(uint64_t pml4_phys, uint64_t vaddr)
+{
+    uint64_t table = pml4_phys;
+    uint64_t nx = 0;
+
+    for (int level = 3; level >= 0; level--) {
+        uint64_t *t = (uint64_t *)(table + hhdm_offset);
+        uint64_t e = t[(vaddr >> (12 + 9 * level)) & 0x1FF];
+
+        if (!(e & VMM_FLAG_PRESENT)) {
+            return -1;
+        }
+
+        nx |= e & VMM_FLAG_NX;
+
+        if (level == 0 || ((level == 1 || level == 2) && (e & 0x80))) {
+            return nx ? 1 : 0;
+        }
+
+        table = e & VMM_ENTRY_ADDR_MASK;
+    }
+
+    return -1;
+}
+
+static void nx_init(void)
+{
+    uint32_t a = 0x80000001, b, c = 0, d;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
+
+    if (!(d & (1u << 20))) {
+        serial_write("NX: CPU tidak mendukung NX/XD, halaman data tetap executable\r\n");
+        return;
+    }
+
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000080u));
+
+    if (!(lo & (1u << 11))) {
+        lo |= 1u << 11;
+        __asm__ volatile("wrmsr" : : "a"(lo), "d"(hi), "c"(0xC0000080u));
+        serial_write("NX: EFER.NXE dinyalakan kernel\r\n");
+    } else {
+        serial_write("NX: EFER.NXE sudah aktif (dari Limine)\r\n");
+    }
+
+    g_vmm_nx_ok = 1;
 }
 
 // Layer 8 checkpoint 1 (dormant, belum dipanggil manapun): bikin PML4
@@ -1925,7 +1984,7 @@ static void *kmalloc(uint64_t size)
             return (void *)0;
         }
         vmm_map(kheap_pml4_phys, kheap_mapped_end, new_frame,
-                VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE);
+                VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NX);
         kheap_mapped_end += PMM_PAGE_SIZE;
     }
 
@@ -2329,7 +2388,7 @@ static void task_create_user(
     vmm_map(pml4_phys, user_code_vaddr, user_code_frame,
             VMM_FLAG_PRESENT | VMM_FLAG_USER);
     vmm_map(pml4_phys, user_stack_vaddr, user_stack_frame,
-            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER | VMM_FLAG_NX);
 
     // Layer 8 checkpoint 3 FIX: TIDAK BOLEH menulis lewat alamat
     // virtual user_code_vaddr di sini -- PML4 yang baru saja dipetakan
@@ -2464,7 +2523,7 @@ static task_t *spawn(const uint8_t *image, size_t image_len)
     vmm_map(pml4_phys, code_vaddr, code_frame,
             VMM_FLAG_PRESENT | VMM_FLAG_USER);
     vmm_map(pml4_phys, stack_vaddr, stack_frame,
-            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER | VMM_FLAG_NX);
 
     // Copy image via HHDM, BUKAN lewat code_vaddr -- alasan identik
     // dengan fix Layer 8 checkpoint 3: pml4_phys milik task ini belum
@@ -3098,7 +3157,7 @@ static void apic_enable_local_apic(uint64_t pml4_phys)
     }
 
     vmm_map(pml4_phys, LAPIC_VIRT, g_local_apic_address,
-            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE);
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE | VMM_FLAG_NX);
 
     uint32_t id = lapic_read(LAPIC_REG_ID);
     serial_write("LAPIC: mapped, ID register = ");
@@ -3129,7 +3188,7 @@ static void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t v
     }
 
     vmm_map(pml4_phys, IOAPIC_VIRT, g_ioapic_address,
-            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE);
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE | VMM_FLAG_NX);
 
     uint32_t ioapic_id_reg = ioapic_read(0x00);
     serial_write("IOAPIC: mapped, ID register = ");
@@ -4854,7 +4913,7 @@ static void e1000_probe_and_log(uint64_t pml4_phys)
     for (uint64_t page = 0; page < 6; page++) {
         vmm_map(pml4_phys, E1000_VIRT + (page * PMM_PAGE_SIZE),
                 mmio_phys + (page * PMM_PAGE_SIZE),
-                VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE);
+                VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE | VMM_FLAG_NX);
     }
 
     volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
@@ -6891,7 +6950,7 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
     }
 
     vmm_map(pml4_phys, AHCI_VIRT, abar_phys,
-            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE);
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE | VMM_FLAG_NX);
 
     volatile uint32_t *hba = (volatile uint32_t *)AHCI_VIRT;
 
@@ -7006,12 +7065,95 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
     }
 }
 
+// B3: Limine memetakan HHDM (seluruh RAM fisik, termasuk stack boot) tanpa NX,
+// jadi setiap frame heap/stack juga bisa dieksekusi lewat alias HHDM-nya. Pasang
+// NX di semua entri PML4 half atas yang ada, kecuali entri yang memuat kernel
+// .text. Entri yang dibuat belakangan (heap, MMIO) sudah NX di level daun.
+// Dipanggil sebelum PML4 task user di-clone, supaya salinannya ikut NX.
+static void nx_harden_higher_half(uint64_t pml4_phys)
+{
+    if (!g_vmm_nx_ok) {
+        return;
+    }
+
+    uint64_t *pml4 = (uint64_t *)(pml4_phys + hhdm_offset);
+    uint64_t text_idx = ((uint64_t)&nx_harden_higher_half >> 39) & 0x1FF;
+    uint64_t n = 0;
+
+    for (uint64_t i = 256; i < 512; i++) {
+        if (i == text_idx || !(pml4[i] & VMM_FLAG_PRESENT)) {
+            continue;
+        }
+        pml4[i] |= VMM_FLAG_NX;
+        n++;
+    }
+
+    __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" : : : "rax", "memory");
+
+    serial_write("NX: entri PML4 half atas diberi NX: ");
+    serial_write_hex(n);
+    serial_write(" (kecuali index kernel .text ");
+    serial_write_hex(text_idx);
+    serial_write(")\r\n");
+}
+
+static int nx_expect(const char *name, uint64_t pml4_phys, uint64_t vaddr, int want)
+{
+    int got = vmm_nx_of(pml4_phys, vaddr);
+
+    serial_write("NX: ");
+    serial_write(name);
+    serial_write(got < 0 ? " tidak terpetakan" : (got ? " nx=1" : " nx=0"));
+    serial_write(got == want ? " OK\r\n" : " SALAH\r\n");
+    return got == want;
+}
+
+static const char g_nx_rodata_probe[] = "nx";
+
+// Dipanggil di kmain setelah heap, MMIO, dan task user dibuat.
+static void nx_selftest(uint64_t kernel_pml4, uint64_t user_pml4,
+                        uint64_t user_code, uint64_t user_stack)
+{
+    if (!g_vmm_nx_ok) {
+        serial_write("NX: self-test dilewati (NX tidak aktif)\r\n");
+        return;
+    }
+
+    void *heap_probe = kmalloc(16);
+    uint64_t stack_probe = (uint64_t)&heap_probe;
+    int ok = 1;
+
+    ok &= nx_expect("kernel .text", kernel_pml4, (uint64_t)&nx_selftest, 0);
+    ok &= nx_expect("kernel .rodata", kernel_pml4, (uint64_t)g_nx_rodata_probe, 1);
+    ok &= nx_expect("kernel .data", kernel_pml4, (uint64_t)&g_vmm_nx_ok, 1);
+    ok &= nx_expect("kernel heap", kernel_pml4, (uint64_t)heap_probe, 1);
+    ok &= nx_expect("stack boot", kernel_pml4, stack_probe, 1);
+    uint64_t hhdm_frame = pmm_alloc();
+    ok &= nx_expect("HHDM (frame RAM)", kernel_pml4, hhdm_frame + hhdm_offset, 1);
+    pmm_free(hhdm_frame);
+    ok &= nx_expect("MMIO LAPIC", kernel_pml4, LAPIC_VIRT, 1);
+    ok &= nx_expect("user code", user_pml4, user_code, 0);
+    ok &= nx_expect("user stack", user_pml4, user_stack, 1);
+
+    serial_write(ok ? "NX: self-test PASS\r\n" : "NX: self-test FAIL\r\n");
+
+#ifdef BMAHOS_NXTEST
+    // Harus berakhir di #PF dengan error code bit 4 (I/D, instruction fetch).
+    serial_write("NX: NXTEST eksekusi dari heap (harus #PF error 0x11)\r\n");
+    ((volatile uint8_t *)heap_probe)[0] = 0xC3;
+    ((void (*)(void))heap_probe)();
+    serial_write("NX: NXTEST GAGAL - eksekusi dari heap tidak diblokir\r\n");
+#endif
+
+    kfree(heap_probe);
+}
 void kmain(void)
 {
     serial_init();
 
     pci_scan_and_log();
     pci_find_devices();
+    nx_init();
 
     gdt_init();
 
@@ -7132,6 +7274,7 @@ void kmain(void)
     serial_write("\r\n");
 
     vmm_dump_pml4(pml4_phys);
+    nx_harden_higher_half(pml4_phys);
     uint64_t test_frame_phys = pmm_alloc();
     serial_write("VMM test: allocated physical frame: ");
     serial_write_hex(test_frame_phys);
@@ -7264,7 +7407,7 @@ void kmain(void)
     vmm_map(pml4_phys, USER_CODE_VADDR, user_code_frame,
             VMM_FLAG_PRESENT | VMM_FLAG_USER);
     vmm_map(pml4_phys, USER_STACK_VADDR, user_stack_frame,
-            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER);
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER | VMM_FLAG_NX);
 
     // Checkpoint permission (bagian 1) FIX: dulu kode ini menulis
     // lewat alamat virtual USER_CODE_VADDR langsung -- kebetulan tetap
@@ -7384,6 +7527,8 @@ void kmain(void)
     // terjaga), dengan alamat code/stack dari vmm_alloc_vaddr() (bukan
     // konstanta USER_CODE_VADDR* manual seperti task 0-4).
     spawn(user_task_spawn_test_code, sizeof(user_task_spawn_test_code));
+
+    nx_selftest(pml4_phys, tasks[2].pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR);
 
     serial_write("Task A, B, dan user task dibuat, mulai jalankan lewat scheduler...\r\n");
     serial_write("\r\n");

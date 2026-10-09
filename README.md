@@ -20,6 +20,8 @@ Belum pernah diuji di hardware asli.
 
 - Boot: Limine UEFI, GDT/TSS, IDT, exception handler, PMM (bitmap), VMM (paging), kernel heap
 - Multitasking preemptive (timer 100 Hz via LAPIC/IOAPIC), semaphore, user mode (ring 3) dengan syscall
+- NX/XD: heap, stack, MMIO, `.data`/`.rodata`, dan seluruh HHDM tidak bisa dieksekusi; hanya kernel
+  `.text` dan halaman kode user yang executable (self-test page walk saat boot)
 - PCI: AHCI dan E1000 dicari otomatis (kelas/vendor/device ID), bukan alamat bus tetap
 - Storage: AHCI (baca blok), FAT32 (baca file, root directory), `spawn()` program dari disk
 - Jaringan (NIC Intel 82545EM / E1000 emulasi VMware): TX/RX ring, ARP, IPv4, ICMP echo, UDP
@@ -49,6 +51,7 @@ Flag uji (bisa digabung):
     NOKBDRESET=1        # reboot tanpa 8042 (uji jalur cadangan triple fault)
     NOACPIRESET=1       # reboot tanpa register reset ACPI (uji jalur 8042)
     LEGACYCTR=1         # nyalakan lagi jalur counter lama (transisi; lihat di bawah)
+    NXTEST=1            # sengaja eksekusi dari heap saat boot; harus berhenti di #PF error 0x11
 
 Hasil: `build/bmahOS.iso`.
 

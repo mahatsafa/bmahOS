@@ -33,6 +33,10 @@ ifeq ($(LEGACYCTR),1)
 CFLAGS += -DBMAHOS_LEGACYCTR
 endif
 
+ifeq ($(NXTEST),1)
+CFLAGS += -DBMAHOS_NXTEST
+endif
+
 LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
 C_SRCS := $(KERNEL_DIR)/kernel.c
