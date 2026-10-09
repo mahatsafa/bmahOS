@@ -193,6 +193,34 @@ def test_src_limit(net, cli):
     check("B4: jatah global tidak habis", d_glob == 0, info)
 
 
+def test_chal_flood(net, cli):
+    """M1: banjir CHAL dari satu IP tidak menggusur nonce klien sah."""
+    m0 = cli.metrics()
+    if m0 is None:
+        check("M1: metrics awal", False)
+        return
+    legit = bytes([192, 168, 50, 13])
+    flood = bytes([192, 168, 50, 14])
+    r = net.request(legit, 44000, CMD_PORT, b"CHAL")
+    ok_chal = r is not None and r.startswith(b"nonce: ")
+    check("M1: klien sah dapat nonce", ok_chal, repr(r))
+    if not ok_chal:
+        return
+    for i in range(15):
+        net.send(udp_frame(flood, 45000 + i, CMD_PORT, b"CHAL"))
+        time.sleep(0.01)
+    time.sleep(0.5)
+    net.drain()
+    msg = "%s ping" % r[len(b"nonce: "):].strip().decode()
+    pkt = Client(net, cli.key, legit).sign(msg)
+    got = net.request(legit, 44000, CMD_PORT, pkt, timeout=5)
+    m1 = cli.metrics()
+    check("M1: nonce sah tetap berlaku setelah banjir CHAL", got is not None and got.strip() == b"pong", repr(got))
+    if m1 is not None:
+        d = m1["chal_ip_recycled"] - m0["chal_ip_recycled"]
+        check("M1: banjir CHAL didaur ulang per IP", d >= 8, "didaur ulang %d" % d)
+
+
 def main():
     p = argparse.ArgumentParser()
     for a in ("qemu", "ovmf-code", "ovmf-vars", "iso", "disk", "key", "work"):
@@ -250,6 +278,8 @@ def main():
         test_counters(net, cli)
         time.sleep(1.2)
         test_src_limit(net, cli)
+        time.sleep(2.2)
+        test_chal_flood(net, cli)
 
         text = open(log, "rb").read().decode(errors="replace")
         check("rawnet: tanpa exception di log",

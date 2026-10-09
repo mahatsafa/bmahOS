@@ -5409,6 +5409,7 @@ static uint64_t g_auth_denied[5] = {0, 0, 0, 0, 0};
 // Net-18A: [1] nonaktif [2] format [3] nonce tak dikenal/dipakai
 // [4] kedaluwarsa [5] hmac salah
 static uint64_t g_chal_issued = 0;
+static uint64_t g_chal_ip_recycled = 0;
 static uint64_t g_priv_ok = 0;
 static uint64_t g_priv_denied[6] = {0, 0, 0, 0, 0, 0};
 // B2: datagram jalur counter yang ditolak karena jalur itu dimatikan
@@ -5946,6 +5947,7 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("auth_replay", g_auth_denied[4]);
         cmd_kv("auth_counter_off", g_auth_ctr_off);
         cmd_kv("priv_chal", g_chal_issued);
+        cmd_kv("chal_ip_recycled", g_chal_ip_recycled);
         cmd_kv("priv_ok", g_priv_ok);
         cmd_kv("priv_nonaktif", g_priv_denied[1]);
         cmd_kv("priv_format", g_priv_denied[2]);
@@ -6190,12 +6192,14 @@ static int auth_verify(volatile uint8_t *d, uint32_t len,
 // TTL 5 detik. Perintah: "<nonce32hex> <perintah> <hmac-hex64>", hmac atas
 // "<nonce> <perintah>". Menutup replay setelah reboot (counter lama di RAM).
 // Hanya dipanggil dari net task, jadi tidak perlu lock.
-#define PRIV_NONCE_SLOTS 4
+#define PRIV_NONCE_SLOTS 16
+#define PRIV_NONCE_PER_IP 4   // M1: slot hidup maks per IP sumber
 #define PRIV_NONCE_TTL   500
 
 typedef struct {
     uint8_t nonce[16];
     uint64_t issued;
+    uint8_t ip[4];
     int in_use;
 } priv_nonce_t;
 
@@ -6312,26 +6316,57 @@ static void priv_nonce_generate(uint8_t out[16])
     }
 }
 
-// Isi slot kosong, atau ganti yang tertua. Return indeks slot.
-static uint32_t priv_nonce_issue(void)
+// M1: slot kosong/kedaluwarsa dipakai dulu. IP yang sudah punya
+// PRIV_NONCE_PER_IP nonce hidup hanya mengganti nonce miliknya sendiri yang
+// tertua, jadi banjir CHAL satu IP tidak menggusur nonce IP lain.
+// Tabel penuh oleh banyak IP berbeda: ganti yang tertua (batas diketahui).
+
+static uint32_t priv_nonce_issue(const volatile uint8_t *ip)
 {
     uint32_t slot = 0;
-    int found_free = 0;
+    int found = 0;
+    uint32_t mine = 0;
+    int mine_old = -1;
 
     for (uint32_t i = 0; i < PRIV_NONCE_SLOTS; i++) {
-        if (!g_priv_nonces[i].in_use) {
-            slot = i;
-            found_free = 1;
-            break;
+        priv_nonce_t *e = &g_priv_nonces[i];
+
+        if (e->in_use && timer_ticks - e->issued > PRIV_NONCE_TTL) {
+            e->in_use = 0;
+        }
+
+        if (e->in_use && e->ip[0] == ip[0] && e->ip[1] == ip[1] &&
+            e->ip[2] == ip[2] && e->ip[3] == ip[3]) {
+            mine++;
+            if (mine_old < 0 || e->issued < g_priv_nonces[mine_old].issued) {
+                mine_old = (int)i;
+            }
         }
     }
 
-    if (!found_free) {
-        for (uint32_t i = 1; i < PRIV_NONCE_SLOTS; i++) {
-            if (g_priv_nonces[i].issued < g_priv_nonces[slot].issued) {
+    if (mine >= PRIV_NONCE_PER_IP) {
+        slot = (uint32_t)mine_old;
+        g_chal_ip_recycled++;
+    } else {
+        for (uint32_t i = 0; i < PRIV_NONCE_SLOTS; i++) {
+            if (!g_priv_nonces[i].in_use) {
                 slot = i;
+                found = 1;
+                break;
             }
         }
+
+        if (!found) {
+            for (uint32_t i = 1; i < PRIV_NONCE_SLOTS; i++) {
+                if (g_priv_nonces[i].issued < g_priv_nonces[slot].issued) {
+                    slot = i;
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < 4; i++) {
+        g_priv_nonces[slot].ip[i] = ip[i];
     }
 
     priv_nonce_generate(g_priv_nonces[slot].nonce);
@@ -6528,7 +6563,8 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
 
 // Return 1 jika datagram adalah CHAL atau berformat nonce (balasan sudah
 // diisi di g_cmd_out), 0 jika harus lewat jalur counter lama.
-static int priv_try_handle(volatile uint8_t *cmd, uint32_t len)
+static int priv_try_handle(volatile uint8_t *cmd, uint32_t len,
+                           const volatile uint8_t *src_ip)
 {
     if (net_cmd_is(cmd, len, "CHAL")) {
         g_cmd_len = 0;
@@ -6539,7 +6575,7 @@ static int priv_try_handle(volatile uint8_t *cmd, uint32_t len)
             return 1;
         }
 
-        uint32_t slot = priv_nonce_issue();
+        uint32_t slot = priv_nonce_issue(src_ip);
         g_chal_issued++;
 
         cmd_puts("nonce: ");
@@ -6617,7 +6653,7 @@ static void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len
         len--;
     }
 
-    if (priv_try_handle(cmd, len)) {
+    if (priv_try_handle(cmd, len, req + 14 + 12)) {
         net_udp_send_cmd_reply(req, ihl);
 
         if (g_priv_reboot_pending) {
