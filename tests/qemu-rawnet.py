@@ -59,6 +59,21 @@ def udp_frame(src_ip, sport, dport, payload, bad_checksum=False):
     return frame + b"\0" * max(0, 60 - len(frame))
 
 
+def tcp_frame(src_ip, sport, dport, seq, ack, flags, payload=b"", bad_checksum=False):
+    tcp_len = 20 + len(payload)
+    hdr = struct.pack("!HHIIBBHHH", sport, dport, seq, ack, 0x50, flags, 1024, 0, 0)
+    pseudo = src_ip + GUEST_IP + struct.pack("!BBH", 0, 6, tcp_len)
+    c = csum16(pseudo + hdr + payload)
+    if bad_checksum:
+        c ^= 0x5A5A
+    tcp = hdr[:16] + struct.pack("!H", c) + hdr[18:] + payload
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + tcp_len, 0x1235, 0x4000,
+                     64, 6, 0, src_ip, GUEST_IP)
+    ip = ip[:10] + struct.pack("!H", csum16(ip)) + ip[12:]
+    frame = GUEST_MAC + HOST_MAC + b"\x08\x00" + ip + tcp
+    return frame + b"\0" * max(0, 60 - len(frame))
+
+
 class Net:
     def __init__(self, sock, qemu_addr):
         self.sock = sock
@@ -101,6 +116,28 @@ class Net:
             out.append(f[u + 8:u + ulen])
             if limit is not None and len(out) >= limit:
                 return out
+
+    def tcp_replies(self, dst_ip, dport, timeout):
+        """Segmen TCP dari tamu ke dst_ip:dport: list (seq, ack, flags, datalen)."""
+        out = []
+        end = time.time() + timeout
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                return out
+            self.sock.settimeout(left)
+            try:
+                f = self.sock.recv(65536)
+            except socket.timeout:
+                return out
+            if len(f) < 54 or f[12:14] != b"\x08\x00" or f[23] != 6:
+                continue
+            t = 14 + (f[14] & 0x0F) * 4
+            if f[30:34] != dst_ip or struct.unpack("!H", f[t + 2:t + 4])[0] != dport:
+                continue
+            seq, ack = struct.unpack("!II", f[t + 4:t + 12])
+            tot = struct.unpack("!H", f[16:18])[0]
+            out.append((seq, ack, f[t + 13], tot - (f[14] & 0x0F) * 4 - (f[t + 12] >> 4) * 4))
 
     def request(self, src_ip, sport, dport, payload, timeout=10.0):
         self.send(udp_frame(src_ip, sport, dport, payload))
@@ -221,6 +258,37 @@ def test_chal_flood(net, cli):
         check("M1: banjir CHAL didaur ulang per IP", d >= 8, "didaur ulang %d" % d)
 
 
+def test_tcp_closed(net, cli):
+    """C1: TCP ke port tertutup dibalas RST; checksum salah dan RST masuk dibuang."""
+    m0 = cli.metrics()
+    if m0 is None:
+        check("C1: metrics awal", False)
+        return
+    src = bytes([192, 168, 50, 15])
+    net.send(tcp_frame(src, 46000, 80, 1000, 0, 0x02))
+    r = net.tcp_replies(src, 46000, 2)
+    check("C1: SYN ke port tertutup -> RST|ACK ack=seq+1",
+          r == [(0, 1001, 0x14, 0)], repr(r))
+    net.send(tcp_frame(src, 46001, 80, 2000, 777, 0x10, b"abc"))
+    r = net.tcp_replies(src, 46001, 2)
+    check("C1: ACK+data ke port tertutup -> RST seq=ack",
+          r == [(777, 0, 0x04, 0)], repr(r))
+    net.send(tcp_frame(src, 46002, 80, 3000, 0, 0x02, bad_checksum=True))
+    r = net.tcp_replies(src, 46002, 1.5)
+    check("C1: checksum TCP salah tidak dibalas", r == [], repr(r))
+    net.send(tcp_frame(src, 46003, 80, 4000, 0, 0x04))
+    r = net.tcp_replies(src, 46003, 1.5)
+    check("C1: RST masuk tidak dibalas", r == [], repr(r))
+    time.sleep(1.2)
+    m1 = cli.metrics()
+    if m1 is None:
+        check("C1: metrics akhir", False)
+        return
+    d = {k: m1[k] - m0[k] for k in ("tcp_rx", "tcp_badsum", "tcp_rst_sent")}
+    check("C1: metrics tcp_rx +4, tcp_badsum +1, tcp_rst_sent +2",
+          d["tcp_rx"] == 4 and d["tcp_badsum"] == 1 and d["tcp_rst_sent"] == 2, repr(d))
+
+
 def main():
     p = argparse.ArgumentParser()
     for a in ("qemu", "ovmf-code", "ovmf-vars", "iso", "disk", "key", "work"):
@@ -280,6 +348,8 @@ def main():
         test_src_limit(net, cli)
         time.sleep(2.2)
         test_chal_flood(net, cli)
+        time.sleep(2.2)
+        test_tcp_closed(net, cli)
 
         text = open(log, "rb").read().decode(errors="replace")
         check("rawnet: tanpa exception di log",

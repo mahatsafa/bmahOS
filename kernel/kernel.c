@@ -5456,6 +5456,10 @@ typedef struct {
 
 static net_src_budget_t g_net_src[NET_UDP_SRC_SLOTS];
 static uint64_t g_net_udp_src_dropped = 0;
+// C1: counter TCP
+static uint64_t g_tcp_rx = 0;
+static uint64_t g_tcp_badsum = 0;
+static uint64_t g_tcp_rst_sent = 0;
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -5940,6 +5944,9 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("udp_src_dropped", g_net_udp_src_dropped);
         cmd_kv("log_serial_muted", g_net_log_muted);
         cmd_kv("udp_badsum", g_net_udp_badsum);
+        cmd_kv("tcp_rx", g_tcp_rx);
+        cmd_kv("tcp_badsum", g_tcp_badsum);
+        cmd_kv("tcp_rst_sent", g_tcp_rst_sent);
         cmd_kv("auth_ok", g_auth_ok);
         cmd_kv("auth_nonaktif", g_auth_denied[1]);
         cmd_kv("auth_format", g_auth_denied[2]);
@@ -6716,6 +6723,180 @@ static void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len
     net_udp_send_cmd_reply(req, ihl);
 }
 
+// ---- C1: TCP, parsing header + checksum, RST untuk port tertutup ----
+#define TCP_FIN 0x01
+#define TCP_SYN 0x02
+#define TCP_RST 0x04
+#define TCP_ACK 0x10
+
+// Checksum TCP dengan pseudo-header (proto 6); segmen valid -> hasil 0.
+static uint16_t net_tcp_checksum(const volatile uint8_t *src_ip,
+                                 const volatile uint8_t *dst_ip,
+                                 const volatile uint8_t *tcp,
+                                 uint32_t tcp_len)
+{
+    uint32_t sum = 0;
+
+    sum = net_sum16(src_ip, 4, sum);
+    sum = net_sum16(dst_ip, 4, sum);
+    sum += 6;
+    sum += tcp_len;
+    sum = net_sum16(tcp, tcp_len, sum);
+
+    while (sum >> 16) {
+        sum = (sum & 0xFFFFu) + (sum >> 16);
+    }
+
+    return (uint16_t)(~sum);
+}
+
+// Balas RST ke segmen request (RFC 793: segmen untuk koneksi yang tidak ada).
+// seg_len = panjang data + SYN + FIN pada request.
+static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
+                             uint32_t seg_len)
+{
+    uint32_t r = 14 + ihl;
+    uint8_t rflags = req[r + 13];
+    uint32_t rseq = ((uint32_t)req[r + 4] << 24) | ((uint32_t)req[r + 5] << 16) |
+                    ((uint32_t)req[r + 6] << 8) | (uint32_t)req[r + 7];
+    uint32_t rack = ((uint32_t)req[r + 8] << 24) | ((uint32_t)req[r + 9] << 16) |
+                    ((uint32_t)req[r + 10] << 8) | (uint32_t)req[r + 11];
+    uint32_t seq, ack;
+    uint8_t flags;
+
+    if (rflags & TCP_ACK) {
+        seq = rack;
+        ack = 0;
+        flags = TCP_RST;
+    } else {
+        seq = 0;
+        ack = rseq + seg_len;
+        flags = TCP_RST | TCP_ACK;
+    }
+
+    if (g_net_tx_buf_phys == 0) {
+        g_net_tx_buf_phys = pmm_alloc();
+
+        if (g_net_tx_buf_phys == 0) {
+            serial_write("C1: FATAL - pmm_alloc gagal untuk TX buffer\r\n");
+            return;
+        }
+    }
+
+    uint8_t *p = (uint8_t *)(g_net_tx_buf_phys + hhdm_offset);
+
+    for (uint32_t i = 0; i < 60; i++) {
+        p[i] = 0;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        p[i] = req[6 + i];
+        p[6 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0x00;
+
+    p[14] = 0x45;
+    p[16] = 0;
+    p[17] = 40;
+    p[18] = (uint8_t)(g_net_ip_id >> 8);
+    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
+    g_net_ip_id++;
+    p[20] = 0x40;
+    p[22] = 64;
+    p[23] = 6;
+
+    for (int i = 0; i < 4; i++) {
+        p[26 + i] = g_net_ip[i];
+        p[30 + i] = req[26 + i];
+    }
+
+    uint16_t ipc = net_checksum16(p + 14, 20);
+    p[24] = (uint8_t)(ipc >> 8);
+    p[25] = (uint8_t)(ipc & 0xFF);
+
+    p[34] = req[r + 2];
+    p[35] = req[r + 3];
+    p[36] = req[r + 0];
+    p[37] = req[r + 1];
+    p[38] = (uint8_t)(seq >> 24);
+    p[39] = (uint8_t)(seq >> 16);
+    p[40] = (uint8_t)(seq >> 8);
+    p[41] = (uint8_t)seq;
+    p[42] = (uint8_t)(ack >> 24);
+    p[43] = (uint8_t)(ack >> 16);
+    p[44] = (uint8_t)(ack >> 8);
+    p[45] = (uint8_t)ack;
+    p[46] = 0x50;
+    p[47] = flags;
+
+    uint16_t tc = net_tcp_checksum(p + 26, p + 30, p + 34, 20);
+    p[50] = (uint8_t)(tc >> 8);
+    p[51] = (uint8_t)(tc & 0xFF);
+
+    if (e1000_tx_send(g_net_tx_buf_phys, 60)) {
+        g_tcp_rst_sent++;
+    }
+}
+
+static void net_handle_tcp(volatile uint8_t *buf, uint32_t ihl,
+                           uint32_t ip_payload_len)
+{
+    if (ip_payload_len < 20) {
+        return;
+    }
+
+    uint32_t r = 14 + ihl;
+    uint32_t doff = (uint32_t)(buf[r + 12] >> 4) * 4;
+
+    if (doff < 20 || doff > ip_payload_len) {
+        return;
+    }
+
+    if (!net_udp_src_budget_ok(buf + 26)) {
+        return;
+    }
+
+    if (!net_udp_budget_ok()) {
+        return;
+    }
+
+    g_tcp_rx++;
+
+    if (net_tcp_checksum(buf + 26, buf + 30, buf + r, ip_payload_len) != 0) {
+        g_tcp_badsum++;
+        serial_write("C1: TCP checksum salah, drop\r\n");
+        return;
+    }
+
+    uint8_t flags = buf[r + 13];
+
+    // Segmen RST tidak pernah dibalas.
+    if (flags & TCP_RST) {
+        return;
+    }
+
+    // C1: belum ada port yang dibuka; semua segmen dibalas RST.
+    uint32_t seg_len = ip_payload_len - doff;
+
+    if (flags & TCP_SYN) {
+        seg_len++;
+    }
+    if (flags & TCP_FIN) {
+        seg_len++;
+    }
+
+    uint64_t lf = irq_save();
+    serial_write("C1: TCP port tertutup dari ");
+    e1000_log_ip(buf + 26);
+    serial_write(" flags=");
+    serial_write_hex((uint64_t)flags);
+    serial_write(" -> RST\r\n");
+    irq_restore(lf);
+
+    net_tcp_send_rst(buf, ihl, seg_len);
+}
+
 static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
                            uint32_t ip_payload_len)
 {
@@ -6801,6 +6982,11 @@ static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
 
     if (buf[23] == 17) {
         net_handle_udp(buf, ihl, total_len - ihl);
+        return;
+    }
+
+    if (buf[23] == 6) {
+        net_handle_tcp(buf, ihl, total_len - ihl);
         return;
     }
 
