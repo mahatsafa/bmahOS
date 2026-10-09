@@ -44,7 +44,7 @@ Belum pernah diuji di hardware asli.
 Kebutuhan: `gcc`, `ld`, `xorriso`, dan Limine 12.5.2 di `tools/limine` (`tools/` tidak ikut git):
 
     git clone --depth=1 --branch=v12.5.2 https://github.com/Limine-Bootloader/Limine.git tools/limine
-    cd tools/limine && ./bootstrap && ./configure && make && cd ../..
+    cd tools/limine && ./bootstrap && ./configure --enable-uefi-x86-64 --enable-uefi-cd && make && cd ../..
 
 Build:
 

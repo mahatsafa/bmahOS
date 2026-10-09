@@ -27,7 +27,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tools/limine
-          key: limine-v12.5.2-ubuntu-24.04
+          key: limine-v12.5.2-uefi-ubuntu-24.04
 
       - name: Bangun Limine v12.5.2
         if: steps.limine-cache.outputs.cache-hit != 'true'
@@ -36,8 +36,9 @@ jobs:
             https://github.com/Limine-Bootloader/Limine.git tools/limine
           cd tools/limine
           ./bootstrap
-          ./configure
+          ./configure --enable-uefi-x86-64 --enable-uefi-cd
           make
+          test -f bin/limine-uefi-cd.bin && test -f bin/BOOTX64.EFI
 
       - name: Cari OVMF
         run: |
