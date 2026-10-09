@@ -149,6 +149,14 @@ static void pmm_init(struct limine_memmap_response *response)
             pmm_bitmap_clear(frame);
         }
     }
+
+    /* Frame 0 tidak pernah dibagikan: alamat fisik 0 = tanda gagal
+       untuk pmm_alloc() dan diabaikan pmm_free(). */
+    if (!pmm_bitmap_test(0)) {
+        pmm_bitmap_set(0);
+        pmm_usable_memory -= PMM_PAGE_SIZE;
+        pmm_usable_frames -= 1;
+    }
 }
 
 static uint64_t pmm_alloc(void)

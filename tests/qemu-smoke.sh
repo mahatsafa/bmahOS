@@ -91,6 +91,7 @@ check "PCI-1 menemukan E1000"    'grep -q "PCI-1: E1000 di" "$LOG"'
 check "KEY.TXT dimuat"           'grep -q "Net-11: kunci dimuat" "$LOG"'
 check "reset ACPI terdeteksi"    'grep -q "ACPI-R: reset ACPI siap" "$LOG"'
 check "NX self-test (B3)"        'grep -q "NX: self-test PASS" "$LOG"'
+check "PMM free/realloc PASS"    'grep -aq "PMM free/realloc test: PASS" "$LOG"'
 if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "user mode + spawn jalan (hello 2x)" '[ "$(grep -c "^hello" "$LOG")" -eq 2 ]'
 fi
