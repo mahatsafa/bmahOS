@@ -135,6 +135,11 @@ class Net:
             t = 14 + (f[14] & 0x0F) * 4
             if f[30:34] != dst_ip or struct.unpack("!H", f[t + 2:t + 4])[0] != dport:
                 continue
+            tl = struct.unpack("!H", f[16:18])[0] - (f[14] & 0x0F) * 4
+            pseudo = f[26:30] + f[30:34] + struct.pack("!BBH", 0, 6, tl)
+            if csum16(pseudo + f[t:t + tl]) != 0 or csum16(f[14:t]) != 0:
+                out.append(("BADSUM",))
+                continue
             seq, ack = struct.unpack("!II", f[t + 4:t + 12])
             tot = struct.unpack("!H", f[16:18])[0]
             out.append((seq, ack, f[t + 13], tot - (f[14] & 0x0F) * 4 - (f[t + 12] >> 4) * 4))
