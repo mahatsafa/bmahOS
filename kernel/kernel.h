@@ -93,4 +93,65 @@ extern volatile int g_serial_mute;
 // ---- kernel.c (ring log; dipakai serial_putc) ----
 void log_capture(char c);
 
+// ---- cpu.c (GDT/TSS/IDT) ----
+struct gdt_entry
+{
+    uint16_t limit_low;
+    uint16_t base_low;
+    uint8_t  base_middle;
+    uint8_t  access;
+    uint8_t  granularity;
+    uint8_t  base_high;
+} __attribute__((packed));
+
+struct tss
+{
+    uint32_t reserved0;
+    uint64_t rsp0;
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint32_t reserved1;
+    uint64_t ist1;
+    uint64_t ist2;
+    uint64_t ist3;
+    uint64_t ist4;
+    uint64_t ist5;
+    uint64_t ist6;
+    uint64_t ist7;
+    uint32_t reserved2;
+    uint32_t reserved3;
+    uint16_t iopb_offset;
+    uint8_t  reserved4[6];
+} __attribute__((packed));
+
+struct idt_entry
+{
+    uint16_t offset_low;
+    uint16_t selector;
+    uint8_t  ist;
+    uint8_t  type_attr;
+    uint16_t offset_mid;
+    uint32_t offset_high;
+    uint32_t reserved;
+} __attribute__((packed));
+
+extern struct gdt_entry bmahOS_gdt[7];
+extern struct tss bmahOS_tss;
+extern struct idt_entry bmahOS_idt[256];
+extern void tss_load_asm(void);
+extern uint64_t tss_read_asm(void);
+void idt_set_entry(uint8_t vector, uint64_t handler, uint16_t selector, uint8_t type_attr);
+void idt_init(void);
+void print_idt_entry0(void);
+void print_idt_entry32(void);
+void gdt_init(void);
+void print_bmahOS_gdt(void);
+void idt_load(void);
+void read_idtr(void);
+void gdt_load_and_reload(void);
+void read_bmahOS_gdtr(void);
+void read_segment_registers(void);
+void read_gdtr(void);
+void read_gdt_entries(void);
+
 #endif

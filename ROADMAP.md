@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 berjalan: modul 1 (serial) selesai di sisi Claude, menunggu commit. `make test` = 50 cek.
+F1.4 berjalan: serial selesai (9f672ac, CI hijau); modul 2 (cpu) selesai di sisi Claude, menunggu commit. `make test` = 50 cek.
 
 ## 4. Templat tahap
 
@@ -67,7 +67,7 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
 - [x] **F1.1** Commit + push C2 (37172c1, 2026-10-09).
 - [x] **F1.2** `LICENSE` (pilih lisensi, catat di `DECISIONS.md`) dan `CONTRIBUTING.md` singkat.
 - [x] **F1.3** CI (9b9489c, hijau di GitHub 2026-10-09) CI GitHub Actions menjalankan `make test`. Lulus: badge hijau di README.
-- [~] **F1.4** (modul selesai: serial) Pecah `kernel.c` menjadi modul, **satu modul per commit**, tanpa mengubah perilaku.
+- [~] **F1.4** (modul selesai: serial 9f672ac; cpu menunggu commit) Pecah `kernel.c` menjadi modul, **satu modul per commit**, tanpa mengubah perilaku.
   Urutan aman: serial, cpu/gdt/idt, pmm, vmm, heap, sched, syscall, pci, ahci/fat32, net/{e1000,arp,ip,icmp,udp,tcp}, cmd.
   Lulus: `make test` tetap 50/50 setelah tiap commit.
 - [ ] **F1.5** Modul CPUID/fitur: laporan fitur CPU (rdrand, NX, SMEP/SMAP, APIC, dll.) di serial.
