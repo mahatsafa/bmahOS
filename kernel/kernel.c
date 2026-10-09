@@ -5460,6 +5460,11 @@ static uint64_t g_net_udp_src_dropped = 0;
 static uint64_t g_tcp_rx = 0;
 static uint64_t g_tcp_badsum = 0;
 static uint64_t g_tcp_rst_sent = 0;
+// C2
+static uint64_t g_tcp_conn_open = 0;
+static uint64_t g_tcp_busy = 0;
+static uint64_t g_tcp_rx_bytes = 0;
+static uint64_t g_tcp_timeouts = 0;
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -5947,6 +5952,10 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("tcp_rx", g_tcp_rx);
         cmd_kv("tcp_badsum", g_tcp_badsum);
         cmd_kv("tcp_rst_sent", g_tcp_rst_sent);
+        cmd_kv("tcp_conn_open", g_tcp_conn_open);
+        cmd_kv("tcp_dropped_busy", g_tcp_busy);
+        cmd_kv("tcp_rx_bytes", g_tcp_rx_bytes);
+        cmd_kv("tcp_timeout", g_tcp_timeouts);
         cmd_kv("auth_ok", g_auth_ok);
         cmd_kv("auth_nonaktif", g_auth_denied[1]);
         cmd_kv("auth_format", g_auth_denied[2]);
@@ -6839,6 +6848,275 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
     }
 }
 
+// ---- C2: satu koneksi TCP (port 7), handshake + terima data + ACK ----
+// Data yang diterima untuk sementara dihitung lalu dibuang (konsumen = echo C4).
+// Penutupan (FIN) dan retransmisi menyusul di C3; sementara ada timeout
+// aman supaya satu TCB tidak mengunci port selamanya.
+#define NET_TCP_ECHO_PORT   7
+#define TCP_RCV_WND         1024
+#define TCP_MSS             536
+#define TCP_SYNRCVD_TIMEOUT 500    // tick (5 detik)
+#define TCP_IDLE_TIMEOUT    3000   // tick (30 detik), sementara sampai C3/C5
+
+enum { TCP_CLOSED = 0, TCP_SYN_RCVD, TCP_ESTABLISHED, TCP_CLOSE_WAIT };
+
+typedef struct {
+    int state;
+    uint8_t mac[6];
+    uint8_t ip[4];
+    uint16_t rport;
+    uint16_t lport;
+    uint32_t iss;       // ISN kita
+    uint32_t snd_nxt;
+    uint32_t irs;       // ISN peer
+    uint32_t rcv_nxt;
+    uint64_t last;      // tick aktivitas terakhir
+} tcp_tcb_t;
+
+static tcp_tcb_t g_tcb;
+
+static uint32_t net_rd32(const volatile uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+// Segmen TCP tanpa data dari kita ke peer. mss_opt != 0: sertakan opsi MSS.
+static void net_tcp_send_seg(const uint8_t *mac, const uint8_t *ip,
+                             uint16_t sport, uint16_t dport,
+                             uint32_t seq, uint32_t ack, uint8_t flags,
+                             int mss_opt)
+{
+    if (g_net_tx_buf_phys == 0) {
+        g_net_tx_buf_phys = pmm_alloc();
+
+        if (g_net_tx_buf_phys == 0) {
+            serial_write("C2: FATAL - pmm_alloc gagal untuk TX buffer\r\n");
+            return;
+        }
+    }
+
+    uint8_t *p = (uint8_t *)(g_net_tx_buf_phys + hhdm_offset);
+    uint32_t hl = mss_opt ? 24 : 20;
+
+    for (uint32_t i = 0; i < 60; i++) {
+        p[i] = 0;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        p[i] = mac[i];
+        p[6 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0x00;
+
+    p[14] = 0x45;
+    p[16] = 0;
+    p[17] = (uint8_t)(20 + hl);
+    p[18] = (uint8_t)(g_net_ip_id >> 8);
+    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
+    g_net_ip_id++;
+    p[20] = 0x40;
+    p[22] = 64;
+    p[23] = 6;
+
+    for (int i = 0; i < 4; i++) {
+        p[26 + i] = g_net_ip[i];
+        p[30 + i] = ip[i];
+    }
+
+    uint16_t ipc = net_checksum16(p + 14, 20);
+    p[24] = (uint8_t)(ipc >> 8);
+    p[25] = (uint8_t)(ipc & 0xFF);
+
+    p[34] = (uint8_t)(sport >> 8);
+    p[35] = (uint8_t)(sport & 0xFF);
+    p[36] = (uint8_t)(dport >> 8);
+    p[37] = (uint8_t)(dport & 0xFF);
+    p[38] = (uint8_t)(seq >> 24);
+    p[39] = (uint8_t)(seq >> 16);
+    p[40] = (uint8_t)(seq >> 8);
+    p[41] = (uint8_t)seq;
+    p[42] = (uint8_t)(ack >> 24);
+    p[43] = (uint8_t)(ack >> 16);
+    p[44] = (uint8_t)(ack >> 8);
+    p[45] = (uint8_t)ack;
+    p[46] = (uint8_t)((hl / 4) << 4);
+    p[47] = flags;
+    p[48] = (uint8_t)(TCP_RCV_WND >> 8);
+    p[49] = (uint8_t)(TCP_RCV_WND & 0xFF);
+
+    if (mss_opt) {
+        p[54] = 2;
+        p[55] = 4;
+        p[56] = (uint8_t)(TCP_MSS >> 8);
+        p[57] = (uint8_t)(TCP_MSS & 0xFF);
+    }
+
+    uint16_t tc = net_tcp_checksum(p + 26, p + 30, p + 34, hl);
+    p[50] = (uint8_t)(tc >> 8);
+    p[51] = (uint8_t)(tc & 0xFF);
+
+    if (e1000_tx_send(g_net_tx_buf_phys, 60)) {
+        if (flags & TCP_RST) {
+            g_tcp_rst_sent++;
+        }
+    }
+}
+
+static void net_tcp_tcb_send(uint32_t seq, uint8_t flags, int mss_opt)
+{
+    net_tcp_send_seg(g_tcb.mac, g_tcb.ip, g_tcb.lport, g_tcb.rport,
+                     seq, g_tcb.rcv_nxt, flags, mss_opt);
+}
+
+static void net_tcp_log(const char *msg)
+{
+    uint64_t lf = irq_save();
+    serial_write("C2: TCP ");
+    serial_write(msg);
+    serial_write("\r\n");
+    irq_restore(lf);
+}
+
+// Dipanggil tiap loop net task (tick-wake ~100 Hz).
+static void net_tcp_tick(void)
+{
+    if (g_tcb.state == TCP_CLOSED) {
+        return;
+    }
+
+    uint64_t limit = g_tcb.state == TCP_SYN_RCVD ? TCP_SYNRCVD_TIMEOUT
+                                                 : TCP_IDLE_TIMEOUT;
+
+    if (timer_ticks - g_tcb.last > limit) {
+        net_tcp_tcb_send(g_tcb.snd_nxt, TCP_RST | TCP_ACK, 0);
+        g_tcp_timeouts++;
+        g_tcb.state = TCP_CLOSED;
+        net_tcp_log("timeout, koneksi diputus (RST)");
+    }
+}
+
+// Return 1 jika segmen sudah ditangani, 0 jika harus dibalas RST (port tutup).
+static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
+                         uint32_t plen)
+{
+    uint32_t r = 14 + ihl;
+    uint16_t sport = (uint16_t)(((uint32_t)buf[r + 0] << 8) | buf[r + 1]);
+    uint16_t dport = (uint16_t)(((uint32_t)buf[r + 2] << 8) | buf[r + 3]);
+    uint32_t seq = net_rd32(buf + r + 4);
+    uint32_t ack = net_rd32(buf + r + 8);
+    uint8_t flags = buf[r + 13];
+    uint32_t dlen = plen - doff;
+    tcp_tcb_t *t = &g_tcb;
+
+    int match = t->state != TCP_CLOSED && dport == t->lport &&
+                sport == t->rport;
+
+    for (int i = 0; match && i < 4; i++) {
+        if (buf[26 + i] != t->ip[i]) {
+            match = 0;
+        }
+    }
+
+    if (match) {
+        t->last = timer_ticks;
+
+        if (flags & TCP_RST) {
+            if (seq == t->rcv_nxt) {
+                t->state = TCP_CLOSED;
+                net_tcp_log("RST dari peer, koneksi ditutup");
+            }
+            return 1;
+        }
+
+        if (flags & TCP_SYN) {
+            if (t->state == TCP_SYN_RCVD && seq == t->irs) {
+                net_tcp_tcb_send(t->iss, TCP_SYN | TCP_ACK, 1);
+            }
+            return 1;
+        }
+
+        if (!(flags & TCP_ACK)) {
+            return 1;
+        }
+
+        if (t->state == TCP_SYN_RCVD) {
+            if (ack != t->snd_nxt) {
+                net_tcp_send_seg(t->mac, t->ip, t->lport, t->rport,
+                                 ack, 0, TCP_RST, 0);
+                t->state = TCP_CLOSED;
+                net_tcp_log("ACK handshake salah, koneksi dibatalkan");
+                return 1;
+            }
+
+            t->state = TCP_ESTABLISHED;
+            g_tcp_conn_open++;
+            net_tcp_log("ESTABLISHED");
+        }
+
+        if (seq != t->rcv_nxt) {
+            // Di luar urutan / duplikat: dibuang, balas ACK posisi kita.
+            net_tcp_tcb_send(t->snd_nxt, TCP_ACK, 0);
+            return 1;
+        }
+
+        uint32_t n = 0;
+
+        if (t->state == TCP_ESTABLISHED && dlen > 0) {
+            n = dlen > TCP_RCV_WND ? TCP_RCV_WND : dlen;
+            t->rcv_nxt += n;
+            g_tcp_rx_bytes += n;
+        }
+
+        if ((flags & TCP_FIN) && n == dlen) {
+            t->rcv_nxt++;
+            t->state = TCP_CLOSE_WAIT;
+            net_tcp_log("FIN dari peer (CLOSE_WAIT)");
+            n = 1;
+        }
+
+        if (n > 0) {
+            net_tcp_tcb_send(t->snd_nxt, TCP_ACK, 0);
+        }
+
+        return 1;
+    }
+
+    if (dport == NET_TCP_ECHO_PORT && (flags & TCP_SYN) &&
+        !(flags & (TCP_ACK | TCP_RST))) {
+        if (t->state != TCP_CLOSED) {
+            g_tcp_busy++;
+            return 0;
+        }
+
+        uint8_t isn[16];
+
+        priv_nonce_generate(isn);
+
+        for (int i = 0; i < 6; i++) {
+            t->mac[i] = buf[6 + i];
+        }
+        for (int i = 0; i < 4; i++) {
+            t->ip[i] = buf[26 + i];
+        }
+        t->rport = sport;
+        t->lport = dport;
+        t->iss = ((uint32_t)isn[0] << 24) | ((uint32_t)isn[1] << 16) |
+                 ((uint32_t)isn[2] << 8) | (uint32_t)isn[3];
+        t->snd_nxt = t->iss + 1;
+        t->irs = seq;
+        t->rcv_nxt = seq + 1;
+        t->last = timer_ticks;
+        t->state = TCP_SYN_RCVD;
+        net_tcp_tcb_send(t->iss, TCP_SYN | TCP_ACK, 1);
+        net_tcp_log("SYN diterima, SYN-ACK dikirim (SYN_RCVD)");
+        return 1;
+    }
+
+    return 0;
+}
+
 static void net_handle_tcp(volatile uint8_t *buf, uint32_t ihl,
                            uint32_t ip_payload_len)
 {
@@ -6871,12 +7149,16 @@ static void net_handle_tcp(volatile uint8_t *buf, uint32_t ihl,
 
     uint8_t flags = buf[r + 13];
 
+    if (net_tcp_input(buf, ihl, doff, ip_payload_len)) {
+        return;
+    }
+
     // Segmen RST tidak pernah dibalas.
     if (flags & TCP_RST) {
         return;
     }
 
-    // C1: belum ada port yang dibuka; semua segmen dibalas RST.
+    // Port tertutup (atau koneksi lain): balas RST.
     uint32_t seg_len = ip_payload_len - doff;
 
     if (flags & TCP_SYN) {
@@ -7216,6 +7498,7 @@ static void net_task_entry(void)
         while (net_poll() > 0) {
         }
 
+        net_tcp_tick();
         sem_wait(&g_net_rx_sem);
     }
 }

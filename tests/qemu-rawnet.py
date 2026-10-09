@@ -294,6 +294,61 @@ def test_tcp_closed(net, cli):
           d["tcp_rx"] == 4 and d["tcp_badsum"] == 1 and d["tcp_rst_sent"] == 2, repr(d))
 
 
+def test_tcp_handshake(net, cli):
+    """C2: handshake port 7, data diterima + ACK, duplikat/out-of-order, busy, FIN, RST."""
+    m0 = cli.metrics()
+    if m0 is None:
+        check("C2: metrics awal", False)
+        return
+    a = bytes([192, 168, 50, 16])
+    b = bytes([192, 168, 50, 17])
+    net.send(tcp_frame(a, 47000, 7, 5000, 0, 0x02))
+    r = net.tcp_replies(a, 47000, 2)
+    ok = len(r) == 1 and r[0][2] == 0x12 and r[0][1] == 5001
+    check("C2: SYN port 7 -> SYN-ACK ack=seq+1", ok, repr(r))
+    if not ok:
+        return
+    iss = r[0][0]
+    net.send(tcp_frame(a, 47000, 7, 5001, iss + 1, 0x10))
+    r = net.tcp_replies(a, 47000, 1)
+    check("C2: ACK handshake tanpa data tidak dibalas", r == [], repr(r))
+    net.send(tcp_frame(a, 47000, 7, 5001, iss + 1, 0x18, b"hello"))
+    r = net.tcp_replies(a, 47000, 2)
+    check("C2: data 5 byte -> ACK ack=5006",
+          r == [(iss + 1, 5006, 0x10, 0)], repr(r))
+    net.send(tcp_frame(a, 47000, 7, 5001, iss + 1, 0x18, b"hello"))
+    r = net.tcp_replies(a, 47000, 2)
+    check("C2: data duplikat -> ACK ulang ack=5006",
+          r == [(iss + 1, 5006, 0x10, 0)], repr(r))
+    net.send(tcp_frame(a, 47000, 7, 9999, iss + 1, 0x18, b"zz"))
+    r = net.tcp_replies(a, 47000, 2)
+    check("C2: di luar urutan -> ACK ack=5006",
+          r == [(iss + 1, 5006, 0x10, 0)], repr(r))
+    net.send(tcp_frame(b, 47001, 7, 7000, 0, 0x02))
+    r = net.tcp_replies(b, 47001, 2)
+    check("C2: koneksi kedua saat sibuk -> RST|ACK", r == [(0, 7001, 0x14, 0)], repr(r))
+    net.send(tcp_frame(a, 47000, 7, 5006, iss + 1, 0x11))
+    r = net.tcp_replies(a, 47000, 2)
+    check("C2: FIN -> ACK ack=5007", r == [(iss + 1, 5007, 0x10, 0)], repr(r))
+    net.send(tcp_frame(a, 47000, 7, 5007, iss + 1, 0x04))
+    r = net.tcp_replies(a, 47000, 1)
+    check("C2: RST dari peer tidak dibalas", r == [], repr(r))
+    net.send(tcp_frame(b, 47002, 7, 8000, 0, 0x02))
+    r = net.tcp_replies(b, 47002, 2)
+    check("C2: setelah RST, koneksi baru diterima",
+          len(r) == 1 and r[0][2] == 0x12 and r[0][1] == 8001, repr(r))
+    net.send(tcp_frame(b, 47002, 7, 8001, 0, 0x04))
+    net.tcp_replies(b, 47002, 0.5)
+    time.sleep(1.2)
+    m1 = cli.metrics()
+    if m1 is None:
+        check("C2: metrics akhir", False)
+        return
+    d = {k: m1[k] - m0[k] for k in ("tcp_conn_open", "tcp_dropped_busy", "tcp_rx_bytes")}
+    check("C2: metrics conn_open +1, dropped_busy +1, rx_bytes +5",
+          d == {"tcp_conn_open": 1, "tcp_dropped_busy": 1, "tcp_rx_bytes": 5}, repr(d))
+
+
 def main():
     p = argparse.ArgumentParser()
     for a in ("qemu", "ovmf-code", "ovmf-vars", "iso", "disk", "key", "work"):
@@ -355,6 +410,8 @@ def main():
         test_chal_flood(net, cli)
         time.sleep(2.2)
         test_tcp_closed(net, cli)
+        time.sleep(2.2)
+        test_tcp_handshake(net, cli)
 
         text = open(log, "rb").read().decode(errors="replace")
         check("rawnet: tanpa exception di log",
