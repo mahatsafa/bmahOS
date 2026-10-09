@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        flags: ["", "PROD=1"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pasang kebutuhan build dan uji
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential xorriso nasm autoconf automake \
+            qemu-system-x86 ovmf dosfstools mtools python3
+
+      - name: Cache Limine v12.5.2
+        id: limine-cache
+        uses: actions/cache@v4
+        with:
+          path: tools/limine
+          key: limine-v12.5.2-ubuntu-24.04
+
+      - name: Bangun Limine v12.5.2
+        if: steps.limine-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch=v12.5.2 \
+            https://github.com/Limine-Bootloader/Limine.git tools/limine
+          cd tools/limine
+          ./bootstrap
+          ./configure
+          make
+
+      - name: Cari OVMF
+        run: |
+          code=/usr/share/OVMF/OVMF_CODE_4M.fd
+          vars=/usr/share/OVMF/OVMF_VARS_4M.fd
+          [ -f "$code" ] || code=/usr/share/OVMF/OVMF_CODE.fd
+          [ -f "$vars" ] || vars=/usr/share/OVMF/OVMF_VARS.fd
+          ls -l "$code" "$vars"
+          echo "OVMF_CODE=$code" >> "$GITHUB_ENV"
+          echo "OVMF_VARS=$vars" >> "$GITHUB_ENV"
+
+      - name: make test ${{ matrix.flags }}
+        run: make test OVMF="$OVMF_CODE" ${{ matrix.flags }}
+
+      - name: Unggah log bila gagal
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-uji-${{ matrix.flags == '' && 'default' || 'prod' }}
+          path: build/test/*.log

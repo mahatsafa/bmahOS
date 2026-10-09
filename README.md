@@ -1,5 +1,7 @@
 # bmahOS
 
+[![CI](https://github.com/mahatsafa/bmahOS/actions/workflows/ci.yml/badge.svg)](https://github.com/mahatsafa/bmahOS/actions/workflows/ci.yml)
+
 Sistem operasi eksperimental x86_64 yang ditulis dari nol (freestanding, UEFI via Limine).
 Dikembangkan dan diuji di VMware Workstation, dengan uji otomatis di QEMU (`make test`).
 Belum pernah diuji di hardware asli.

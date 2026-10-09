@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-Menunggu: F1.2 (DECISIONS.md + CONTRIBUTING.md) menunggu commit oleh pemilik repo. `make test` = 50 cek.
+Menunggu: F1.3 (workflow CI dibuat, belum terbukti hijau di GitHub). `make test` = 50 cek.
 
 ## 4. Templat tahap
 
@@ -65,8 +65,8 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
 ### Fase 1: Fondasi (sebelum fitur baru)
 
 - [x] **F1.1** Commit + push C2 (37172c1, 2026-10-09).
-- [ ] **F1.2** `LICENSE` (pilih lisensi, catat di `DECISIONS.md`) dan `CONTRIBUTING.md` singkat.
-- [ ] **F1.3** CI GitHub Actions menjalankan `make test`. Lulus: badge hijau di README.
+- [x] **F1.2** `LICENSE` (pilih lisensi, catat di `DECISIONS.md`) dan `CONTRIBUTING.md` singkat.
+- [!] **F1.3** CI GitHub Actions menjalankan `make test`. Lulus: badge hijau di README.
 - [ ] **F1.4** Pecah `kernel.c` menjadi modul, **satu modul per commit**, tanpa mengubah perilaku.
   Urutan aman: serial, cpu/gdt/idt, pmm, vmm, heap, sched, syscall, pci, ahci/fat32, net/{e1000,arp,ip,icmp,udp,tcp}, cmd.
   Lulus: `make test` tetap 50/50 setelah tiap commit.
