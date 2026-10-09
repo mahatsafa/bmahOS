@@ -5326,6 +5326,8 @@ static uint64_t g_auth_denied[5] = {0, 0, 0, 0, 0};
 static uint64_t g_chal_issued = 0;
 static uint64_t g_priv_ok = 0;
 static uint64_t g_priv_denied[6] = {0, 0, 0, 0, 0, 0};
+// B2: datagram jalur counter yang ditolak karena jalur itu dimatikan
+static uint64_t g_auth_ctr_off = 0;
 // Net-19: frame per jenis + UDP checksum salah
 static uint64_t g_net_rx_arp = 0;
 static uint64_t g_net_rx_ipv4 = 0;
@@ -5567,7 +5569,11 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
         cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks\n");
-        cmd_puts("berprivilege: kirim CHAL, lalu <nonce> <pping|reboot> <hmac>\n");
+        cmd_puts("berprivilege: pping reboot\n");
+        cmd_puts("kirim CHAL, lalu <nonce> <perintah> <hmac>\n");
+#ifdef BMAHOS_LEGACYCTR
+        cmd_puts("jalur counter (LEGACYCTR): <counter> <perintah> <hmac>, tanpa pping/reboot\n");
+#endif
     } else if (net_cmd_is(cmd, len, "ping")) {
         cmd_puts("pong\n");
     } else if (net_cmd_is(cmd, len, "uptime")) {
@@ -5678,6 +5684,8 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(g_auth_denied[3]);
         cmd_puts(" replay=");
         cmd_putdec(g_auth_denied[4]);
+        cmd_puts(" jalur_mati=");
+        cmd_putdec(g_auth_ctr_off);
         cmd_puts("\npriv: chal=");
         cmd_putdec(g_chal_issued);
         cmd_puts(" ok=");
@@ -5734,6 +5742,7 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("auth_format", g_auth_denied[2]);
         cmd_kv("auth_hmac", g_auth_denied[3]);
         cmd_kv("auth_replay", g_auth_denied[4]);
+        cmd_kv("auth_counter_off", g_auth_ctr_off);
         cmd_kv("priv_chal", g_chal_issued);
         cmd_kv("priv_ok", g_priv_ok);
         cmd_kv("priv_nonaktif", g_priv_denied[1]);
@@ -6309,7 +6318,8 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("reboot: dimulai\n");
         g_priv_reboot_pending = 1;
     } else {
-        cmd_puts("ERR: perintah berprivilege tidak dikenal (ada: pping reboot)\n");
+        // B2: perintah baca juga boleh lewat jalur nonce.
+        net_cmd_execute(cmd, len);
     }
 }
 
@@ -6412,6 +6422,17 @@ static void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len
         }
         return;
     }
+
+#ifndef BMAHOS_LEGACYCTR
+    // B2: jalur counter dimatikan. Counter terakhir hanya ada di RAM, jadi
+    // setelah reboot datagram lama bisa diputar ulang sekali; jalur nonce
+    // tidak punya masalah itu. LEGACYCTR=1 menyalakannya lagi.
+    g_auth_ctr_off++;
+    g_cmd_len = 0;
+    cmd_puts("ERR: jalur counter dimatikan; kirim CHAL lalu <nonce> <perintah> <hmac>\n");
+    net_udp_send_cmd_reply(req, ihl);
+    return;
+#endif
 
     volatile uint8_t *ac = 0;
     uint32_t acl = 0;

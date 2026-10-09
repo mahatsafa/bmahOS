@@ -48,6 +48,7 @@ Flag uji (bisa digabung):
     NORDRAND=1          # nonce tanpa rdrand (uji jalur cadangan sumber acak)
     NOKBDRESET=1        # reboot tanpa 8042 (uji jalur cadangan triple fault)
     NOACPIRESET=1       # reboot tanpa register reset ACPI (uji jalur 8042)
+    LEGACYCTR=1         # nyalakan lagi jalur counter lama (transisi; lihat di bawah)
 
 Hasil: `build/bmahOS.iso`.
 
@@ -74,31 +75,33 @@ tanpa exception. Semua file uji ada di `build/test/`.
 
 Semua datagram melewati batas laju global (100 per detik); sisanya dibuang sebelum log dan HMAC.
 
-### Perintah baca (jalur counter)
-
-Datagram: `<counter> <perintah> <hmac-hex-64>`
-
-- `hmac` = HMAC-SHA256 (kunci dari `KEY.TXT`) atas string `<counter> <perintah>`
-- `counter` harus lebih besar dari counter terakhir yang diterima (anti-replay)
-
-Perintah: `help`, `ping`, `uptime`, `mem`, `log`, `irq`, `stats`, `metrics`, `mac`, `ip`, `tasks`
-
-`metrics` mengembalikan semua counter dalam format stabil untuk skrip, satu `kunci=nilai` per baris
-(uptime, memori, frame RX per jenis, TX ok/gagal, ARP/ICMP/UDP, autentikasi, perintah berprivilege).
-
-### Perintah berprivilege (jalur nonce)
+### Autentikasi (jalur nonce)
 
 1. Kirim `CHAL`; balasan `nonce: <32 hex>` (16 byte acak dari SHA-256 atas rdrand, TSC, tick, RTC, pool).
-2. Kirim `<nonce> <perintah> <hmac-hex-64>`, `hmac` atas string `<nonce> <perintah>`.
+2. Kirim `<nonce> <perintah> <hmac-hex-64>`, `hmac` = HMAC-SHA256 (kunci dari `KEY.TXT`) atas string
+   `<nonce> <perintah>`.
 
 Nonce berlaku 5 detik dan sekali pakai; tabel 4 slot (CHAL baru menggusur yang tertua). Nonce dicari
 sebelum HMAC dihitung, dan baru dihapus setelah HMAC valid. Karena tabel ada di RAM, datagram yang
 direkam sebelum reboot tidak bisa diputar ulang.
 
-Perintah: `pping` (balas `ppong`, untuk uji), `reboot` (balasan dikirim dulu, lalu reset).
+Perintah baca: `help`, `ping`, `uptime`, `mem`, `log`, `irq`, `stats`, `metrics`, `mac`, `ip`, `tasks`
+
+Perintah berprivilege: `pping` (balas `ppong`, untuk uji), `reboot` (balasan dikirim dulu, lalu reset).
+
+`metrics` mengembalikan semua counter dalam format stabil untuk skrip, satu `kunci=nilai` per baris
+(uptime, memori, frame RX per jenis, TX ok/gagal, ARP/ICMP/UDP, autentikasi, jalur nonce).
+Counter `priv_*` menghitung semua perintah lewat jalur nonce, bukan hanya `pping`/`reboot`.
 
 Kode tolak (juga dihitung di baris `priv:` perintah `stats`): nonaktif, format, nonce tidak dikenal/
 sudah dipakai, kedaluwarsa, hmac salah.
+
+### Jalur counter lama (dimatikan)
+
+Dulu perintah baca memakai `<counter> <perintah> <hmac-hex-64>` dengan counter yang harus naik.
+Counter terakhir hanya disimpan di RAM, jadi setelah reboot datagram rekaman bisa diputar ulang
+sekali. Sekarang jalur ini dimatikan dan dibalas `ERR: jalur counter dimatikan; ...` (dihitung di
+`auth_counter_off`). Build `LEGACYCTR=1` menyalakannya lagi untuk masa transisi (tanpa `pping`/`reboot`).
 
 UDP echo tanpa autentikasi ada di port 7777.
 
@@ -108,12 +111,12 @@ Python 3 tanpa pustaka tambahan (Windows dan Linux). File kunci berisi sama deng
 
     python client/bmctl.py --key ~/bmahos-key.txt uptime
     python client/bmctl.py --key ~/bmahos-key.txt metrics
-    python client/bmctl.py --key ~/bmahos-key.txt --priv pping
-    python client/bmctl.py --key ~/bmahos-key.txt --priv reboot
+    python client/bmctl.py --key ~/bmahos-key.txt pping
+    python client/bmctl.py --key ~/bmahos-key.txt reboot
 
 Alamat default `192.168.50.200:7778` (ubah dengan `--host`/`--port` atau `BMAHOS_HOST`/`BMAHOS_PORT`).
-Jalur baca memakai counter = waktu Unix dalam milidetik. Kode keluar: 0 sukses, 1 balasan `ERR`,
-2 tidak ada balasan.
+Semua perintah lewat `CHAL`; `--counter` memakai jalur lama (hanya build `LEGACYCTR=1`), `--priv`
+diterima tapi tidak diperlukan lagi. Kode keluar: 0 sukses, 1 balasan `ERR`, 2 tidak ada balasan.
 
 ## Hardware target (hasil pemeriksaan dari Linux di HP Stream)
 
@@ -133,8 +136,8 @@ Jalur baca memakai counter = waktu Unix dalam milidetik. Kode keluar: 0 sukses, 
 ## Batasan yang diketahui
 
 - Autentikasi hanya menjamin keaslian perintah, bukan kerahasiaan balasan (teks polos)
-- Counter anti-replay jalur baca disimpan di RAM; setelah reboot datagram baca lama bisa diputar ulang
-  sekali (perintah berprivilege tidak terpengaruh karena memakai nonce)
+- Build `LEGACYCTR=1`: counter anti-replay jalur lama disimpan di RAM, jadi setelah reboot datagram
+  baca lama bisa diputar ulang sekali (build default tidak terpengaruh, semua lewat nonce)
 - Batas laju bersifat global; saat banjir, perintah sah ikut terbuang
 - Tabel nonce 4 slot: banjir `CHAL` bisa menggusur nonce klien sah (penolakan layanan ringan)
 - Tanpa rdrand, nonce hanya bergantung pada TSC, tick, RTC, dan pool (kualitas entropi belum dinilai)

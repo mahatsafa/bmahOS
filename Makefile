@@ -29,6 +29,10 @@ ifeq ($(NOACPIRESET),1)
 CFLAGS += -DBMAHOS_NOACPIRESET
 endif
 
+ifeq ($(LEGACYCTR),1)
+CFLAGS += -DBMAHOS_LEGACYCTR
+endif
+
 LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
 C_SRCS := $(KERNEL_DIR)/kernel.c

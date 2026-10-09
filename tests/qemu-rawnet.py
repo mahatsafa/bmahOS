@@ -77,8 +77,9 @@ class Net:
         finally:
             self.sock.setblocking(True)
 
-    def udp_replies(self, dst_ip, dport, timeout):
-        """Kumpulkan payload UDP dari tamu ke dst_ip:dport sampai timeout."""
+    def udp_replies(self, dst_ip, dport, timeout, limit=None):
+        """Kumpulkan payload UDP dari tamu ke dst_ip:dport sampai timeout
+        (atau sampai `limit` balasan terkumpul)."""
         out = []
         end = time.time() + timeout
         while True:
@@ -98,15 +99,17 @@ class Net:
                 continue
             ulen = struct.unpack("!H", f[u + 4:u + 6])[0]
             out.append(f[u + 8:u + ulen])
+            if limit is not None and len(out) >= limit:
+                return out
 
     def request(self, src_ip, sport, dport, payload, timeout=10.0):
         self.send(udp_frame(src_ip, sport, dport, payload))
-        r = self.udp_replies(src_ip, sport, timeout)
+        r = self.udp_replies(src_ip, sport, timeout, limit=1)
         return r[0] if r else None
 
 
 class Client:
-    """Perintah terautentikasi lewat frame mentah (jalur counter)."""
+    """Perintah terautentikasi lewat frame mentah (jalur nonce/CHAL)."""
 
     def __init__(self, net, key, src_ip, sport=40000):
         self.net, self.key, self.src_ip, self.sport = net, key, src_ip, sport
@@ -117,7 +120,10 @@ class Client:
 
     def cmd(self, c):
         self.sport += 1
-        msg = "%d %s" % (int(time.time() * 1000), c)
+        r = self.net.request(self.src_ip, self.sport, CMD_PORT, b"CHAL")
+        if r is None or not r.startswith(b"nonce: "):
+            return None
+        msg = "%s %s" % (r[len(b"nonce: "):].strip().decode(), c)
         r = self.net.request(self.src_ip, self.sport, CMD_PORT, self.sign(msg))
         return r.decode(errors="replace") if r is not None else None
 

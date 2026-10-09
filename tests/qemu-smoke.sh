@@ -100,24 +100,44 @@ check "kunci salah ditolak" \
     'python3 $ROOT/client/bmctl.py --key $WORK/bad.txt --host 127.0.0.1 --port $PORT --timeout 10 ping | grep -q "^ERR: hmac salah"'
 
 # Replay: datagram yang sama dikirim dua kali, yang kedua harus ditolak.
-REPLAY="$(python3 - "$KEY" "$PORT" <<'EOF'
+# Argumen: mode (nonce|counter) dan perintah. Keluaran: "<balasan1>|<balasan2>".
+replay() {
+    python3 - "$KEY" "$PORT" "$1" "$2" <<'PYEOF'
 import hashlib, hmac, socket, sys, time
 key = open(sys.argv[1], "rb").read().rstrip(b"\r\n \x00")
-msg = "%d ping" % int(time.time() * 1000)
-pkt = ("%s %s" % (msg, hmac.new(key, msg.encode(), hashlib.sha256).hexdigest())).encode()
+addr = ("127.0.0.1", int(sys.argv[2]))
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.settimeout(10)
+if sys.argv[3] == "nonce":
+    s.sendto(b"CHAL", addr)
+    head = s.recvfrom(4096)[0].decode().strip()[len("nonce: "):]
+else:
+    head = "%d" % int(time.time() * 1000)
+msg = "%s %s" % (head, sys.argv[4])
+pkt = ("%s %s" % (msg, hmac.new(key, msg.encode(), hashlib.sha256).hexdigest())).encode()
 out = []
 for _ in range(2):
-    s.sendto(pkt, ("127.0.0.1", int(sys.argv[2])))
+    s.sendto(pkt, addr)
     out.append(s.recvfrom(4096)[0].decode().strip())
 print("|".join(out))
-EOF
-)"
-check "replay jalur counter ditolak" '[ "${REPLAY%%|*}" = "pong" ] && [ "${REPLAY#*|}" != "pong" ]'
+PYEOF
+}
 
-check "priv pping -> ppong"      '[ "$($BM --priv pping)" = "ppong" ]'
-check "priv reboot diterima"     '[ "$($BM --priv reboot)" = "reboot: dimulai" ]'
+REPLAY="$(replay nonce ping)"
+check "replay jalur nonce ditolak" \
+    '[ "${REPLAY%%|*}" = "pong" ] && [ "${REPLAY#*|}" = "ERR: nonce tidak dikenal atau sudah dipakai" ]'
+
+REPLAY="$(replay counter ping)"
+if strings "$ROOT/build/kernel.elf" | grep -q "jalur counter dimatikan"; then
+    check "jalur counter dimatikan (B2)" \
+        '[ "${REPLAY%%|*}" = "ERR: jalur counter dimatikan; kirim CHAL lalu <nonce> <perintah> <hmac>" ]'
+else
+    check "replay jalur counter ditolak (LEGACYCTR)" \
+        '[ "${REPLAY%%|*}" = "pong" ] && [ "${REPLAY#*|}" = "ERR: counter replay" ]'
+fi
+
+check "pping -> ppong"           '[ "$($BM pping)" = "ppong" ]'
+check "reboot diterima"          '[ "$($BM reboot)" = "reboot: dimulai" ]'
 
 for _ in $(seq 1 30); do
     kill -0 "$QPID" 2>/dev/null || break
