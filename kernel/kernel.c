@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <limine.h>
+#include "kernel.h"
 
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[] =
@@ -205,56 +206,6 @@ __attribute__((used, section(".limine_requests_end_marker")))
 static volatile uint64_t limine_requests_end_marker[] =
     LIMINE_REQUESTS_END_MARKER;
 
-static inline void outb(uint16_t port, uint8_t value)
-{
-    __asm__ volatile (
-        "outb %0, %1"
-        :
-        : "a"(value), "Nd"(port)
-    );
-}
-
-static inline uint8_t inb(uint16_t port)
-{
-    uint8_t value;
-
-    __asm__ volatile (
-        "inb %1, %0"
-        : "=a"(value)
-        : "Nd"(port)
-    );
-
-    return value;
-}
-
-// Checkpoint PCI: varian 32-bit outb/inb -- dibutuhkan karena PCI
-// configuration space diakses lewat CONFIG_ADDRESS/CONFIG_DATA yang
-// keduanya register 32-bit (port 0xCF8/0xCFC), bukan 8-bit seperti
-// PIC/PIT/serial yang sudah ada.
-static inline void outl(uint16_t port, uint32_t value)
-{
-    __asm__ volatile (
-        "outl %0, %1"
-        :
-        : "a"(value), "Nd"(port)
-    );
-}
-
-static inline uint32_t inl(uint16_t port)
-{
-    uint32_t value;
-
-    __asm__ volatile (
-        "inl %1, %0"
-        : "=a"(value)
-        : "Nd"(port)
-    );
-
-    return value;
-}
-
-static void serial_write(const char *s);
-static void serial_write_hex(uint64_t value);
 static void lapic_send_eoi(void);
 static void e1000_irq_service(void);
 static void net_rx_tick_wake(void);
@@ -747,48 +698,6 @@ static void pit_init(uint32_t frequency_hz)
 }
 
 
-#define COM1 0x3F8
-
-static void serial_init(void)
-{
-    outb(COM1 + 1, 0x00);
-    outb(COM1 + 3, 0x80);
-    outb(COM1 + 0, 0x03);
-    outb(COM1 + 1, 0x00);
-    outb(COM1 + 3, 0x03);
-    outb(COM1 + 2, 0xC7);
-    outb(COM1 + 4, 0x0B);
-}
-
-// irq_save/irq_restore: proteksi critical section yang AMAN terhadap
-// nested call (beda dari cli/sti polos). irq_save() menyimpan kondisi
-// IF (Interrupt Flag) yang SEBENARNYA sebelum cli, lewat pushfq (baca
-// seluruh RFLAGS). irq_restore() hanya sti KALAU kondisi sebelumnya
-// memang IF=1 -- kalau caller sudah cli duluan sebelum manggil kita,
-// kita tidak akan sengaja menyalakan interrupt yang caller matikan.
-static inline uint64_t irq_save(void)
-{
-    uint64_t flags;
-    __asm__ volatile (
-        "pushfq\n\t"
-        "popq %0\n\t"
-        "cli"
-        : "=r"(flags)
-        :
-        : "memory"
-    );
-    return flags;
-}
-
-static inline void irq_restore(uint64_t flags)
-{
-    // Bit ke-9 RFLAGS = IF. Kalau nyala di kondisi yang disimpan,
-    // berarti sebelum irq_save() dipanggil interrupt memang aktif.
-    if (flags & (1 << 9)) {
-        __asm__ volatile ("sti" ::: "memory");
-    }
-}
-
 // ---- Net-12: ring buffer log (disaring: tanpa baris schedule()) ----
 #define LOG_RING_SIZE 8192
 #define LOG_LINE_MAX  160
@@ -802,7 +711,7 @@ static uint32_t g_log_line_len = 0;
 // Dipanggil dari serial_putc() dengan interrupt dimatikan. Merakit baris
 // dulu; baris lengkap masuk ring kecuali kosong atau diawali
 // "schedule(): switch" (bising, ~100 baris/detik).
-static void log_capture(char c)
+void log_capture(char c)
 {
     static const char noisy[] = "schedule(): switch";
     const uint32_t noisy_len = sizeof(noisy) - 1;
@@ -843,66 +752,6 @@ static void log_capture(char c)
     }
 
     g_log_line_len = 0;
-}
-
-// B4b: 1 = karakter hanya masuk ring log, tidak dikirim ke UART. Diset net
-// task saat jatah log paket per detik habis (lihat net_rx_dispatch()).
-static volatile int g_serial_mute = 0;
-
-static void serial_putc(char c)
-{
-    if (!g_serial_mute) {
-        while (!(inb(COM1 + 5) & 0x20))
-            ;
-
-        outb(COM1, (uint8_t)c);
-    }
-
-    uint64_t lf = irq_save();
-    log_capture(c);
-    irq_restore(lf);
-}
-
-// Versi TANPA lock -- dipakai internal oleh fungsi lain yang SUDAH
-// pegang lock sendiri (mis. serial_write_hex()), supaya tidak nested
-// lock diri sendiri (nested cli aman secara hardware, tapi nested
-// irq_save/irq_restore naif bisa salah restore state kalau tidak hati-hati).
-static void serial_write_nolock(const char *s)
-{
-    while (*s)
-    {
-        serial_putc(*s++);
-    }
-}
-
-// Versi PUBLIK dengan lock -- pakai ini dari luar (task, dsb.) supaya
-// satu pemanggilan serial_write() tidak bisa disisipi task lain
-// di tengah-tengah string.
-static void serial_write(const char *s)
-{
-    uint64_t flags = irq_save();
-    serial_write_nolock(s);
-    irq_restore(flags);
-}
-
-static void serial_write_hex(uint64_t value)
-{
-    static const char hex[] = "0123456789ABCDEF";
-
-    // Lock SEKALI untuk seluruh "0x" + digit-digitnya -- kalau tidak,
-    // ada celah antara serial_write("0x") selesai dan loop digit mulai,
-    // di mana task lain bisa menyelip di tengah angka hex.
-    uint64_t flags = irq_save();
-
-    serial_write_nolock("0x");
-
-    for (int i = 15; i >= 0; i--)
-    {
-        uint8_t digit = (value >> (i * 4)) & 0xF;
-        serial_putc(hex[digit]);
-    }
-
-    irq_restore(flags);
 }
 
 

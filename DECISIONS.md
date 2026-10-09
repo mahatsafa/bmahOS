@@ -11,3 +11,9 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **IoT bukan target**; beban kerja IoT lewat socket API (P5).
 - **Kripto**: tidak menulis primitif baru selain SHA-256/HMAC yang sudah ada dan teruji vektor resmi; enkripsi/TLS memakai library teruji (D8).
 - **Patch lewat skrip Python atomik** (assert count==1), karena penggantian teks yang tidak cocok harus gagal keras, bukan diam-diam.
+
+## 2026-10-09 (F1.4 pola pemecahan kernel.c)
+- **Satu modul = kernel/<nama>.c, deklarasi lintas-modul di kernel/kernel.h** (satu header bersama dulu; dipecah per modul bila membengkak), karena kernel.c memakai banyak helper inline bersama (port I/O, irq_save). Alternatif header per modul sejak awal ditolak: terlalu banyak file sebelum polanya terbukti.
+- **Hanya simbol lintas-modul yang kehilangan `static`**; sisanya tetap static di modulnya. Bukti pemindahan murni: baris yang dihapus dari kernel.c harus sama dengan baris di file baru, kecuali `static`.
+- **Makefile memakai wildcard kernel/*.c dan objek bergantung pada kernel/*.h.**
+- Modul 1 (serial): serial_init/putc/write/write_hex + g_serial_mute pindah ke serial.c; outb/inb/outl/inl dan irq_save/irq_restore (static inline) ke kernel.h; log_capture tetap di kernel.c (non-static) sampai modul log/cmd.

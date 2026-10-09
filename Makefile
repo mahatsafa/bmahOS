@@ -39,7 +39,8 @@ endif
 
 LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
-C_SRCS := $(KERNEL_DIR)/kernel.c
+C_SRCS := $(wildcard $(KERNEL_DIR)/*.c)
+HDRS   := $(wildcard $(KERNEL_DIR)/*.h)
 S_SRCS := $(KERNEL_DIR)/gdt.S $(KERNEL_DIR)/interrupt.S $(KERNEL_DIR)/task.S
 
 C_OBJS := $(patsubst $(KERNEL_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SRCS))
@@ -56,7 +57,7 @@ OVMF := /usr/share/edk2/ovmf/OVMF_CODE.fd
 
 all: iso
 
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.c
+$(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.c $(HDRS)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@
 
