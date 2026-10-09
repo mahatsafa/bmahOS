@@ -162,6 +162,37 @@ def test_counters(net, cli):
     check("echo checksum benar dibalas", good == b"utuh", repr(good))
 
 
+def test_src_limit(net, cli):
+    """B4: banjir dari satu IP sumber tidak menghabiskan jatah IP lain."""
+    m0 = cli.metrics()
+    if m0 is None:
+        check("B4: metrics awal", False)
+        return
+    flood = bytes([192, 168, 50, 11])
+    other = bytes([192, 168, 50, 12])
+    sent = 0
+    for _ in range(5):
+        for _ in range(30):
+            net.send(udp_frame(flood, 42000 + sent, ECHO_PORT, b"banjir"))
+            sent += 1
+        time.sleep(0.02)
+    got = net.request(other, 43000, ECHO_PORT, b"lain", timeout=5)
+    time.sleep(0.5)
+    net.drain()
+    m1 = cli.metrics()
+    if m1 is None:
+        check("B4: metrics akhir", False)
+        return
+    d_src = m1["udp_src_dropped"] - m0["udp_src_dropped"]
+    d_glob = m1["udp_dropped"] - m0["udp_dropped"]
+    d_echo = m1["udp_echo"] - m0["udp_echo"]
+    info = "kirim=%d echo=%d dibuang_sumber=%d dibuang_global=%d" % (sent, d_echo, d_src, d_glob)
+    print("info  B4: " + info)
+    check("B4: IP lain tetap dilayani saat banjir", got == b"lain", repr(got))
+    check("B4: banjir dibatasi per sumber", d_src >= 50 and d_echo - 1 <= 40, info)
+    check("B4: jatah global tidak habis", d_glob == 0, info)
+
+
 def main():
     p = argparse.ArgumentParser()
     for a in ("qemu", "ovmf-code", "ovmf-vars", "iso", "disk", "key", "work"):
@@ -217,6 +248,8 @@ def main():
         cli = Client(net, key, bytes([192, 168, 50, 1]))
 
         test_counters(net, cli)
+        time.sleep(1.2)
+        test_src_limit(net, cli)
 
         text = open(log, "rb").read().decode(errors="replace")
         check("rawnet: tanpa exception di log",

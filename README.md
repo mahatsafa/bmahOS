@@ -30,7 +30,8 @@ Belum pernah diuji di hardware asli.
 - Perintah jarak jauh terautentikasi HMAC-SHA256 (SHA-256/HMAC ditulis sendiri, self-test vektor resmi saat boot)
 - Challenge-response nonce untuk perintah berprivilege, termasuk `reboot` (register reset ACPI dari
   FADT, lalu 8042, lalu cadangan triple fault)
-- Batas laju 100 datagram/detik, ring log 8 KB, counter di perintah `stats` dan `metrics`
+- Batas laju 20 datagram/detik per IP sumber dan 100 per detik global, ring log 8 KB, counter di
+  perintah `stats` dan `metrics`
 
 ## Build
 
@@ -67,7 +68,7 @@ Skrip membuat disk FAT32 sementara dengan `KEY.TXT` acak (bukan kunci asli), boo
 dengan E1000 + AHCI, lalu memeriksa: self-test crypto, deteksi PCI, kunci dimuat, `ping`/`uptime`/
 `metrics`, kunci salah dan replay ditolak, `pping` berprivilege, `reboot` lewat reset ACPI, NX, dan
 log tanpa exception. Boot kedua (`tests/qemu-rawnet.py`, `-netdev dgram`) mengirim frame Ethernet
-mentah: EtherType asing dan checksum UDP rusak. Boot ketiga tanpa NIC
+mentah: EtherType asing, checksum UDP rusak, dan banjir dari satu IP sumber. Boot ketiga tanpa NIC
 dan tanpa disk memastikan driver yang tidak ada dilewati tanpa exception. Semua file uji ada di
 `build/test/`.
 
@@ -79,7 +80,10 @@ dan tanpa disk memastikan driver yang tidak ada dilewati tanpa exception. Semua 
 
 ## Perintah jarak jauh (UDP port 7778)
 
-Semua datagram melewati batas laju global (100 per detik); sisanya dibuang sebelum log dan HMAC.
+Semua datagram melewati batas laju per IP sumber (20 per detik, tabel 8 sumber) lalu batas global
+(100 per detik); sisanya dibuang sebelum log dan HMAC. Datagram yang ditolak batas per sumber tidak
+memakai jatah global, jadi banjir dari satu IP tidak membuat perintah dari IP lain ikut terbuang
+(`udp_src_dropped` dan `udp_dropped` di `metrics`).
 
 ### Autentikasi (jalur nonce)
 
@@ -144,7 +148,8 @@ diterima tapi tidak diperlukan lagi. Kode keluar: 0 sukses, 1 balasan `ERR`, 2 t
 - Autentikasi hanya menjamin keaslian perintah, bukan kerahasiaan balasan (teks polos)
 - Build `LEGACYCTR=1`: counter anti-replay jalur lama disimpan di RAM, jadi setelah reboot datagram
   baca lama bisa diputar ulang sekali (build default tidak terpengaruh, semua lewat nonce)
-- Batas laju bersifat global; saat banjir, perintah sah ikut terbuang
+- Batas laju per sumber memakai IP sumber yang bisa dipalsukan; banjir dari banyak IP palsu masih bisa
+  menghabiskan jatah global (dan menggusur slot tabel 8 sumber), sehingga perintah sah ikut terbuang
 - Tabel nonce 4 slot: banjir `CHAL` bisa menggusur nonce klien sah (penolakan layanan ringan)
 - Tanpa rdrand, nonce hanya bergantung pada TSC, tick, RTC, dan pool (kualitas entropi belum dinilai)
 - Reset ACPI hanya mendukung register reset di ruang I/O (umum: port `0xCF9`); ruang memori/PCI

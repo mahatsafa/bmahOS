@@ -5416,6 +5416,71 @@ static int net_udp_budget_ok(void)
     return 1;
 }
 
+// B4: batas per alamat IP sumber, dicek SEBELUM batas global. Datagram yang
+// melewati batas sumbernya dibuang tanpa memakai jatah global, jadi satu
+// pengirim paling banyak memakai NET_UDP_SRC_PER_SEC dari jatah global dan
+// pengirim lain tetap terlayani. Tabel kecil: sumber baru menggusur slot
+// kosong atau slot dengan jendela tertua (IP palsu yang banyak bisa
+// menggusur slot penyerang; batas global tetap berlaku).
+#define NET_UDP_SRC_PER_SEC 20
+#define NET_UDP_SRC_SLOTS   8
+
+typedef struct {
+    uint8_t ip[4];
+    uint64_t window;
+    uint32_t used;
+    int in_use;
+} net_src_budget_t;
+
+static net_src_budget_t g_net_src[NET_UDP_SRC_SLOTS];
+static uint64_t g_net_udp_src_dropped = 0;
+
+static int net_udp_src_budget_ok(const volatile uint8_t *ip)
+{
+    uint64_t now = timer_ticks;
+    net_src_budget_t *s = 0;
+    net_src_budget_t *victim = 0;
+
+    for (uint32_t i = 0; i < NET_UDP_SRC_SLOTS; i++) {
+        net_src_budget_t *e = &g_net_src[i];
+
+        if (e->in_use && e->ip[0] == ip[0] && e->ip[1] == ip[1] &&
+            e->ip[2] == ip[2] && e->ip[3] == ip[3]) {
+            s = e;
+            break;
+        }
+
+        // Slot kosong diutamakan; kalau tidak ada, slot dengan jendela tertua.
+        if (victim == 0 ||
+            (victim->in_use && (!e->in_use || e->window < victim->window))) {
+            victim = e;
+        }
+    }
+
+    if (s == 0) {
+        s = victim;
+        for (int i = 0; i < 4; i++) {
+            s->ip[i] = ip[i];
+        }
+        s->window = now;
+        s->used = 0;
+        s->in_use = 1;
+    }
+
+    if (now - s->window >= 100) {
+        s->window = now;
+        s->used = 0;
+    }
+
+    if (s->used >= NET_UDP_SRC_PER_SEC) {
+        g_net_udp_src_dropped++;
+        return 0;
+    }
+
+    s->used++;
+    return 1;
+}
+
 static uint32_t net_sum16(const volatile uint8_t *p, uint32_t len, uint32_t sum)
 {
     while (len > 1) {
@@ -5738,6 +5803,10 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(g_net_udp_dropped);
         cmd_puts(" batas/detik=");
         cmd_putdec(NET_UDP_BUDGET_PER_SEC);
+        cmd_puts(" dibuang_sumber=");
+        cmd_putdec(g_net_udp_src_dropped);
+        cmd_puts(" batas_sumber/detik=");
+        cmd_putdec(NET_UDP_SRC_PER_SEC);
         cmd_puts("\nauth: ok=");
         cmd_putdec(g_auth_ok);
         cmd_puts(" nonaktif=");
@@ -5800,6 +5869,7 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("icmp_reply", g_net_icmp_replies_sent);
         cmd_kv("udp_echo", g_net_udp_echo_count);
         cmd_kv("udp_dropped", g_net_udp_dropped);
+        cmd_kv("udp_src_dropped", g_net_udp_src_dropped);
         cmd_kv("udp_badsum", g_net_udp_badsum);
         cmd_kv("auth_ok", g_auth_ok);
         cmd_kv("auth_nonaktif", g_auth_denied[1]);
@@ -6559,6 +6629,10 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
     }
 
     if (dst_port != NET_UDP_ECHO_PORT && dst_port != NET_UDP_CMD_PORT) {
+        return;
+    }
+
+    if (!net_udp_src_budget_ok(buf + 26)) {
         return;
     }
 
