@@ -22,6 +22,8 @@ Belum pernah diuji di hardware asli.
 - Multitasking preemptive (timer 100 Hz via LAPIC/IOAPIC), semaphore, user mode (ring 3) dengan syscall
 - NX/XD: heap, stack, MMIO, `.data`/`.rodata`, dan seluruh HHDM tidak bisa dieksekusi; hanya kernel
   `.text` dan halaman kode user yang executable (self-test page walk saat boot)
+- PMM: frame fisik 0 tidak pernah dibagikan (QEMU melaporkannya usable, dan 0 dipakai `pmm_alloc()`
+  sebagai tanda gagal); ada self-test free/realloc saat boot
 - PCI: AHCI dan E1000 dicari otomatis (kelas/vendor/device ID), bukan alamat bus tetap
 - Storage: AHCI (baca blok), FAT32 (baca file, root directory), `spawn()` program dari disk
 - Jaringan (NIC Intel 82545EM / E1000 emulasi VMware): TX/RX ring, ARP, IPv4, ICMP echo, UDP
@@ -32,6 +34,8 @@ Belum pernah diuji di hardware asli.
   FADT, lalu 8042, lalu cadangan triple fault)
 - Batas laju 20 datagram/detik per IP sumber dan 100 per detik global, ring log 8 KB, counter di
   perintah `stats` dan `metrics`
+- Diagnosis RX: `metrics` menampilkan `rx_missed` (register MPC), `rx_nobuf` (RNBC), dan
+  `rx_overrun_irq` (interrupt RXO) untuk membedakan paket hilang di ring RX bmahOS dari yang hilang di luar
 
 ## Build
 
@@ -68,7 +72,8 @@ Skrip membuat disk FAT32 sementara dengan `KEY.TXT` acak (bukan kunci asli), boo
 dengan E1000 + AHCI, lalu memeriksa: self-test crypto, deteksi PCI, kunci dimuat, `ping`/`uptime`/
 `metrics`, kunci salah dan replay ditolak, `pping` berprivilege, `reboot` lewat reset ACPI, NX, dan
 log tanpa exception. Boot kedua (`tests/qemu-rawnet.py`, `-netdev dgram`) mengirim frame Ethernet
-mentah: EtherType asing, checksum UDP rusak, dan banjir dari satu IP sumber. Boot ketiga tanpa NIC
+mentah: EtherType asing, checksum UDP rusak, banjir datagram dari satu IP sumber, dan banjir `CHAL`
+(nonce klien sah harus tetap berlaku). Boot ketiga tanpa NIC
 dan tanpa disk memastikan driver yang tidak ada dilewati tanpa exception. Semua file uji ada di
 `build/test/`.
 
@@ -91,7 +96,8 @@ memakai jatah global, jadi banjir dari satu IP tidak membuat perintah dari IP la
 2. Kirim `<nonce> <perintah> <hmac-hex-64>`, `hmac` = HMAC-SHA256 (kunci dari `KEY.TXT`) atas string
    `<nonce> <perintah>`.
 
-Nonce berlaku 5 detik dan sekali pakai; tabel 4 slot (CHAL baru menggusur yang tertua). Nonce dicari
+Nonce berlaku 5 detik dan sekali pakai; tabel 16 slot, maksimal 4 nonce hidup per IP sumber (IP yang penuh hanya mendaur ulang nonce miliknya
+sendiri, dihitung di `chal_ip_recycled`; slot kedaluwarsa langsung dipakai ulang). Nonce dicari
 sebelum HMAC dihitung, dan baru dihapus setelah HMAC valid. Karena tabel ada di RAM, datagram yang
 direkam sebelum reboot tidak bisa diputar ulang.
 
@@ -100,7 +106,16 @@ Perintah baca: `help`, `ping`, `uptime`, `mem`, `log`, `irq`, `stats`, `metrics`
 Perintah berprivilege: `pping` (balas `ppong`, untuk uji), `reboot` (balasan dikirim dulu, lalu reset).
 
 `metrics` mengembalikan semua counter dalam format stabil untuk skrip, satu `kunci=nilai` per baris
-(uptime, memori, frame RX per jenis, TX ok/gagal, ARP/ICMP/UDP, autentikasi, jalur nonce).
+(uptime, memori, frame RX per jenis, `rx_missed`/`rx_nobuf`/`rx_overrun_irq`, TX ok/gagal, ARP/ICMP/UDP,
+autentikasi, jalur nonce).
+
+### Catatan uji banjir di VMware
+
+Banjir 2000 datagram dalam ~64 ms dari Windows: Wireshark di VMnet2 melihat semuanya, tetapi hanya
+~1090 sampai ke driver (ring RX 64 slot; ring 8 slot hasilnya hampir sama, 1034). Pada hasil itu
+`rx_missed`, `rx_nobuf`, dan `rx_overrun_irq` semuanya 0, jadi paket hilang di jaringan virtual VMware di
+luar ring RX tamu, bukan karena bmahOS kewalahan. Catatan: belum terbukti VMware memperbarui MPC;
+kesimpulan ini ikut ditopang oleh ring 8 vs 64 yang hampir sama.
 Counter `priv_*` menghitung semua perintah lewat jalur nonce, bukan hanya `pping`/`reboot`.
 
 Kode tolak (juga dihitung di baris `priv:` perintah `stats`): nonaktif, format, nonce tidak dikenal/
@@ -153,7 +168,8 @@ diterima tapi tidak diperlukan lagi. Kode keluar: 0 sukses, 1 balasan `ERR`, 2 t
   UART 115200 baud ditulis dengan polling saat interrupt mati, jadi log berlebih menahan semua task
 - Batas laju per sumber memakai IP sumber yang bisa dipalsukan; banjir dari banyak IP palsu masih bisa
   menghabiskan jatah global (dan menggusur slot tabel 8 sumber), sehingga perintah sah ikut terbuang
-- Tabel nonce 4 slot: banjir `CHAL` bisa menggusur nonce klien sah (penolakan layanan ringan)
+- Tabel nonce 16 slot (maks 4 per IP): banjir `CHAL` dari satu IP tidak lagi menggusur nonce IP lain,
+  tetapi banjir dari 16 IP palsu atau lebih masih bisa (penolakan layanan ringan)
 - Tanpa rdrand, nonce hanya bergantung pada TSC, tick, RTC, dan pool (kualitas entropi belum dinilai)
 - Reset ACPI hanya mendukung register reset di ruang I/O (umum: port `0xCF9`); ruang memori/PCI
   belum, reboot lalu memakai 8042
