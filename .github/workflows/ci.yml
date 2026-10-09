@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential xorriso nasm autoconf automake \
-            qemu-system-x86 ovmf dosfstools mtools python3
+            clang lld llvm qemu-system-x86 ovmf dosfstools mtools python3
 
       - name: Cache Limine v12.5.2
         id: limine-cache
