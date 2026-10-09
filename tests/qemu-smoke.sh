@@ -129,6 +129,20 @@ check "reboot lewat reset ACPI"   'grep -q "ACPI-R: reboot via register reset FA
 check "tanpa exception/fault di log" \
     '! grep -qiE "EXCEPTION|#GP|#PF|fault|panic|FATAL" "$LOG"'
 
+# Tahap 2: boot kedua dengan frame Ethernet mentah (lihat tests/qemu-rawnet.py).
+echo
+echo "boot kedua: uji frame mentah (-netdev dgram)..."
+RAW_OUT="$(python3 "$ROOT/tests/qemu-rawnet.py" --qemu "$QEMU" \
+    --ovmf-code "$OVMF_CODE" --ovmf-vars "$OVMF_VARS" --iso "$ISO" \
+    --disk "$DISK" --key "$KEY" --work "$WORK" --boot-timeout "$BOOT_TIMEOUT")"
+RAW_RC=$?
+echo "$RAW_OUT"
+PASS=$((PASS + $(echo "$RAW_OUT" | grep -c '^PASS')))
+FAIL=$((FAIL + $(echo "$RAW_OUT" | grep -c '^FAIL')))
+if [ "$RAW_RC" -ne 0 ] && ! echo "$RAW_OUT" | grep -q '^FAIL'; then
+    bad "qemu-rawnet.py keluar dengan kode $RAW_RC"
+fi
+
 echo
 echo "hasil: $PASS lulus, $FAIL gagal (log: $LOG)"
 [ "$FAIL" -eq 0 ]
