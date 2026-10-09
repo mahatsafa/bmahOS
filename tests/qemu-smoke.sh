@@ -99,6 +99,7 @@ fi
 check "ping -> pong"             '[ "$($BM ping)" = "pong" ]'
 check "uptime"                   '$BM uptime | grep -q "^uptime: "'
 check "metrics kunci=nilai"      '$BM metrics | grep -q "^uptime_ticks="'
+check "metrics rx_missed/rx_nobuf" '$BM metrics | grep -q "^rx_nobuf="'
 
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
 check "kunci salah ditolak" \

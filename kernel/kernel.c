@@ -5456,6 +5456,24 @@ typedef struct {
 static net_src_budget_t g_net_src[NET_UDP_SRC_SLOTS];
 static uint64_t g_net_udp_src_dropped = 0;
 
+// RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
+// penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
+// jadi dijumlahkan ke counter 64-bit setiap kali dibaca.
+static uint64_t g_e1000_mpc = 0;
+static uint64_t g_e1000_rnbc = 0;
+
+static void e1000_stats_poll(void)
+{
+    volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
+
+    if (!g_e1000_rx_initialized) {
+        return;
+    }
+
+    g_e1000_mpc += mmio[0x4010 / 4];
+    g_e1000_rnbc += mmio[0x40A0 / 4];
+}
+
 // B4b: jatah frame per detik yang log-nya boleh ke UART.
 #define NET_SERIAL_LOG_PER_SEC 10
 static uint64_t g_net_log_window = 0;
@@ -5905,6 +5923,10 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("rx_frames", g_net_rx_frames);
         cmd_kv("rx_err", g_net_rx_errors);
         cmd_kv("rx_irq", g_e1000_irq_count);
+        e1000_stats_poll();
+        cmd_kv("rx_missed", g_e1000_mpc);
+        cmd_kv("rx_nobuf", g_e1000_rnbc);
+        cmd_kv("rx_overrun_irq", (g_e1000_irq_icr_or >> 6) & 1u);
         cmd_kv("rx_arp", g_net_rx_arp);
         cmd_kv("rx_ipv4", g_net_rx_ipv4);
         cmd_kv("rx_other", g_net_rx_other);
