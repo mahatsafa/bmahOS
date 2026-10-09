@@ -4767,6 +4767,11 @@ static void e1000_irq_service(void)
 // lalu nyalakan IMS.RXT0 di E1000.
 static void e1000_irq_experiment(void)
 {
+    if (!g_e1000_rx_initialized) {
+        serial_write("IRQ-exp: E1000 tidak aktif, eksperimen interrupt dilewati\r\n");
+        return;
+    }
+
     volatile uint32_t *mmio = (volatile uint32_t *)E1000_VIRT;
 
     uint64_t lf = irq_save();
@@ -7447,8 +7452,10 @@ void kmain(void)
     ahci_probe_and_log(pml4_phys);
 
     e1000_probe_and_log(pml4_phys);
-    e1000_send_test_packet();
-    e1000_send_arp_request();
+    if (g_e1000_rx_initialized) {
+        e1000_send_test_packet();
+        e1000_send_arp_request();
+    }
     ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, 0);
 #ifndef BMAHOS_NOIRQ
     e1000_irq_experiment();

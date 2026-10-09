@@ -65,8 +65,11 @@ Kebutuhan tambahan: QEMU (`qemu-system-x86_64` atau `qemu-kvm`), OVMF (`edk2-ovm
 
 Skrip membuat disk FAT32 sementara dengan `KEY.TXT` acak (bukan kunci asli), boot ISO di QEMU q35
 dengan E1000 + AHCI, lalu memeriksa: self-test crypto, deteksi PCI, kunci dimuat, `ping`/`uptime`/
-`metrics`, kunci salah dan replay ditolak, `pping` berprivilege, `reboot` lewat reset ACPI, dan log
-tanpa exception. Semua file uji ada di `build/test/`.
+`metrics`, kunci salah dan replay ditolak, `pping` berprivilege, `reboot` lewat reset ACPI, NX, dan
+log tanpa exception. Boot kedua (`tests/qemu-rawnet.py`, `-netdev dgram`) mengirim frame Ethernet
+mentah: EtherType asing dan checksum UDP rusak. Boot ketiga tanpa NIC
+dan tanpa disk memastikan driver yang tidak ada dilewati tanpa exception. Semua file uji ada di
+`build/test/`.
 
 ## Konfigurasi saat ini (hardcode)
 

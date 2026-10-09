@@ -167,6 +167,30 @@ if [ "$RAW_RC" -ne 0 ] && ! echo "$RAW_OUT" | grep -q '^FAIL'; then
     bad "qemu-rawnet.py keluar dengan kode $RAW_RC"
 fi
 
+# Tahap 3: boot tanpa NIC dan tanpa disk (seperti hardware tanpa driver yang
+# cocok). Kernel harus melewati driver yang tidak ada tanpa exception.
+echo
+echo "boot ketiga: tanpa NIC dan tanpa disk..."
+BARE="$WORK/serial-bare.log"
+cp "$OVMF_VARS" "$WORK/vars-bare.fd"
+timeout "$BOOT_TIMEOUT" "$QEMU" -machine q35 -m 512M -cpu max \
+    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,format=raw,file="$WORK/vars-bare.fd" \
+    -cdrom "$ISO" -nic none -display none -serial file:"$BARE" -no-reboot \
+    >"$WORK/qemu-bare.out" 2>&1 &
+BPID=$!
+for _ in $(seq 1 "$BOOT_TIMEOUT"); do
+    grep -q "RX belum di-init, net task berhenti" "$BARE" 2>/dev/null && break
+    kill -0 "$BPID" 2>/dev/null || break
+    sleep 1
+done
+sleep 2
+kill "$BPID" 2>/dev/null
+wait "$BPID" 2>/dev/null
+check "tanpa NIC: E1000 dilewati"      'grep -q "PCI-1: E1000 tidak ditemukan" "$BARE"'
+check "tanpa NIC: net task berhenti rapi" 'grep -q "RX belum di-init, net task berhenti" "$BARE"'
+check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$BARE"'
+
 echo
 echo "hasil: $PASS lulus, $FAIL gagal (log: $LOG)"
 [ "$FAIL" -eq 0 ]
