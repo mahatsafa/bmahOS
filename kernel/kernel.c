@@ -837,12 +837,18 @@ static void log_capture(char c)
     g_log_line_len = 0;
 }
 
+// B4b: 1 = karakter hanya masuk ring log, tidak dikirim ke UART. Diset net
+// task saat jatah log paket per detik habis (lihat net_rx_dispatch()).
+static volatile int g_serial_mute = 0;
+
 static void serial_putc(char c)
 {
-    while (!(inb(COM1 + 5) & 0x20))
-        ;
+    if (!g_serial_mute) {
+        while (!(inb(COM1 + 5) & 0x20))
+            ;
 
-    outb(COM1, (uint8_t)c);
+        outb(COM1, (uint8_t)c);
+    }
 
     uint64_t lf = irq_save();
     log_capture(c);
@@ -2674,7 +2680,14 @@ static void schedule(void)
     // pembuktian langsung bahwa TSS.RSP0 benar-benar berubah nilai
     // setiap kali scheduler masuk/keluar dari task user, BUKAN
     // sekadar diasumsikan dari kode.
-    if (tasks[next_index].is_user_task || tasks[prev_index].is_user_task) {
+    // B4b: hanya 16 switch pertama. Dulu dicetak di setiap switch task user
+    // (~400 baris/detik di build dev), melebihi kapasitas UART, sehingga semua
+    // task tertahan di serial_putc() dengan interrupt mati.
+    static uint32_t sched_log_left = 16;
+
+    if ((tasks[next_index].is_user_task || tasks[prev_index].is_user_task) &&
+        sched_log_left > 0) {
+        sched_log_left--;
         serial_write("schedule(): switch prev_idx=");
         serial_write_hex(prev_index);
         serial_write(" next_idx=");
@@ -5435,6 +5448,30 @@ typedef struct {
 static net_src_budget_t g_net_src[NET_UDP_SRC_SLOTS];
 static uint64_t g_net_udp_src_dropped = 0;
 
+// B4b: jatah frame per detik yang log-nya boleh ke UART.
+#define NET_SERIAL_LOG_PER_SEC 10
+static uint64_t g_net_log_window = 0;
+static uint32_t g_net_log_used = 0;
+static uint64_t g_net_log_muted = 0;
+
+static int net_serial_log_ok(void)
+{
+    uint64_t now = timer_ticks;
+
+    if (now - g_net_log_window >= 100) {
+        g_net_log_window = now;
+        g_net_log_used = 0;
+    }
+
+    if (g_net_log_used >= NET_SERIAL_LOG_PER_SEC) {
+        g_net_log_muted++;
+        return 0;
+    }
+
+    g_net_log_used++;
+    return 1;
+}
+
 static int net_udp_src_budget_ok(const volatile uint8_t *ip)
 {
     uint64_t now = timer_ticks;
@@ -5870,6 +5907,7 @@ static void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("udp_echo", g_net_udp_echo_count);
         cmd_kv("udp_dropped", g_net_udp_dropped);
         cmd_kv("udp_src_dropped", g_net_udp_src_dropped);
+        cmd_kv("log_serial_muted", g_net_log_muted);
         cmd_kv("udp_badsum", g_net_udp_badsum);
         cmd_kv("auth_ok", g_auth_ok);
         cmd_kv("auth_nonaktif", g_auth_denied[1]);
@@ -6394,6 +6432,7 @@ static int g_priv_reboot_pending = 0;
 static void priv_do_reboot(void)
 {
     __asm__ volatile("cli");
+    g_serial_mute = 0;
 
 #ifndef BMAHOS_NOACPIRESET
     if (g_acpi_reset_ok) {
@@ -6735,6 +6774,10 @@ static void net_rx_dispatch(volatile uint8_t *buf, uint32_t len)
 
     uint32_t ethertype = ((uint32_t)buf[12] << 8) | (uint32_t)buf[13];
 
+    // B4b: log frame ini ke UART hanya kalau jatah per detik masih ada;
+    // kalau tidak, tetap tercatat di ring log (perintah `log`).
+    g_serial_mute = !net_serial_log_ok();
+
     if (ethertype == 0x0806 && len >= 42) {
         g_net_rx_arp++;
         net_handle_arp(buf);
@@ -6744,6 +6787,8 @@ static void net_rx_dispatch(volatile uint8_t *buf, uint32_t len)
     } else {
         g_net_rx_other++;
     }
+
+    g_serial_mute = 0;
 }
 
 // Konsumsi ring RX berurutan mulai g_e1000_rx_next. Tiap slot DD:

@@ -148,6 +148,9 @@ diterima tapi tidak diperlukan lagi. Kode keluar: 0 sukses, 1 balasan `ERR`, 2 t
 - Autentikasi hanya menjamin keaslian perintah, bukan kerahasiaan balasan (teks polos)
 - Build `LEGACYCTR=1`: counter anti-replay jalur lama disimpan di RAM, jadi setelah reboot datagram
   baca lama bisa diputar ulang sekali (build default tidak terpengaruh, semua lewat nonce)
+- Log serial dibatasi: log per paket ke UART maksimal 10 frame per detik (sisanya hanya di ring log,
+  lihat perintah `log`; jumlahnya di `log_serial_muted`), log `schedule()` hanya 16 switch pertama.
+  UART 115200 baud ditulis dengan polling saat interrupt mati, jadi log berlebih menahan semua task
 - Batas laju per sumber memakai IP sumber yang bisa dipalsukan; banjir dari banyak IP palsu masih bisa
   menghabiskan jatah global (dan menggusur slot tabel 8 sumber), sehingga perintah sah ikut terbuang
 - Tabel nonce 4 slot: banjir `CHAL` bisa menggusur nonce klien sah (penolakan layanan ringan)
