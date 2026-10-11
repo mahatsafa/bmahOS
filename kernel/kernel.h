@@ -288,4 +288,14 @@ void pci_scan_and_log(void);
 void pci_config_write32(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset, uint32_t value);
 void pci_find_devices(void);
 
+// ---- apic.c (Local APIC + IOAPIC) ----
+#define LAPIC_VIRT  0xFFFF910000000000ULL
+#define IOAPIC_REDTBL_BASE  0x10
+
+void lapic_send_eoi(void);
+uint32_t ioapic_read(uint32_t reg);
+void ioapic_write(uint32_t reg, uint32_t value);
+void apic_enable_local_apic(uint64_t pml4_phys);
+void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t vector, uint8_t dest_apic_id);
+
 #endif
