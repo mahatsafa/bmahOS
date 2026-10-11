@@ -195,4 +195,74 @@ void kheap_init(uint64_t pml4_phys);
 void * kmalloc(uint64_t size);
 void kfree(void *ptr);
 
+// ---- acpi.c (RSDP/MADT/FADT) ----
+struct acpi_rsdp
+{
+    char signature[8];
+    uint8_t checksum;
+    char oem_id[6];
+    uint8_t revision;
+    uint32_t rsdt_address;
+    // Fields berikut hanya valid kalau revision >= 2 (ACPI 2.0+)
+    uint32_t length;
+    uint64_t xsdt_address;
+    uint8_t extended_checksum;
+    uint8_t reserved[3];
+} __attribute__((packed));
+struct acpi_sdt_header
+{
+    char signature[4];
+    uint32_t length;
+    uint8_t revision;
+    uint8_t checksum;
+    char oem_id[6];
+    char oem_table_id[8];
+    uint32_t oem_revision;
+    uint32_t creator_id;
+    uint32_t creator_revision;
+} __attribute__((packed));
+struct acpi_madt
+{
+    struct acpi_sdt_header header;
+    uint32_t local_apic_address;
+    uint32_t flags;
+    // Diikuti entries dengan panjang variabel
+} __attribute__((packed));
+struct acpi_madt_entry_header
+{
+    uint8_t entry_type;
+    uint8_t entry_length;
+} __attribute__((packed));
+struct acpi_madt_local_apic
+{
+    struct acpi_madt_entry_header header;
+    uint8_t acpi_processor_id;
+    uint8_t apic_id;
+    uint32_t flags;
+} __attribute__((packed));
+struct acpi_madt_ioapic
+{
+    struct acpi_madt_entry_header header;
+    uint8_t ioapic_id;
+    uint8_t reserved;
+    uint32_t ioapic_address;
+    uint32_t global_system_interrupt_base;
+} __attribute__((packed));
+struct acpi_madt_iso
+{
+    struct acpi_madt_entry_header header;
+    uint8_t bus_source;
+    uint8_t irq_source;
+    uint32_t global_system_interrupt;
+    uint16_t flags;
+} __attribute__((packed));
+extern uint64_t g_local_apic_address;
+extern uint32_t g_ioapic_address;
+extern uint32_t g_ioapic_gsi_base;
+extern uint32_t g_irq0_gsi;
+extern int g_acpi_reset_ok;
+extern uint16_t g_acpi_reset_port;
+extern uint8_t g_acpi_reset_value;
+void acpi_init(void);
+
 #endif
