@@ -18,3 +18,10 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Makefile memakai wildcard kernel/*.c dan objek bergantung pada kernel/*.h.**
 - Modul 1 (serial): serial_init/putc/write/write_hex + g_serial_mute pindah ke serial.c; outb/inb/outl/inl dan irq_save/irq_restore (static inline) ke kernel.h; log_capture tetap di kernel.c (non-static) sampai modul log/cmd.
 - Modul 2 (cpu): GDT/TSS/IDT (struct gdt_entry/tss/idt_entry, bmahOS_gdt/tss/idt, gdt_init, idt_init, load, dump) pindah ke kernel/cpu.c; tipe struct dan simbol yang dipakai kernel.c (bmahOS_tss.rsp0, bmahOS_gdt, bmahOS_idt, tss_load_asm, tss_read_asm) dideklarasikan di kernel.h. exception_dispatcher/irq_handler dan fungsi trigger_* uji tetap di kernel.c (pindah bersama modul sched/uji). Deteksi simbol lintas-modul memakai skrip (patch_f14_cpu.py) yang mengabaikan komentar dan string.
+
+## 2026-10-11 (F1.4 selesai)
+- **17 modul, satu header bersama** (`kernel/kernel.h`, ~550 baris) tetap dipertahankan; pecah per modul ditunda sampai ada alasan nyata (mis. uji host F1.7 butuh header tanpa port I/O).
+- **Sisa kernel.c sengaja dibiarkan** (~1140 baris): `kmain`/urutan boot, ring log, net task + idle task, `e1000_irq_service` (memakai semaphore net task), uji NX, kode uji user mode. Memindah ini hanya memindah urutan boot ke file lain tanpa manfaat.
+- **Penyimpangan kecil dari "pemindahan murni"**, semuanya hanya hilangnya `static` pada simbol yang kini dipakai lintas modul (mis. `hhdm_offset`, `rsdp_request`, `crypto_selftest`, `auth_load_key`, `sem_post`) dan pemindahan makro/tipe/`extern` asm ke header. `task_wait_for` ikut non-static karena deklarasi majunya; warning "defined but not used" untuknya hilang, perilaku sama.
+- **Bukti per modul**: perbandingan multiset semua baris kernel.c lama dengan kernel.c baru + modul baru + tambahan header (hanya `#include` yang bertambah), warning compiler dibandingkan, `make test` 50/50 default dan `PROD=1` (plus NOIRQ/LEGACYCTR/NXTEST sesuai modul), uji VMware per modul.
+- **Push dikumpulkan** (atas permintaan pengguna, CI lama): commit per modul, push di akhir tahap.
