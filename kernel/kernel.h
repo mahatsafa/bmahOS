@@ -349,4 +349,18 @@ void e1000_log_mac(volatile uint8_t *p);
 void crypto_selftest(void);
 void auth_load_key(void);
 
+// ---- crypto.c (SHA-256 + HMAC-SHA256) ----
+typedef struct {
+    uint8_t data[64];
+    uint32_t datalen;
+    uint64_t bitlen;
+    uint32_t state[8];
+} sha256_ctx_t;
+
+extern int g_crypto_ok;
+void sha256_init(sha256_ctx_t *ctx);
+void sha256_update(sha256_ctx_t *ctx, const uint8_t *data, uint32_t len);
+void sha256_final(sha256_ctx_t *ctx, uint8_t *hash);
+void hmac_sha256(const uint8_t *key, uint32_t keylen, const uint8_t *msg, uint32_t msglen, uint8_t *out);
+
 #endif
