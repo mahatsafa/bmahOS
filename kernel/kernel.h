@@ -298,4 +298,17 @@ void ioapic_write(uint32_t reg, uint32_t value);
 void apic_enable_local_apic(uint64_t pml4_phys);
 void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t vector, uint8_t dest_apic_id);
 
+// ---- ahci.c (AHCI/SATA baca) ----
+#define AHCI_VIRT 0xFFFF910000002000ULL  // setelah IOAPIC_VIRT (+0x1000)
+#define AHCI_REG_CAP  0x00
+#define AHCI_REG_GHC  0x04
+#define AHCI_REG_IS   0x08
+#define AHCI_REG_PI   0x0C
+#define AHCI_REG_VS   0x10
+#define AHCI_OK              0
+
+extern int g_ahci_ata_port_count;
+void ahci_port_init(volatile uint32_t *hba, uint32_t port);
+int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_buf);
+
 #endif
