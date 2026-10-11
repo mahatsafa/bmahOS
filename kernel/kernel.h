@@ -410,4 +410,14 @@ extern volatile uint64_t timer_ticks;
 void priv_nonce_generate(uint8_t out[16]);
 void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len);
 
+// ---- auth.c (kunci, HMAC, nonce, perintah berprivilege): tanpa simbol baru ----
+
+// ---- kernel.c: perintah (cmd), dipakai auth.c ----
+extern uint32_t g_cmd_len;
+void cmd_putc(char c);
+void cmd_puts(const char *s);
+int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name);
+void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len);
+void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
+
 #endif
