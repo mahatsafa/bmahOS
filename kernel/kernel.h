@@ -154,4 +154,17 @@ void read_segment_registers(void);
 void read_gdtr(void);
 void read_gdt_entries(void);
 
+// ---- pmm.c (physical memory manager) ----
+#define PMM_PAGE_SIZE          0x1000ULL
+#define PMM_MAX_PHYS_ADDR      0x100000000ULL
+#define PMM_MAX_FRAMES         (PMM_MAX_PHYS_ADDR / PMM_PAGE_SIZE)
+#define PMM_BITMAP_SIZE        (PMM_MAX_FRAMES / 8ULL)
+
+struct limine_memmap_response;
+extern uint64_t pmm_usable_memory;
+int pmm_bitmap_test(uint64_t frame);
+void pmm_init(struct limine_memmap_response *response);
+uint64_t pmm_alloc(void);
+void pmm_free(uint64_t phys_addr);
+
 #endif
