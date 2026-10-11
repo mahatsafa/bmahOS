@@ -501,4 +501,15 @@ extern uint64_t g_current_pml4_phys;
 extern uint64_t g_kernel_pml4_phys;
 
 
+// ---- cmd.c (isi perintah) ----
+
+
+// ---- kernel.c: dipakai cmd.c ----
+#define LOG_RING_SIZE 8192
+extern char g_log_ring[LOG_RING_SIZE];
+extern uint32_t g_log_head;
+extern uint64_t g_log_total;
+extern volatile uint64_t g_net_loops;
+
+
 #endif
