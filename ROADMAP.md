@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul (serial 9f672ac ... trap a1c8e31), peta di `ARCHITECTURE.md`. `make test` = 50 cek. Berikutnya F1.5.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). `make test` = 53 cek. Berikutnya F1.6.
 
 ## 4. Templat tahap
 
@@ -70,7 +70,9 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
 - [x] **F1.4** (2026-10-11; modul: serial 9f672ac, cpu d9ff986, pmm d3e0017, vmm edce634, acpi 6653f1c, pic e4d4379, pci 261543d, apic 8c777e3, ahci ca8220d, fat32 8ab9e9d, e1000 6bd7884, crypto d939662, net 0d295d3, auth 3d76f29, sched c9f2891, cmd 25729d3, trap a1c8e31; peta: ARCHITECTURE.md) Pecah `kernel.c` menjadi modul, **satu modul per commit**, tanpa mengubah perilaku.
   Urutan aman: serial, cpu/gdt/idt, pmm, vmm, heap, sched, syscall, pci, ahci/fat32, net/{e1000,arp,ip,icmp,udp,tcp}, cmd.
   Lulus: `make test` tetap 50/50 setelah tiap commit.
-- [ ] **F1.5** Modul CPUID/fitur: laporan fitur CPU (rdrand, NX, SMEP/SMAP, APIC, dll.) di serial.
+- [x] **F1.5** (2026-10-11, make test 50 -> 53) Modul CPUID/fitur: laporan fitur CPU (rdrand, NX, SMEP/SMAP, APIC, dll.) di serial.
+  Catatan: `nx_init` dan `priv_have_rdrand` masih memanggil CPUID sendiri; dialihkan ke `g_cpu` lewat refactor terpisah
+  (paling lambat F1.8, yang butuh info rdrand/rdseed).
 - [ ] **F1.6** `kprintf` minimal (`%s %d %u %x %p`) dan `ASSERT()` yang mencetak file:baris.
 - [ ] **F1.7** Uji unit di host Linux untuk fungsi murni (checksum, HMAC, parser paket), dikompilasi
   dengan `-fsanitize=address,undefined`. Lulus: target `make host-test` ada dan hijau.

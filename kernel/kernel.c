@@ -705,6 +705,7 @@ static void nx_selftest(uint64_t kernel_pml4, uint64_t user_pml4,
 void kmain(void)
 {
     serial_init();
+    cpu_features_init();
 
     pci_scan_and_log();
     pci_find_devices();

@@ -85,6 +85,9 @@ echo "boot selesai dalam ~${waited} s"
 
 BM="python3 $ROOT/client/bmctl.py --key $KEY --host 127.0.0.1 --port $PORT --timeout 10"
 
+check "CPUID: vendor dilaporkan"  'grep -aq "CPU: vendor=[^ ]" "$LOG"'
+check "CPUID: semua kunci fitur" 'grep -a "CPU: fitur" "$LOG" | grep -q "rdrand=[01] rdseed=[01] nx=[01] smep=[01] smap=[01] umip=[01] pcid=[01] apic=[01] x2apic=[01] tsc=[01] tsc_invarian=[01] sse2=[01]"'
+check "CPUID: nx=1 cocok NX self-test" 'grep -aq "CPU: fitur.* nx=1" "$LOG" && grep -q "NX: self-test PASS" "$LOG"'
 check "self-test crypto (5 PASS)" '[ "$(grep -c "^Crypto: .* PASS" "$LOG")" -eq 5 ]'
 check "PCI-1 menemukan AHCI"     'grep -q "PCI-1: AHCI di" "$LOG"'
 check "PCI-1 menemukan E1000"    'grep -q "PCI-1: E1000 di" "$LOG"'

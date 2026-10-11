@@ -545,4 +545,19 @@ void trigger_breakpoint(void);
 void net_rx_tick_wake(void);
 void e1000_irq_service(void);
 
+// ---- cpufeat.c (F1.5: fitur CPU dari CPUID) ----
+struct cpu_features {
+    char vendor[13];
+    char hv_vendor[13];
+    uint32_t max_leaf;
+    uint32_t max_ext_leaf;
+    uint32_t family;
+    uint32_t model;
+    uint32_t stepping;
+    uint8_t rdrand, rdseed, nx, smep, smap, umip, pcid;
+    uint8_t apic, x2apic, tsc, tsc_invariant, sse2, hypervisor;
+};
+extern struct cpu_features g_cpu;
+void cpu_features_init(void);
+
 #endif
