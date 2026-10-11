@@ -420,4 +420,85 @@ int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name);
 void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len);
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
+// ---- sched.c (task, scheduler, semaphore, user task, spawn) ----
+#define MAX_TASKS 8
+
+typedef enum {
+    TASK_READY,
+    TASK_DEAD,
+    TASK_SLEEPING,
+    TASK_BLOCKED,
+} task_status_t;
+
+typedef struct semaphore {
+    int count;
+} semaphore_t;
+
+typedef struct {
+    uint64_t rsp;
+    task_status_t status;
+    uint64_t wake_at_tick;
+    size_t waiting_for;
+    // NULL kalau task tidak sedang menunggu semaphore manapun.
+    // BLOCKED karena task_wait_for() punya waiting_for_sem == NULL;
+    // BLOCKED karena sem_wait() punya waiting_for_sem != NULL.
+    semaphore_t *waiting_for_sem;
+    // true kalau task ini jalan di ring 3 (user task). Scheduler
+    // belum membedakan perlakuan berdasarkan field ini -- baru
+    // dipakai untuk penandaan; integrasi penuh (context_switch vs
+    // enter_usermode saat first-run) menyusul.
+    bool is_user_task;
+    // Top of this task's kernel stack -- disalin ke bmahOS_tss.rsp0
+    // oleh schedule() setiap kali task ini yang akan berjalan. Wajib
+    // per-task supaya banyak user task preemptive tidak berebut satu
+    // kernel stack global saat masing-masing trap ke ring 0.
+    uint64_t rsp0;
+    // Dipakai HANYA oleh user_task_trampoline() saat task user ini
+    // pertama kali dijalankan lewat context_switch(). user_stack_top
+    // sudah dihitung sebagai base+PMM_PAGE_SIZE (siap pakai langsung
+    // sebagai RSP awal ring 3, tidak perlu dihitung ulang).
+    uint64_t user_entry;
+    uint64_t user_stack_top;
+    // Layer 8 checkpoint 1 (dormant): PML4 physical address milik
+    // task ini. Task kernel (task_create()) akan diisi dengan PML4
+    // global (read_cr3() awal) -- TIDAK PUNYA address space sendiri,
+    // sengaja tetap share. Task user (task_create_user()) akan diisi
+    // hasil vmm_clone_kernel_pml4() -- PML4 privat per task. BELUM
+    // dipakai schedule()/context_switch() di checkpoint ini -- field
+    // ini ada tapi tidak mengubah behavior apa pun sampai checkpoint
+    // berikutnya.
+    uint64_t pml4_phys;
+    // Checkpoint allocator: alamat virtual berikutnya yang bebas
+    // dipakai di address space task ini (bump allocator, TIDAK ADA
+    // free/reclaim). Hanya bermakna untuk user task -- task kernel
+    // tidak pernah exec() sehingga field ini tidak diinisialisasi
+    // untuk task_create() biasa. Nilai awal diisi USER_VADDR_ALLOC_BASE
+    // oleh task_create_user().
+    uint64_t next_free_vaddr;
+} task_t;
+
+extern task_t tasks[MAX_TASKS];
+extern size_t task_count;
+extern size_t g_idle_index;
+extern volatile bool scheduler_started;
+extern size_t current_index;
+extern void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp, uint64_t new_pml4_phys);
+void task_create(task_t *task, void (*entry_function)(void), uint64_t stack_size);
+void task_create_user(task_t *task, uint64_t pml4_phys, uint64_t user_code_vaddr, uint64_t user_stack_vaddr, uint64_t kernel_stack_size, const uint8_t *code, size_t code_len);
+task_t * spawn(const uint8_t *image, size_t image_len);
+void schedule(void);
+void task_exit(void);
+void task_sleep(uint64_t ticks);
+void task_wait_for(size_t target_index);
+void sem_wait(semaphore_t *sem);
+void sem_post(semaphore_t *sem);
+void task_a_entry(void);
+void task_b_entry(void);
+
+// ---- kernel.c: dipakai sched.c ----
+extern void enter_usermode(uint64_t entry_vaddr, uint64_t user_stack_top);
+extern uint64_t g_current_pml4_phys;
+extern uint64_t g_kernel_pml4_phys;
+
+
 #endif
