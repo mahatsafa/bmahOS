@@ -167,4 +167,32 @@ void pmm_init(struct limine_memmap_response *response);
 uint64_t pmm_alloc(void);
 void pmm_free(uint64_t phys_addr);
 
+// ---- vmm.c (paging + kernel heap) ----
+#define VMM_FLAG_PRESENT   0x1ULL
+#define VMM_FLAG_WRITABLE  0x2ULL
+#define VMM_FLAG_NOCACHE   0x10ULL  // PCD bit -- wajib untuk MMIO (Local APIC, IOAPIC)
+#define VMM_FLAG_USER      0x4ULL   // US bit -- wajib untuk halaman yang boleh diakses ring 3
+#define VMM_FLAG_NX        (1ULL << 63) // XD bit -- halaman tidak bisa dieksekusi
+#define VMM_ENTRY_ADDR_MASK 0x000FFFFFFFFFF000ULL
+#define VMM_SHARED_PML4_IDX_HHDM     0x100  // hhdm_offset region
+#define VMM_SHARED_PML4_IDX_APIC1    0x120  // MMIO Local APIC/IOAPIC
+#define VMM_SHARED_PML4_IDX_APIC2    0x122  // MMIO Local APIC/IOAPIC
+#define VMM_SHARED_PML4_IDX_KHEAP    0x130  // KHEAP_START region
+#define VMM_SHARED_PML4_IDX_KERNEL   0x1FF  // kernel higher-half (.text/.data)
+#define KHEAP_START 0xFFFF980000000000ULL
+extern uint64_t hhdm_offset;
+extern int g_vmm_nx_ok;
+extern uint64_t kheap_current;
+extern uint64_t kheap_mapped_end;
+uint64_t read_cr3(void);
+void vmm_dump_pml4(uint64_t pml4_phys);
+void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t flags);
+int vmm_nx_of(uint64_t pml4_phys, uint64_t vaddr);
+void nx_init(void);
+uint64_t vmm_clone_kernel_pml4(uint64_t kernel_pml4_phys);
+bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len, bool require_writable);
+void kheap_init(uint64_t pml4_phys);
+void * kmalloc(uint64_t size);
+void kfree(void *ptr);
+
 #endif
