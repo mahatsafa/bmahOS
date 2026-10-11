@@ -37,6 +37,10 @@ ifeq ($(NXTEST),1)
 CFLAGS += -DBMAHOS_NXTEST
 endif
 
+ifeq ($(ASSERTTEST),1)
+CFLAGS += -DBMAHOS_ASSERTTEST
+endif
+
 LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
 C_SRCS := $(wildcard $(KERNEL_DIR)/*.c)

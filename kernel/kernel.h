@@ -560,4 +560,17 @@ struct cpu_features {
 extern struct cpu_features g_cpu;
 void cpu_features_init(void);
 
+// ---- kprintf.c (F1.6: kprintf, ksnprintf, ASSERT) ----
+// Format: %s %c %d %u %x %p %%, awalan 'l' = 64-bit untuk d/u/x.
+void kprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+size_t ksnprintf(char *buf, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+void kprintf_selftest(void);
+__attribute__((noreturn)) void kassert_fail(const char *expr, const char *file, int line, const char *func);
+#define ASSERT(cond) \
+    do { \
+        if (!(cond)) { \
+            kassert_fail(#cond, __FILE__, __LINE__, __func__); \
+        } \
+    } while (0)
+
 #endif

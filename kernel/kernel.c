@@ -706,6 +706,10 @@ void kmain(void)
 {
     serial_init();
     cpu_features_init();
+    kprintf_selftest();
+#ifdef BMAHOS_ASSERTTEST
+    ASSERT(1 + 1 == 3);
+#endif
 
     pci_scan_and_log();
     pci_find_devices();

@@ -59,6 +59,7 @@ Flag uji (bisa digabung):
     NOACPIRESET=1       # reboot tanpa register reset ACPI (uji jalur 8042)
     LEGACYCTR=1         # nyalakan lagi jalur counter lama (transisi; lihat di bawah)
     NXTEST=1            # sengaja eksekusi dari heap saat boot; harus berhenti di #PF error 0x11
+    ASSERTTEST=1        # sengaja ASSERT gagal di kmain; harus berhenti dengan "PANIC: ASSERT gagal: ... di file:baris"
 
 Hasil: `build/bmahOS.iso`.
 

@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). `make test` = 53 cek. Berikutnya F1.6.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. Berikutnya F1.7.
 
 ## 4. Templat tahap
 
@@ -73,7 +73,9 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
 - [x] **F1.5** (2026-10-11, make test 50 -> 53) Modul CPUID/fitur: laporan fitur CPU (rdrand, NX, SMEP/SMAP, APIC, dll.) di serial.
   Catatan: `nx_init` dan `priv_have_rdrand` masih memanggil CPUID sendiri; dialihkan ke `g_cpu` lewat refactor terpisah
   (paling lambat F1.8, yang butuh info rdrand/rdseed).
-- [ ] **F1.6** `kprintf` minimal (`%s %d %u %x %p`) dan `ASSERT()` yang mencetak file:baris.
+- [x] **F1.6** (2026-10-11, make test 53 -> 55) `kprintf` minimal (`%s %d %u %x %p`) dan `ASSERT()` yang mencetak file:baris.
+  Juga `%c %%`, awalan `l` (64-bit), `ksnprintf` (semantik snprintf), atribut format printf, self-test 12 kasus,
+  flag `ASSERTTEST=1`. Kode lama belum dialihkan ke `kprintf` (refactor terpisah bila perlu).
 - [ ] **F1.7** Uji unit di host Linux untuk fungsi murni (checksum, HMAC, parser paket), dikompilasi
   dengan `-fsanitize=address,undefined`. Lulus: target `make host-test` ada dan hijau.
 - [ ] **F1.8** Modul entropi: pengumpul (rdrand bila CPUID mengizinkan, jitter TSC antar-interrupt, timing RX)
