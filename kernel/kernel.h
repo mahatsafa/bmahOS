@@ -265,4 +265,8 @@ extern uint16_t g_acpi_reset_port;
 extern uint8_t g_acpi_reset_value;
 void acpi_init(void);
 
+// ---- pic.c (8259 PIC + PIT) ----
+void pic_remap(void);
+void pit_init(uint32_t frequency_hz);
+
 #endif
