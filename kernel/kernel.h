@@ -319,4 +319,34 @@ void fat32_probe_root_cluster(void);
 void fat32_list_root_directory(void);
 void fat32_read_file(uint32_t first_cluster, uint32_t file_size);
 
+// ---- e1000.c (driver NIC Intel 8254x) ----
+#define E1000_REG_RDT      0x2818
+#define E1000_RX_RING_SIZE 64
+#define E1000_RXD_STA_DD   0x01
+#define E1000_VIRT 0xFFFF910000003000ULL  // setelah AHCI_VIRT (+0x1000)
+
+extern uint8_t g_e1000_mac[6];
+extern uint8_t *g_e1000_rx_ring_virt;
+extern uint64_t g_e1000_rx_buf_phys[E1000_RX_RING_SIZE];
+extern int g_e1000_rx_initialized;
+extern uint64_t g_net_tx_ok;
+extern uint64_t g_net_tx_fail;
+extern volatile uint64_t g_e1000_irq_count;
+extern volatile uint64_t g_e1000_irq_spurious;
+extern volatile uint32_t g_e1000_irq_last_icr;
+extern volatile uint32_t g_e1000_irq_icr_or;
+extern volatile uint32_t g_e1000_irq_rirr_or;
+extern volatile uint32_t g_e1000_irq_masked;
+extern volatile uint32_t g_e1000_irq_last_gsi;
+extern volatile uint32_t g_e1000_irq_gsi;
+extern uint32_t g_e1000_rx_next;
+int e1000_tx_send(uint64_t pkt_phys, uint32_t frame_len);
+void e1000_irq_experiment(void);
+void e1000_probe_and_log(uint64_t pml4_phys);
+void e1000_send_test_packet(void);
+void e1000_log_ip(volatile uint8_t *p);
+void e1000_log_mac(volatile uint8_t *p);
+void crypto_selftest(void);
+void auth_load_key(void);
+
 #endif
