@@ -363,4 +363,51 @@ void sha256_update(sha256_ctx_t *ctx, const uint8_t *data, uint32_t len);
 void sha256_final(sha256_ctx_t *ctx, uint8_t *hash);
 void hmac_sha256(const uint8_t *key, uint32_t keylen, const uint8_t *msg, uint32_t msglen, uint8_t *out);
 
+// ---- net.c (ARP/IPv4/ICMP/UDP/TCP) ----
+#define NET_UDP_BUDGET_PER_SEC 100
+#define NET_UDP_SRC_PER_SEC 20
+
+extern const uint8_t g_net_ip[4];
+extern uint32_t g_net_arp_replies_sent;
+extern uint64_t g_net_tx_buf_phys;
+extern uint32_t g_net_icmp_replies_sent;
+extern uint16_t g_net_ip_id;
+extern uint32_t g_net_udp_echo_count;
+extern uint64_t g_net_udp_dropped;
+extern uint64_t g_net_rx_frames;
+extern uint64_t g_net_rx_errors;
+extern uint64_t g_auth_ok;
+extern uint64_t g_auth_denied[5];
+extern uint64_t g_chal_issued;
+extern uint64_t g_chal_ip_recycled;
+extern uint64_t g_priv_ok;
+extern uint64_t g_priv_denied[6];
+extern uint64_t g_auth_ctr_off;
+extern uint64_t g_net_rx_arp;
+extern uint64_t g_net_rx_ipv4;
+extern uint64_t g_net_rx_other;
+extern uint64_t g_net_udp_badsum;
+extern uint64_t g_net_udp_src_dropped;
+extern uint64_t g_tcp_rx;
+extern uint64_t g_tcp_badsum;
+extern uint64_t g_tcp_rst_sent;
+extern uint64_t g_tcp_conn_open;
+extern uint64_t g_tcp_busy;
+extern uint64_t g_tcp_rx_bytes;
+extern uint64_t g_tcp_timeouts;
+extern uint64_t g_e1000_mpc;
+extern uint64_t g_e1000_rnbc;
+extern uint64_t g_net_log_muted;
+uint16_t net_checksum16(volatile uint8_t *p, uint32_t len);
+void e1000_stats_poll(void);
+uint16_t net_udp_checksum(const volatile uint8_t *src_ip, const volatile uint8_t *dst_ip, const volatile uint8_t *udp, uint32_t udp_len);
+void net_tcp_tick(void);
+int net_poll(void);
+
+// ---- kernel.c (dipakai modul lain) ----
+#define NET_UDP_CMD_PORT 7778
+extern volatile uint64_t timer_ticks;
+void priv_nonce_generate(uint8_t out[16]);
+void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len);
+
 #endif
