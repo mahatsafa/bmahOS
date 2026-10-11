@@ -269,4 +269,23 @@ void acpi_init(void);
 void pic_remap(void);
 void pit_init(uint32_t frequency_hz);
 
+// ---- pci.c (PCI config space + pencarian perangkat) ----
+#define AHCI_PCI_BUS      g_ahci_bus
+#define AHCI_PCI_DEVICE   g_ahci_dev
+#define AHCI_PCI_FUNCTION g_ahci_fn
+#define AHCI_BAR5_OFFSET  0x24
+#define E1000_PCI_BUS      g_e1000_bus
+#define E1000_PCI_DEVICE   g_e1000_dev
+#define E1000_PCI_FUNCTION g_e1000_fn
+#define E1000_BAR0_OFFSET  0x10
+
+extern uint8_t g_ahci_bus, g_ahci_dev, g_ahci_fn;
+extern uint8_t g_e1000_bus, g_e1000_dev, g_e1000_fn;
+extern int g_ahci_found;
+extern int g_e1000_found;
+uint32_t pci_config_read32(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset);
+void pci_scan_and_log(void);
+void pci_config_write32(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset, uint32_t value);
+void pci_find_devices(void);
+
 #endif
