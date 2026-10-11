@@ -311,4 +311,12 @@ extern int g_ahci_ata_port_count;
 void ahci_port_init(volatile uint32_t *hba, uint32_t port);
 int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_buf);
 
+// ---- fat32.c (FAT32 baca) ----
+void ahci_fat32_probe_and_log(void);
+int fat32_find_file(const char *name_83, uint32_t *out_cluster, uint32_t *out_size);
+uint8_t * fat32_load_file(uint32_t first_cluster, uint32_t file_size);
+void fat32_probe_root_cluster(void);
+void fat32_list_root_directory(void);
+void fat32_read_file(uint32_t first_cluster, uint32_t file_size);
+
 #endif
