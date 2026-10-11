@@ -84,3 +84,20 @@ stack, heap, dan MMIO diberi NX.
 `make test` (`tests/qemu-smoke.sh`) mem-boot ISO tiga kali di QEMU (jaringan slirp, jaringan mentah lewat
 `tests/qemu-rawnet.py`, tanpa NIC dan disk) dan mencocokkan log serial serta balasan jaringan. CI menjalankan
 build default dan `PROD=1`.
+
+`make host-test` (F1.7) menjalankan uji unit di host Linux dengan ASan + UBSan (`clang`, ganti lewat
+`HOST_CC`). Tiap `tests/host/test_X.c` dikompilasi bersama modul yang diuji dan `tests/host/stubs.c`
+(stub `serial_*` yang menangkap keluaran). `net.c` dan `auth.c` di-`#include` langsung oleh ujinya supaya
+fungsi `static` bisa diuji. Saat `BMAHOS_HOST_TEST` aktif, `kernel.h` mengganti `cli`/`sti` dan port I/O
+dengan no-op (instruksi itu fault di user mode); build kernel tidak berubah.
+
+| Uji | Isi |
+|---|---|
+| `test_crypto` | SHA-256 (FIPS 180-4, sejuta 'a', panjang 0..200 + semua titik potong update), HMAC RFC 4231 kasus 1-7, panjang kunci 0..130 |
+| `test_kprintf` | `ksnprintf` dibandingkan `snprintf` libc untuk semua ukuran buffer, `%p`, NULL, format tak dikenal, self-test |
+| `test_net` | checksum (RFC 1071, acak 0..1500 byte), ARP, ICMP, UDP echo/7778, TCP RST + handshake port 7, batas ukuran, frame dipotong di semua panjang, 200 ribu frame acak (checksum dibetulkan); tiap frame keluar dicek checksum-nya |
+| `test_auth` | `auth_load_key`, jalur counter, jalur nonce (TTL, sekali pakai, slot tidak dibebaskan saat HMAC salah), `net_cmd_handle` (CHAL, batas 4 nonce per IP), potongan + 100 ribu pesan acak |
+
+Frame dan pesan dimasukkan dalam buffer `malloc` seukuran persis, jadi pembacaan lewat batas tertangkap ASan.
+Uji juga dicek dengan mutasi (pemeriksaan batas di kode kernel dihapus satu per satu): tiap mutasi
+pemeriksaan batas/HMAC/TTL/replay membuat `make host-test` gagal.

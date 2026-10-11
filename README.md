@@ -67,6 +67,9 @@ Hasil: `build/bmahOS.iso`.
 
     make test           # build lalu jalankan tests/qemu-smoke.sh
     make test PROD=1    # flag build lain juga bisa dipakai
+    make host-test      # uji unit di host (kripto, kprintf, parser paket, parser perintah), ASan + UBSan
+
+`make host-test` butuh `clang` (atau `HOST_CC=gcc` bila `libasan` dan `libubsan` terpasang), tidak butuh QEMU.
 
 Kebutuhan tambahan: QEMU (`qemu-system-x86_64` atau `qemu-kvm`), OVMF (`edk2-ovmf`), `mkfs.vfat`
 (`dosfstools`), `mcopy` (`mtools`), `python3`. KVM tidak wajib (tanpa KVM lebih lambat).

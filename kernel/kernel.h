@@ -6,8 +6,15 @@
 #include <stdbool.h>
 
 // ---- Port I/O ----
+// F1.7: di uji host (BMAHOS_HOST_TEST, user mode) port I/O akan fault,
+// jadi out* tidak melakukan apa pun dan in* mengembalikan 0.
 static inline void outb(uint16_t port, uint8_t value)
 {
+#ifdef BMAHOS_HOST_TEST
+    (void)port;
+    (void)value;
+    return;
+#endif
     __asm__ volatile (
         "outb %0, %1"
         :
@@ -17,6 +24,10 @@ static inline void outb(uint16_t port, uint8_t value)
 
 static inline uint8_t inb(uint16_t port)
 {
+#ifdef BMAHOS_HOST_TEST
+    (void)port;
+    return 0;
+#endif
     uint8_t value;
 
     __asm__ volatile (
@@ -34,6 +45,11 @@ static inline uint8_t inb(uint16_t port)
 // PIC/PIT/serial yang sudah ada.
 static inline void outl(uint16_t port, uint32_t value)
 {
+#ifdef BMAHOS_HOST_TEST
+    (void)port;
+    (void)value;
+    return;
+#endif
     __asm__ volatile (
         "outl %0, %1"
         :
@@ -43,6 +59,10 @@ static inline void outl(uint16_t port, uint32_t value)
 
 static inline uint32_t inl(uint16_t port)
 {
+#ifdef BMAHOS_HOST_TEST
+    (void)port;
+    return 0;
+#endif
     uint32_t value;
 
     __asm__ volatile (
@@ -62,6 +82,9 @@ static inline uint32_t inl(uint16_t port)
 // kita tidak akan sengaja menyalakan interrupt yang caller matikan.
 static inline uint64_t irq_save(void)
 {
+#ifdef BMAHOS_HOST_TEST
+    return 0;   // F1.7: uji di host (user mode), cli/sti akan fault
+#endif
     uint64_t flags;
     __asm__ volatile (
         "pushfq\n\t"
@@ -76,6 +99,9 @@ static inline uint64_t irq_save(void)
 
 static inline void irq_restore(uint64_t flags)
 {
+#ifdef BMAHOS_HOST_TEST
+    return;
+#endif
     // Bit ke-9 RFLAGS = IF. Kalau nyala di kondisi yang disimpan,
     // berarti sebelum irq_save() dipanggil interrupt memang aktif.
     if (flags & (1 << 9)) {

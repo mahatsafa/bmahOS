@@ -57,7 +57,7 @@ ISO_OUT    := $(BUILD_DIR)/bmahOS.iso
 QEMU := $(shell command -v qemu-system-x86_64 2>/dev/null || echo /usr/libexec/qemu-kvm)
 OVMF := /usr/share/edk2/ovmf/OVMF_CODE.fd
 
-.PHONY: all clean run iso test
+.PHONY: all clean run iso test host-test
 
 all: iso
 
@@ -92,6 +92,31 @@ run: iso
 
 test: iso
 	QEMU=$(QEMU) OVMF_CODE=$(OVMF) tests/qemu-smoke.sh
+
+# F1.7: uji unit fungsi murni di host (Linux), dengan ASan + UBSan.
+# Tiap tests/host/test_X.c dikompilasi bersama modul kernel yang diujinya
+# dan tests/host/stubs.c. HOST_CC=gcc juga bisa bila libasan/libubsan ada.
+HOST_CC     ?= clang
+HOST_BUILD  := $(BUILD_DIR)/host
+HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
+               -fsanitize=address,undefined -fno-sanitize-recover=all \
+               -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host
+HOST_TESTS  := crypto kprintf net auth
+host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
+host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
+host_deps_net     := $(KERNEL_DIR)/net.c   # di-#include oleh test_net.c (akses fungsi static)
+host_srcs_auth    := $(KERNEL_DIR)/crypto.c
+host_deps_auth    := $(KERNEL_DIR)/auth.c  # di-#include oleh test_auth.c
+
+.SECONDEXPANSION:
+$(HOST_BUILD)/test_%: tests/host/test_%.c tests/host/stubs.c tests/host/test.h $(HDRS) $$(host_srcs_$$*) $$(host_deps_$$*)
+	@mkdir -p $(HOST_BUILD)
+	$(HOST_CC) $(HOST_CFLAGS) tests/host/test_$*.c tests/host/stubs.c $(host_srcs_$*) -o $@
+
+host-test: $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS))
+	@fail=0; for t in $^; do $$t || fail=1; done; \
+	if [ $$fail -eq 0 ]; then echo ">> host-test: semua lulus"; \
+	else echo ">> host-test: ADA YANG GAGAL"; exit 1; fi
 
 clean:
 	rm -rf $(BUILD_DIR)
