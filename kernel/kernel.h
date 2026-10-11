@@ -512,4 +512,37 @@ extern uint64_t g_log_total;
 extern volatile uint64_t g_net_loops;
 
 
+// ---- trap.c (exception, IRQ, syscall) ----
+struct exception_context
+{
+    uint64_t r15;
+    uint64_t r14;
+    uint64_t r13;
+    uint64_t r12;
+    uint64_t r11;
+    uint64_t r10;
+    uint64_t r9;
+    uint64_t r8;
+    uint64_t rbp;
+    uint64_t rdi;
+    uint64_t rsi;
+    uint64_t rdx;
+    uint64_t rcx;
+    uint64_t rbx;
+    uint64_t rax;
+
+    uint64_t vector;
+    uint64_t error_code;
+
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t rflags;
+};
+void trigger_breakpoint(void);
+
+// ---- kernel.c: dipakai trap.c ----
+
+void net_rx_tick_wake(void);
+void e1000_irq_service(void);
+
 #endif
