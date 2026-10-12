@@ -463,7 +463,7 @@ static void test_limits(void)
 static void test_tcp(void)
 {
     uint8_t f[600];
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
 
     // Port tertutup: SYN -> RST|ACK, ack = seq + 1.
     rx(f, mk_tcp(f, 4000, 80, 1000, 0, F_SYN, ""));
@@ -488,10 +488,10 @@ static void test_tcp(void)
     CHECK((r[12] >> 4) == 6 && r[20] == 2 && r[21] == 4);   // opsi MSS
     uint32_t iss = get32(r + 4);
     CHECK(iss == 0xA0A1A2A3);
-    CHECK(g_tcb.state == TCP_SYN_RCVD);
+    CHECK(g_tcbs[0].state == TCP_SYN_RCVD);
 
     rx(f, mk_tcp(f, 4001, 7, 7001, iss + 1, F_ACK, ""));
-    CHECK(g_tx_n == 0 && g_tcb.state == TCP_ESTABLISHED);
+    CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_ESTABLISHED);
 
     rx(f, mk_tcp(f, 4001, 7, 7001, iss + 1, F_ACK, "hello"));
     CHECK(g_tx_n == 1 && get32(g_tx[0] + 34 + 8) == 7006);
@@ -507,16 +507,16 @@ static void test_tcp(void)
 
     rx(f, mk_tcp(f, 4001, 7, 7006, iss + 1, F_ACK | F_FIN, ""));
     CHECK(g_tx_n == 1 && get32(g_tx[0] + 34 + 8) == 7007);
-    CHECK(g_tcb.state == TCP_CLOSE_WAIT);
+    CHECK(g_tcbs[0].state == TCP_CLOSE_WAIT);
     CHECK(g_tx_bad == 0);
 
     // Entropi belum cukup: SYN port 7 dibuang tanpa balasan (bukan RST),
     // TCB tetap CLOSED; port tertutup tetap dibalas RST.
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
     g_entropy_ok = 0;
     uint64_t ne0 = g_tcp_noentropy;
     rx(f, mk_tcp(f, 4003, 7, 100, 0, F_SYN, ""));
-    CHECK(g_tx_n == 0 && g_tcb.state == TCP_CLOSED && g_tcp_noentropy == ne0 + 1);
+    CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_CLOSED && g_tcp_noentropy == ne0 + 1);
     rx(f, mk_tcp(f, 4003, 80, 100, 0, F_SYN, ""));
     CHECK(g_tx_n == 1 && (g_tx[0][34 + 13] & F_RST));
     g_entropy_ok = 1;
@@ -539,7 +539,7 @@ static void test_tcp(void)
     fix_csums(f, n);
     rx(f, n);
     CHECK(g_tx_n == 0);
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
 }
 
 // Hitung ulang checksum IP dan L4 setelah frame diubah, supaya frame lolos
@@ -614,7 +614,7 @@ static void test_truncation(void)
     int ok = 1;
     for (int t = 0; t < NTPL; t++) {
         for (size_t n = 0; n < g_tpl_len[t]; n++) {
-            memset(&g_tcb, 0, sizeof(g_tcb));
+            memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
             rx(g_tpl[t], n);
             // ARP dibalas asal >= 42 byte (frame minimum Ethernet 60 diisi NIC).
             if (g_tx_n != 0 && !(t == 0 && n >= 42)) {
@@ -658,7 +658,7 @@ static void test_fuzz(void)
         rx(f, n);
         g_fuzz_tx += g_tx_n;
         if ((it & 1023) == 0) {
-            memset(&g_tcb, 0, sizeof(g_tcb));
+            memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
         }
     }
     CHECK(g_tx_bad == 0);
@@ -725,7 +725,7 @@ static uint32_t g_iss;
 static void tcp_open(uint32_t our_isn, uint32_t peer_isn, uint16_t wnd)
 {
     uint8_t f[200];
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
     g_isn_set = 1;
     g_isn = our_isn;
     rx(f, mk_tcp_w(f, peer_isn, 0, F_SYN, 0, 0, wnd));
@@ -747,7 +747,7 @@ static void test_tcp_send(void)
 
     // ISN kita dan peer melewati 2^32 di tengah uji.
     tcp_open(0xFFFFFFFCu, 0xFFFFFFFAu, 4096);
-    CHECK(g_tcb.state == TCP_ESTABLISHED && g_tcb.snd_una == 0xFFFFFFFDu);
+    CHECK(g_tcbs[0].state == TCP_ESTABLISHED && g_tcbs[0].snd_una == 0xFFFFFFFDu);
 
     // Data -> dikirim balik dalam satu segmen PSH|ACK yang juga meng-ACK.
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK | 0x08, (const uint8_t *)"hello", 5, 4096));
@@ -765,19 +765,19 @@ static void test_tcp_send(void)
 
     // ACK melewati snd_nxt: diabaikan (dibalas ACK), buffer tetap.
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 100, F_ACK, 0, 0, 4096));
-    CHECK(g_tx_n == 1 && tx_seg(0).len == 0 && g_tcb.snd_una == g_iss + 1 && g_tcb.buf_count == 8);
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 0 && g_tcbs[0].snd_una == g_iss + 1 && g_tcbs[0].buf_count == 8);
 
     // ACK untuk "hello" (snd_una melewati 2^32) -> "abc" dikirim.
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 6, F_ACK, 0, 0, 4096));
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.seq == g_iss + 6 && s.len == 3 && memcmp(s.data, "abc", 3) == 0);
-    CHECK(g_tcb.snd_una == g_iss + 6 && g_tcb.snd_una < 0x10 && g_tcb.buf_count == 3);
+    CHECK(g_tcbs[0].snd_una == g_iss + 6 && g_tcbs[0].snd_una < 0x10 && g_tcbs[0].buf_count == 3);
 
     // ACK lama: tidak mengubah apa pun (juga jendela peer tidak diperbarui).
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 7));
-    CHECK(g_tx_n == 0 && g_tcb.snd_una == g_iss + 6 && g_tcb.snd_wnd == 4096);
+    CHECK(g_tx_n == 0 && g_tcbs[0].snd_una == g_iss + 6 && g_tcbs[0].snd_wnd == 4096);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 9, F_ACK, 0, 0, 4096));
-    CHECK(g_tx_n == 0 && g_tcb.buf_count == 0 && g_tcb.snd_una == g_tcb.snd_nxt);
+    CHECK(g_tx_n == 0 && g_tcbs[0].buf_count == 0 && g_tcbs[0].snd_una == g_tcbs[0].snd_nxt);
 
     // Segmen pertama dibatasi MSS; sisanya dikirim setelah ACK.
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 9, F_ACK, big, 600, 4096));
@@ -799,20 +799,20 @@ static void test_tcp_send(void)
     CHECK(g_tx_n == 1 && s.len == 100);
     una += 100;
     rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 0));
-    CHECK(g_tx_n == 0 && g_tcb.snd_wnd == 0 && g_tcb.buf_count == 200);
+    CHECK(g_tx_n == 0 && g_tcbs[0].snd_wnd == 0 && g_tcbs[0].buf_count == 200);
     rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.len == 200 && memcmp(s.data, big + 100, 200) == 0);
     una += 200;
     rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
-    CHECK(g_tcb.buf_count == 0);
+    CHECK(g_tcbs[0].buf_count == 0);
 
     // Buffer penuh: jendela peer 0 supaya tidak ada yang terkirim, lalu
     // 1200 byte -> hanya 1024 diterima, ACK dengan jendela 0.
     rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, big, 1200, 0));
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.len == 0 && s.wnd == 0 && s.ack == g_pseq + TCP_BUF_SIZE);
-    CHECK(g_tcb.buf_count == TCP_BUF_SIZE);
+    CHECK(g_tcbs[0].buf_count == TCP_BUF_SIZE);
     g_pseq += TCP_BUF_SIZE;
     // Segmen saat jendela 0: dipotong habis, tetap di-ACK (jendela 0).
     rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, big, 10, 0));
@@ -830,21 +830,21 @@ static void test_tcp_send(void)
     CHECK(memcmp(s.data, big + TCP_MSS, TCP_BUF_SIZE - TCP_MSS) == 0);
     una += TCP_BUF_SIZE - TCP_MSS;
     rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 0));
-    CHECK(g_tcb.buf_count == 0);
+    CHECK(g_tcbs[0].buf_count == 0);
 
     // Jendela kita kembali >= MSS tetapi tidak ada yang bisa dikirim (jendela
     // peer 0): pembaruan jendela tetap dikirim lewat ACK.
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
     tcp_open(1000, 2000, 4096);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, big, 1024, 0));
     g_pseq += 1024;
-    CHECK(g_tcb.buf_count == 1024 && g_tcb.adv_wnd == 0);
+    CHECK(g_tcbs[0].buf_count == 1024 && g_tcbs[0].adv_wnd == 0);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 600));   // kirim 536
     una = g_iss + 1 + TCP_MSS;
     rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 0));
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.len == 0 && s.wnd == TCP_MSS);
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
 }
 
 // Aliran acak 20000 byte lewat echo: potongan acak sebatas jendela kita,
@@ -863,7 +863,7 @@ static void test_tcp_stream(void)
     una = g_iss + 1;
 
     while (recvd < sizeof(src) && guard++ < 100000) {
-        size_t room = TCP_BUF_SIZE - g_tcb.buf_count;
+        size_t room = TCP_BUF_SIZE - g_tcbs[0].buf_count;
         size_t n = (size_t)(rand() % 700);
         if (n > room) {
             n = room;
@@ -886,7 +886,7 @@ static void test_tcp_stream(void)
     printf("net tcp: aliran %zu byte, kembali %zu byte, %d putaran\n", sent, recvd, guard);
     CHECK(recvd == sizeof(src) && memcmp(got, src, sizeof(src)) == 0);
     CHECK(g_tx_bad == 0);
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
 }
 
 // ---- C3c: retransmisi ----
@@ -925,12 +925,12 @@ static void test_tcp_retx(void)
     }
 
     // SYN-ACK tidak di-ACK: dikirim ulang setelah 100 lalu 200 tick, sama persis.
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
     g_isn_set = 1;
     g_isn = 0xFFFFFFFFu;
     rx(f, mk_tcp_w(f, 500, 0, F_SYN, 0, 0, 4096));
     g_isn_set = 0;
-    CHECK(g_tx_n == 1 && ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tx_n == 1 && ktimer_pending(&g_tcp_rtx_timer[0]));
     CHECK(run_until_tx(1000) == 100);
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.flags == (F_SYN | F_ACK) && s.seq == 0xFFFFFFFFu && s.ack == 501);
@@ -941,12 +941,12 @@ static void test_tcp_retx(void)
     g_iss = 0xFFFFFFFFu;
     g_pseq = 501;
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 4096));
-    CHECK(g_tcb.state == TCP_ESTABLISHED && !ktimer_pending(&g_tcp_rtx_timer));
-    CHECK(g_tcb.rto == TCP_RTO_INIT && g_tcb.retries == 0);
+    CHECK(g_tcbs[0].state == TCP_ESTABLISHED && !ktimer_pending(&g_tcp_rtx_timer[0]));
+    CHECK(g_tcbs[0].rto == TCP_RTO_INIT && g_tcbs[0].retries == 0);
     // Diam tanpa data belum di-ACK: timeout menganggur biasa (C3d: FIN
     // setelah 3000 tick, bukan RST).
     CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1 && tx_seg(0).flags == (F_FIN | F_ACK));
-    CHECK(g_tcb.state == TCP_FIN_WAIT_1 && g_tcp_timeouts == to0 + 1);
+    CHECK(g_tcbs[0].state == TCP_FIN_WAIT_1 && g_tcp_timeouts == to0 + 1);
 
     // Data tidak di-ACK: kirim ulang setelah 100, 200, 400, 800, 800 tick (isi
     // dan seq sama, melewati 2^32), lalu RST setelah 800 tick lagi. Total
@@ -967,7 +967,7 @@ static void test_tcp_retx(void)
     CHECK(run_until_tx(2000) == 800);
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.flags == (F_RST | F_ACK) && s.seq == g_iss + 21);
-    CHECK(g_tcb.state == TCP_CLOSED && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tcbs[0].state == TCP_CLOSED && !ktimer_pending(&g_tcp_rtx_timer[0]));
     CHECK(g_tcp_retx_giveup == give0 + 1 && g_tcp_timeouts == to0 + 1);
     CHECK(run_until_tx(5000) == 0);
 
@@ -980,7 +980,7 @@ static void test_tcp_retx(void)
     CHECK(run_until_tx(1000) == 100 && run_until_tx(1000) == 200);
     uint32_t una = g_iss + 1 + 100;
     rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
-    CHECK(g_tx_n == 0 && g_tcb.retries == 0 && ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tx_n == 0 && g_tcbs[0].retries == 0 && ktimer_pending(&g_tcp_rtx_timer[0]));
     CHECK(run_until_tx(1000) == 100);
     s = tx_seg(0);
     CHECK(s.seq == una && s.len == TCP_MSS - 100 && memcmp(s.data, big + 100, TCP_MSS - 100) == 0);
@@ -988,20 +988,20 @@ static void test_tcp_retx(void)
     una = g_iss + 1 + TCP_MSS;
     rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
     s = tx_seg(0);
-    CHECK(g_tx_n == 1 && s.seq == una && s.len == 64 && g_tcb.rto == TCP_RTO_INIT);
+    CHECK(g_tx_n == 1 && s.seq == una && s.len == 64 && g_tcbs[0].rto == TCP_RTO_INIT);
     CHECK(run_until_tx(1000) == 100 && tx_seg(0).len == 64);
     // ACK semua: tidak ada lagi yang dikirim ulang.
     rx(f, mk_tcp_w(f, g_pseq, una + 64, F_ACK, 0, 0, 4096));
-    CHECK(g_tcb.buf_count == 0 && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tcbs[0].buf_count == 0 && !ktimer_pending(&g_tcp_rtx_timer[0]));
     // RST dari peer selagi data menunggu ACK: timer dibatalkan.
     rx(f, mk_tcp_w(f, g_pseq, una + 64, F_ACK, big, 5, 4096));
     g_pseq += 5;
-    CHECK(ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(ktimer_pending(&g_tcp_rtx_timer[0]));
     rx(f, mk_tcp_w(f, g_pseq, 0, F_RST, 0, 0, 0));
-    CHECK(g_tcb.state == TCP_CLOSED && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tcbs[0].state == TCP_CLOSED && !ktimer_pending(&g_tcp_rtx_timer[0]));
     CHECK(run_until_tx(3000) == 0);
     CHECK(g_tx_bad == 0);
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
 }
 
 // ---- C3d: penutupan ----
@@ -1019,11 +1019,11 @@ static void test_tcp_close(void)
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, (const uint8_t *)"abc", 3, 4096));
     g_pseq += 3;
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 4, F_ACK, 0, 0, 4096));
-    CHECK(g_tx_n == 0 && g_tcb.buf_count == 0);
+    CHECK(g_tx_n == 0 && g_tcbs[0].buf_count == 0);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 4, F_ACK | F_FIN, 0, 0, 4096));
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.flags == (F_FIN | F_ACK) && s.seq == g_iss + 4 && s.ack == g_pseq + 1);
-    CHECK(g_tcb.state == TCP_LAST_ACK && ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tcbs[0].state == TCP_LAST_ACK && ktimer_pending(&g_tcp_rtx_timer[0]));
     CHECK(run_until_tx(1000) == 100);
     s = tx_seg(0);
     CHECK(s.flags == (F_FIN | F_ACK) && s.seq == g_iss + 4 && s.ack == g_pseq + 1);
@@ -1032,7 +1032,7 @@ static void test_tcp_close(void)
     CHECK(g_tx_n == 1 && s.flags == F_ACK && s.seq == g_iss + 5 && s.ack == g_pseq + 1);
     g_pseq++;
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 5, F_ACK, 0, 0, 4096));
-    CHECK(g_tx_n == 0 && g_tcb.state == TCP_CLOSED && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_CLOSED && !ktimer_pending(&g_tcp_rtx_timer[0]));
     CHECK(g_tcp_close_ok == ok0 + 1 && run_until_tx(5000) == 0);
     // Port 7 langsung bebas.
     rx(f, mk_tcp(f, 4100, 7, 1, 0, F_SYN, ""));
@@ -1044,15 +1044,15 @@ static void test_tcp_close(void)
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK | F_FIN | 0x08, (const uint8_t *)"hello", 5, 4096));
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.flags == (0x08 | F_ACK) && s.len == 5 && s.ack == g_pseq + 6);
-    CHECK(g_tcb.state == TCP_CLOSE_WAIT);
+    CHECK(g_tcbs[0].state == TCP_CLOSE_WAIT);
     g_pseq += 6;
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 6, F_ACK, 0, 0, 4096));
     s = tx_seg(0);
-    CHECK(g_tx_n == 1 && s.flags == (F_FIN | F_ACK) && s.seq == g_iss + 6 && g_tcb.state == TCP_LAST_ACK);
+    CHECK(g_tx_n == 1 && s.flags == (F_FIN | F_ACK) && s.seq == g_iss + 6 && g_tcbs[0].state == TCP_LAST_ACK);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 6, F_ACK, (const uint8_t *)"x", 1, 4096));
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.flags == (F_RST | F_ACK) && s.seq == g_iss + 7);
-    CHECK(g_tcb.state == TCP_CLOSED && g_tcp_rst_state == rst0 + 1 && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tcbs[0].state == TCP_CLOSED && g_tcp_rst_state == rst0 + 1 && !ktimer_pending(&g_tcp_rtx_timer[0]));
 
     // C. FIN kita tidak pernah di-ACK: 5 kirim ulang lalu RST.
     tcp_open(9000, 500, 4096);
@@ -1066,7 +1066,7 @@ static void test_tcp_close(void)
     }
     CHECK(fin_ok);
     CHECK(run_until_tx(2000) == 800 && tx_seg(0).flags == (F_RST | F_ACK));
-    CHECK(g_tcb.state == TCP_CLOSED && g_tcp_retx_giveup == give0 + 1);
+    CHECK(g_tcbs[0].state == TCP_CLOSED && g_tcp_retx_giveup == give0 + 1);
 
     // D. Tutup aktif saat diam: FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT. FIN
     // peer ulang dibalas ACK, RST diabaikan (RFC 1337), SYN lain = sibuk,
@@ -1074,39 +1074,39 @@ static void test_tcp_close(void)
     tcp_open(0xFFFFFFFEu, 700, 4096);
     CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1);
     s = tx_seg(0);
-    CHECK(s.flags == (F_FIN | F_ACK) && s.seq == 0xFFFFFFFFu && g_tcb.state == TCP_FIN_WAIT_1);
+    CHECK(s.flags == (F_FIN | F_ACK) && s.seq == 0xFFFFFFFFu && g_tcbs[0].state == TCP_FIN_WAIT_1);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK, 0, 0, 4096));
-    CHECK(g_tx_n == 0 && g_tcb.state == TCP_FIN_WAIT_2 && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_FIN_WAIT_2 && !ktimer_pending(&g_tcp_rtx_timer[0]));
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK | F_FIN, 0, 0, 4096));
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.flags == F_ACK && s.seq == g_iss + 2 && s.ack == g_pseq + 1);
-    CHECK(g_tcb.state == TCP_TIME_WAIT);
+    CHECK(g_tcbs[0].state == TCP_TIME_WAIT);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK | F_FIN, 0, 0, 4096));
     CHECK(g_tx_n == 1 && tx_seg(0).flags == F_ACK && tx_seg(0).ack == g_pseq + 1);
     rx(f, mk_tcp_w(f, g_pseq + 1, 0, F_RST, 0, 0, 0));
-    CHECK(g_tx_n == 0 && g_tcb.state == TCP_TIME_WAIT);
+    CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_TIME_WAIT);
     rx(f, mk_tcp(f, 4200, 7, 1, 0, F_SYN, ""));
     CHECK(g_tx_n == 1 && (tx_seg(0).flags & F_RST) && g_tcp_busy == busy0 + 1);
     int tw = 1;
     for (int i = 0; i < TCP_TIME_WAIT_TICKS - 100; i++) {   // rx terakhir sudah +100
-        tw &= step() == 0 && g_tcb.state == TCP_TIME_WAIT;
+        tw &= step() == 0 && g_tcbs[0].state == TCP_TIME_WAIT;
     }
     CHECK(tw);
-    CHECK(step() == 0 && g_tcb.state == TCP_CLOSED && g_tcp_close_ok == ok0 + 2);
+    CHECK(step() == 0 && g_tcbs[0].state == TCP_CLOSED && g_tcp_close_ok == ok0 + 2);
 
     // E. FIN_WAIT_2 tanpa FIN peer: RST setelah TCP_FIN_WAIT_2_TIMEOUT.
     tcp_open(100, 900, 4096);
     CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK, 0, 0, 4096));
-    CHECK(g_tcb.state == TCP_FIN_WAIT_2);
+    CHECK(g_tcbs[0].state == TCP_FIN_WAIT_2);
     CHECK(run_until_tx(5000) == TCP_FIN_WAIT_2_TIMEOUT + 1);
-    CHECK(tx_seg(0).flags == (F_RST | F_ACK) && g_tcb.state == TCP_CLOSED);
+    CHECK(tx_seg(0).flags == (F_RST | F_ACK) && g_tcbs[0].state == TCP_CLOSED);
 
     // F. Data setelah FIN kita (ACK FIN dan data dalam satu segmen): RST.
     tcp_open(200, 1100, 4096);
     CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK, (const uint8_t *)"zz", 2, 4096));
-    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && g_tcb.state == TCP_CLOSED);
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && g_tcbs[0].state == TCP_CLOSED);
     CHECK(g_tcp_rst_state == rst0 + 2);
 
     // G. Tutup bersamaan: FIN peer sebelum FIN kita di-ACK -> CLOSING ->
@@ -1116,23 +1116,23 @@ static void test_tcp_close(void)
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK | F_FIN, 0, 0, 4096));
     s = tx_seg(0);
     CHECK(g_tx_n == 1 && s.flags == F_ACK && s.seq == g_iss + 2 && s.ack == g_pseq + 1);
-    CHECK(g_tcb.state == TCP_CLOSING && ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tcbs[0].state == TCP_CLOSING && ktimer_pending(&g_tcp_rtx_timer[0]));
     g_pseq++;
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK, 0, 0, 4096));
-    CHECK(g_tx_n == 0 && g_tcb.state == TCP_TIME_WAIT && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_TIME_WAIT && !ktimer_pending(&g_tcp_rtx_timer[0]));
     tcp_open(400, 1500, 4096);
     CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK | F_FIN, 0, 0, 4096));
-    CHECK(g_tx_n == 1 && tx_seg(0).flags == F_ACK && g_tcb.state == TCP_TIME_WAIT);
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == F_ACK && g_tcbs[0].state == TCP_TIME_WAIT);
 
     // H. Diam dengan data tertahan (jendela peer 0): RST, bukan FIN.
     tcp_open(500, 1700, 4096);
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, (const uint8_t *)"abc", 3, 0));
-    CHECK(g_tx_n == 1 && tx_seg(0).len == 0 && g_tcb.buf_count == 3);
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 0 && g_tcbs[0].buf_count == 3);
     CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1 && tx_seg(0).flags == (F_RST | F_ACK));
-    CHECK(g_tcb.state == TCP_CLOSED);
+    CHECK(g_tcbs[0].state == TCP_CLOSED);
     CHECK(g_tx_bad == 0);
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
 }
 
 // ---- C4: batas laju koneksi TCP ----
@@ -1201,7 +1201,7 @@ static void test_tcp_limits(void)
     rx_now(f, mk_tcp_w(f, g_pseq + 5000, g_iss + 1, F_ACK, (const uint8_t *)"zz", 2, 4096));
     CHECK(g_tx_n == 1 && tx_seg(0).flags == F_ACK && tx_seg(0).ack == g_pseq);
     CHECK(g_tx_bad == 0);
-    memset(&g_tcb, 0, sizeof(g_tcb));
+    memset(&g_tcbs[0], 0, sizeof(g_tcbs[0]));
 }
 
 int main(void)
