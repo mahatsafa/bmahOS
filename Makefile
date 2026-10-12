@@ -108,6 +108,7 @@ HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
 HOST_TESTS  := crypto kprintf net auth entropy ktimer
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
+host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c   # C3c: timer retransmisi
 host_deps_net     := $(KERNEL_DIR)/net.c   # di-#include oleh test_net.c (akses fungsi static)
 host_srcs_auth    := $(KERNEL_DIR)/crypto.c
 host_deps_auth    := $(KERNEL_DIR)/auth.c  # di-#include oleh test_auth.c

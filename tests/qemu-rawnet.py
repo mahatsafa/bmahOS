@@ -117,9 +117,11 @@ class Net:
             if limit is not None and len(out) >= limit:
                 return out
 
-    def tcp_replies(self, dst_ip, dport, timeout, payload=False):
+    def tcp_replies(self, dst_ip, dport, timeout, payload=False, stamp=False, limit=None):
         """Segmen TCP dari tamu ke dst_ip:dport: list (seq, ack, flags, datalen),
-        atau (seq, ack, flags, data) bila payload=True."""
+        atau (seq, ack, flags, data) bila payload=True. stamp=True: tiap
+        elemen diawali waktu terima (time.time()). limit: berhenti setelah
+        sekian segmen (C3c: segmen yang belum di-ACK dikirim ulang tiap RTO)."""
         out = []
         end = time.time() + timeout
         while True:
@@ -146,9 +148,12 @@ class Net:
             dlen = tot - (f[14] & 0x0F) * 4 - (f[t + 12] >> 4) * 4
             if payload:
                 d0 = t + (f[t + 12] >> 4) * 4
-                out.append((seq, ack, f[t + 13], f[d0:d0 + dlen]))
+                item = (seq, ack, f[t + 13], f[d0:d0 + dlen])
             else:
-                out.append((seq, ack, f[t + 13], dlen))
+                item = (seq, ack, f[t + 13], dlen)
+            out.append((time.time(),) + item if stamp else item)
+            if limit is not None and len(out) >= limit:
+                return out
 
     def request(self, src_ip, sport, dport, payload, timeout=10.0):
         self.send(udp_frame(src_ip, sport, dport, payload))
@@ -309,7 +314,7 @@ def test_tcp_handshake(net, cli):
     a = bytes([192, 168, 50, 16])
     b = bytes([192, 168, 50, 17])
     net.send(tcp_frame(a, 47000, 7, 5000, 0, 0x02))
-    r = net.tcp_replies(a, 47000, 2)
+    r = net.tcp_replies(a, 47000, 2, limit=1)
     ok = len(r) == 1 and r[0][2] == 0x12 and r[0][1] == 5001
     check("C2: SYN port 7 -> SYN-ACK ack=seq+1", ok, repr(r))
     if not ok:
@@ -319,29 +324,30 @@ def test_tcp_handshake(net, cli):
     r = net.tcp_replies(a, 47000, 1)
     check("C2: ACK handshake tanpa data tidak dibalas", r == [], repr(r))
     net.send(tcp_frame(a, 47000, 7, 5001, iss + 1, 0x18, b"hello"))
-    r = net.tcp_replies(a, 47000, 2, payload=True)
+    r = net.tcp_replies(a, 47000, 2, payload=True, limit=1)
     check("C3b: data 5 byte -> echo PSH|ACK ack=5006 berisi hello",
           r == [(iss + 1, 5006, 0x18, b"hello")], repr(r))
-    # "hello" kita belum di-ACK (stop-and-wait): balasan berikut ACK saja.
-    net.send(tcp_frame(a, 47000, 7, 5001, iss + 1, 0x18, b"hello"))
+    # C3c: ACK echo supaya tidak dikirim ulang di tengah uji berikutnya.
+    net.send(tcp_frame(a, 47000, 7, 5006, iss + 6, 0x10))
+    net.send(tcp_frame(a, 47000, 7, 5001, iss + 6, 0x18, b"hello"))
     r = net.tcp_replies(a, 47000, 2)
     check("C2: data duplikat -> ACK ulang ack=5006",
           r == [(iss + 6, 5006, 0x10, 0)], repr(r))
-    net.send(tcp_frame(a, 47000, 7, 9999, iss + 1, 0x18, b"zz"))
+    net.send(tcp_frame(a, 47000, 7, 9999, iss + 6, 0x18, b"zz"))
     r = net.tcp_replies(a, 47000, 2)
     check("C2: di luar urutan -> ACK ack=5006",
           r == [(iss + 6, 5006, 0x10, 0)], repr(r))
     net.send(tcp_frame(b, 47001, 7, 7000, 0, 0x02))
     r = net.tcp_replies(b, 47001, 2)
     check("C2: koneksi kedua saat sibuk -> RST|ACK", r == [(0, 7001, 0x14, 0)], repr(r))
-    net.send(tcp_frame(a, 47000, 7, 5006, iss + 1, 0x11))
+    net.send(tcp_frame(a, 47000, 7, 5006, iss + 6, 0x11))
     r = net.tcp_replies(a, 47000, 2)
     check("C2: FIN -> ACK ack=5007", r == [(iss + 6, 5007, 0x10, 0)], repr(r))
-    net.send(tcp_frame(a, 47000, 7, 5007, iss + 1, 0x04))
+    net.send(tcp_frame(a, 47000, 7, 5007, iss + 6, 0x04))
     r = net.tcp_replies(a, 47000, 1)
     check("C2: RST dari peer tidak dibalas", r == [], repr(r))
     net.send(tcp_frame(b, 47002, 7, 8000, 0, 0x02))
-    r = net.tcp_replies(b, 47002, 2)
+    r = net.tcp_replies(b, 47002, 2, limit=1)
     check("C2: setelah RST, koneksi baru diterima",
           len(r) == 1 and r[0][2] == 0x12 and r[0][1] == 8001, repr(r))
     net.send(tcp_frame(b, 47002, 7, 8001, 0, 0x04))
@@ -361,18 +367,18 @@ def test_tcp_send(net, cli):
     c = bytes([192, 168, 50, 18])
     data = bytes((i * 7 + 3) & 0xFF for i in range(600))
     net.send(tcp_frame(c, 47100, 7, 1000, 0, 0x02))
-    r = net.tcp_replies(c, 47100, 2)
+    r = net.tcp_replies(c, 47100, 2, limit=1)
     if not (len(r) == 1 and r[0][2] == 0x12):
         check("C3b: SYN-ACK", False, repr(r))
         return
     iss = r[0][0]
     net.send(tcp_frame(c, 47100, 7, 1001, iss + 1, 0x10))
     net.send(tcp_frame(c, 47100, 7, 1001, iss + 1, 0x18, data))
-    r = net.tcp_replies(c, 47100, 2, payload=True)
+    r = net.tcp_replies(c, 47100, 2, payload=True, limit=1)
     check("C3b: 600 byte -> segmen pertama 536 byte, isi sama, ack=1601",
           r == [(iss + 1, 1601, 0x18, data[:536])], repr([(x[0], x[1], x[2], len(x[3])) for x in r]))
     net.send(tcp_frame(c, 47100, 7, 1601, iss + 1 + 536, 0x10))
-    r = net.tcp_replies(c, 47100, 2, payload=True)
+    r = net.tcp_replies(c, 47100, 2, payload=True, limit=1)
     check("C3b: setelah ACK -> sisa 64 byte, seq=iss+537",
           r == [(iss + 537, 1601, 0x18, data[536:])], repr([(x[0], x[1], x[2], len(x[3])) for x in r]))
     net.send(tcp_frame(c, 47100, 7, 1601, iss + 601, 0x10))
@@ -380,6 +386,51 @@ def test_tcp_send(net, cli):
     check("C3b: ACK semua data -> tidak ada balasan", r == [], repr(r))
     net.send(tcp_frame(c, 47100, 7, 1601, iss + 601, 0x04))
     net.tcp_replies(c, 47100, 0.5)
+
+
+def test_tcp_retx(net, cli):
+    """C3c: ACK sengaja dibuang -> SYN-ACK dan data dikirim ulang (RTO 1 s lalu 2 s)."""
+    m0 = cli.metrics()
+    if m0 is None:
+        check("C3c: metrics awal", False)
+        return
+    c = bytes([192, 168, 50, 19])
+    net.send(tcp_frame(c, 47200, 7, 3000, 0, 0x02))
+    t0 = time.time()
+    r = net.tcp_replies(c, 47200, 1.6, stamp=True)
+    ok = len(r) == 2 and all(x[1:] == (r[0][1], 3001, 0x12, 0) for x in r)
+    check("C3c: SYN-ACK tanpa ACK dikirim ulang sekali dalam 1,6 s, sama persis", ok,
+          repr([(round(x[0] - t0, 2),) + x[1:] for x in r]))
+    if not r or r[0][3] != 0x12:
+        return
+    iss = r[0][1]
+    gap = r[1][0] - r[0][0] if ok else 0
+    check("C3c: jeda SYN-ACK ulang ~1 s (0,7..1,5)", 0.7 <= gap <= 1.5, "%.2f" % gap)
+    net.send(tcp_frame(c, 47200, 7, 3001, iss + 1, 0x10))
+    data = b"kirim-ulang C3c"
+    net.send(tcp_frame(c, 47200, 7, 3001, iss + 1, 0x18, data))
+    r = net.tcp_replies(c, 47200, 4.0, payload=True, stamp=True)
+    want = (iss + 1, 3001 + len(data), 0x18, data)
+    ok = len(r) == 3 and all(x[1:] == want for x in r)
+    check("C3c: data tanpa ACK -> echo + 2 kirim ulang identik dalam 4 s", ok,
+          repr([(round(x[0] - r[0][0], 2), x[1] - iss, x[3], len(x[4])) for x in r]))
+    if ok:
+        g1, g2 = r[1][0] - r[0][0], r[2][0] - r[1][0]
+        check("C3c: backoff eksponensial (jeda ~1 s lalu ~2 s)",
+              0.7 <= g1 <= 1.5 and 1.6 <= g2 <= 2.8, "%.2f %.2f" % (g1, g2))
+    net.send(tcp_frame(c, 47200, 7, 3001 + len(data), iss + 1 + len(data), 0x10))
+    r = net.tcp_replies(c, 47200, 2.5)
+    check("C3c: setelah ACK tidak ada kirim ulang lagi", r == [], repr(r))
+    net.send(tcp_frame(c, 47200, 7, 3001 + len(data), iss + 1 + len(data), 0x04))
+    net.tcp_replies(c, 47200, 0.5)
+    time.sleep(1.2)
+    m1 = cli.metrics()
+    if m1 is None:
+        check("C3c: metrics akhir", False)
+        return
+    d = {k: m1[k] - m0[k] for k in ("tcp_retx", "tcp_retx_giveup", "tcp_conn_open")}
+    check("C3c: metrics tcp_retx +3, tcp_retx_giveup +0, conn_open +1",
+          d == {"tcp_retx": 3, "tcp_retx_giveup": 0, "tcp_conn_open": 1}, repr(d))
 
 
 def main():
@@ -451,6 +502,8 @@ def main():
         test_tcp_handshake(net, cli)
         time.sleep(1.2)
         test_tcp_send(net, cli)
+        time.sleep(1.2)
+        test_tcp_retx(net, cli)
 
         text = open(log, "rb").read().decode(errors="replace")
         check("rawnet: tanpa exception di log",

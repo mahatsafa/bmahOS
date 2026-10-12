@@ -285,6 +285,8 @@ uint64_t g_tcp_timeouts = 0;
 uint64_t g_tcp_noentropy = 0;
 uint64_t g_tcp_tx_bytes = 0;      // C3b: byte data dikirim (pertama kali)
 uint64_t g_tcp_acked_bytes = 0;   // C3b: byte data kita yang di-ACK peer
+uint64_t g_tcp_retx = 0;          // C3c: segmen dikirim ulang (SYN-ACK + data)
+uint64_t g_tcp_retx_giveup = 0;   // C3c: koneksi diputus setelah TCP_RTX_MAX
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -626,13 +628,18 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 // kosong g_tcp_buf; segmen di luar urutan dibuang (DECISIONS 2026-10-12).
 // Kirim stop-and-wait: maks satu segmen data belum di-ACK, <= TCP_MSS dan
 // <= jendela peer. Nomor urut dibandingkan bertanda (seq_lt/seq_le) karena
-// berputar di 2^32. Retransmisi (C3c) dan FIN kita (C3d) belum ada; timeout
-// aman tetap supaya satu TCB tidak mengunci port selamanya.
+// berputar di 2^32. C3c: SYN-ACK dan data yang belum di-ACK dikirim ulang
+// (lihat net_tcp_rtx_fire). FIN kita (C3d) belum ada; timeout menganggur
+// tetap supaya satu TCB tidak mengunci port selamanya.
 #define NET_TCP_ECHO_PORT   7
 #define TCP_BUF_SIZE        1024
 #define TCP_MSS             536
 #define TCP_SYNRCVD_TIMEOUT 500    // tick (5 detik)
-#define TCP_IDLE_TIMEOUT    3000   // tick (30 detik), sementara sampai C3/C5
+#define TCP_IDLE_TIMEOUT    3000   // tick (30 detik), sementara sampai C5; tidak
+                                   // berlaku selama ada segmen belum di-ACK
+#define TCP_RTO_INIT        100    // tick (1 detik), RTO awal tetap (C3c)
+#define TCP_RTO_MAX         800    // tick: backoff 1, 2, 4, 8, 8 detik
+#define TCP_RTX_MAX         5      // kirim ulang maks 5x, berikutnya RST
 
 enum { TCP_CLOSED = 0, TCP_SYN_RCVD, TCP_ESTABLISHED, TCP_CLOSE_WAIT };
 
@@ -652,10 +659,15 @@ typedef struct {
     uint32_t adv_wnd;   // jendela terakhir yang kita iklankan
     uint32_t buf_head;  // indeks g_tcp_buf untuk byte snd_una
     uint32_t buf_count; // isi g_tcp_buf: belum di-ACK + belum dikirim
+    uint32_t rto;       // C3c: RTO berikutnya (tick)
+    uint32_t retries;   // C3c: kirim ulang sejak kemajuan snd_una terakhir
 } tcp_tcb_t;
 
 static tcp_tcb_t g_tcb;
 static uint8_t g_tcp_buf[TCP_BUF_SIZE];
+static ktimer_t g_tcp_rtx_timer;   // C3c: di luar g_tcb (ada di senarai ktimer)
+
+static void net_tcp_rtx_arm(void);
 
 static inline int seq_lt(uint32_t a, uint32_t b)
 {
@@ -815,6 +827,7 @@ static int net_tcp_output(void)
                      TCP_PSH | TCP_ACK, 0, seg, n);
     t->snd_nxt += n;
     g_tcp_tx_bytes += n;
+    net_tcp_rtx_arm();
     return 1;
 }
 
@@ -827,10 +840,85 @@ static void net_tcp_log(const char *msg)
     irq_restore(lf);
 }
 
+// ---- C3c: retransmisi ----
+// Satu timer untuk satu TCB. Yang dikirim ulang: SYN-ACK (SYN_RCVD) atau
+// byte snd_una..snd_nxt yang masih ada di g_tcp_buf mulai buf_head (stop-and-
+// wait: <= TCP_MSS), jadi tidak perlu salinan segmen. RTO awal tetap
+// TCP_RTO_INIT (tanpa pengukuran RTT), dilipatduakan tiap kirim ulang sampai
+// TCP_RTO_MAX; ACK yang memajukan snd_una mengembalikannya ke awal. Setelah
+// TCP_RTX_MAX kirim ulang tanpa kemajuan: RST dan TCB dibebaskan.
+static void net_tcp_rtx_fire(void *arg);
+
+static void net_tcp_rtx_arm(void)
+{
+    ktimer_start(&g_tcp_rtx_timer, g_tcb.rto, net_tcp_rtx_fire, 0);
+}
+
+// snd_una maju: backoff kembali ke awal, timer jalan lagi bila masih ada
+// byte yang belum di-ACK.
+static void net_tcp_rtx_progress(void)
+{
+    g_tcb.rto = TCP_RTO_INIT;
+    g_tcb.retries = 0;
+    if (g_tcb.snd_una == g_tcb.snd_nxt) {
+        ktimer_cancel(&g_tcp_rtx_timer);
+    } else {
+        net_tcp_rtx_arm();
+    }
+}
+
+static void net_tcp_close(const char *why)
+{
+    ktimer_cancel(&g_tcp_rtx_timer);
+    g_tcb.state = TCP_CLOSED;
+    net_tcp_log(why);
+}
+
+static void net_tcp_rtx_fire(void *arg)
+{
+    tcp_tcb_t *t = &g_tcb;
+
+    (void)arg;
+    if (t->state == TCP_CLOSED || t->snd_una == t->snd_nxt) {
+        return;
+    }
+    if (t->retries >= TCP_RTX_MAX) {
+        net_tcp_tcb_send(t->snd_nxt, TCP_RST | TCP_ACK, 0);
+        g_tcp_retx_giveup++;
+        net_tcp_close("kirim ulang habis, koneksi diputus (RST)");
+        return;
+    }
+
+    uint32_t n = t->snd_nxt - t->snd_una;
+
+    if (t->state == TCP_SYN_RCVD) {
+        net_tcp_tcb_send(t->iss, TCP_SYN | TCP_ACK, 1);
+    } else {
+        uint8_t seg[TCP_MSS];
+
+        for (uint32_t i = 0; i < n; i++) {
+            seg[i] = g_tcp_buf[(t->buf_head + i) % TCP_BUF_SIZE];
+        }
+        net_tcp_send_seg(t->mac, t->ip, t->lport, t->rport, t->snd_una,
+                         t->rcv_nxt, TCP_PSH | TCP_ACK, 0, seg, n);
+    }
+    t->retries++;
+    g_tcp_retx++;
+    kprintf("C3c: TCP kirim ulang ke-%u seq=%x len=%u rto=%u tick\r\n",
+            t->retries, t->snd_una, t->state == TCP_SYN_RCVD ? 0 : n, t->rto);
+    t->rto = t->rto * 2 > TCP_RTO_MAX ? TCP_RTO_MAX : t->rto * 2;
+    net_tcp_rtx_arm();
+}
+
 // Dipanggil tiap loop net task (tick-wake ~100 Hz).
 void net_tcp_tick(void)
 {
     if (g_tcb.state == TCP_CLOSED) {
+        return;
+    }
+    // C3c: selama ada segmen belum di-ACK, retransmisi (TCP_RTX_MAX) yang
+    // memutus koneksi macet; timeout menganggur hanya untuk koneksi diam.
+    if (g_tcb.state != TCP_SYN_RCVD && ktimer_pending(&g_tcp_rtx_timer)) {
         return;
     }
 
@@ -840,8 +928,7 @@ void net_tcp_tick(void)
     if (timer_ticks - g_tcb.last > limit) {
         net_tcp_tcb_send(g_tcb.snd_nxt, TCP_RST | TCP_ACK, 0);
         g_tcp_timeouts++;
-        g_tcb.state = TCP_CLOSED;
-        net_tcp_log("timeout, koneksi diputus (RST)");
+        net_tcp_close("timeout, koneksi diputus (RST)");
     }
 }
 
@@ -872,8 +959,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
 
         if (flags & TCP_RST) {
             if (seq == t->rcv_nxt) {
-                t->state = TCP_CLOSED;
-                net_tcp_log("RST dari peer, koneksi ditutup");
+                net_tcp_close("RST dari peer, koneksi ditutup");
             }
             return 1;
         }
@@ -893,12 +979,12 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             if (ack != t->snd_nxt) {
                 net_tcp_send_seg(t->mac, t->ip, t->lport, t->rport,
                                  ack, 0, TCP_RST, 0, 0, 0);
-                t->state = TCP_CLOSED;
-                net_tcp_log("ACK handshake salah, koneksi dibatalkan");
+                net_tcp_close("ACK handshake salah, koneksi dibatalkan");
                 return 1;
             }
 
             t->snd_una = ack;
+            net_tcp_rtx_progress();
             t->state = TCP_ESTABLISHED;
             g_tcp_conn_open++;
             net_tcp_log("ESTABLISHED");
@@ -917,6 +1003,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             t->buf_count -= acked;
             t->snd_una = ack;
             g_tcp_acked_bytes += acked;
+            net_tcp_rtx_progress();
         }
         if (seq_le(t->snd_una, ack)) {
             t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
@@ -998,8 +1085,11 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
         t->buf_head = 0;
         t->buf_count = 0;
+        t->rto = TCP_RTO_INIT;
+        t->retries = 0;
         t->state = TCP_SYN_RCVD;
         net_tcp_tcb_send(t->iss, TCP_SYN | TCP_ACK, 1);
+        net_tcp_rtx_arm();
         net_tcp_log("SYN diterima, SYN-ACK dikirim (SYN_RCVD)");
         return 1;
     }

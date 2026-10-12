@@ -54,7 +54,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Permukaan | Risiko utama | Pertahanan yang ada / direncanakan |
 |---|---|---|
 | Parser ARP/IP/ICMP/UDP | Baca di luar batas, panjang palsu | Validasi panjang ketat; fuzzing (R7) |
-| Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda |
+| Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda, retransmisi terbatas (5x lalu RST, C3c) |
 | Protokol perintah | Replay, penebakan nonce, banjir CHAL | HMAC-SHA256, nonce sekali pakai, tabel nonce 16 slot, maks 4 per IP, batas laju per IP dan global |
 | Nonce | Nonce dapat ditebak melemahkan challenge-response | Modul entropi + HMAC-DRBG (F1.8); menolak jika entropi belum cukup |
 | Parser FAT32 | Struktur disk rusak | Validasi BPB (RootEntryCount==0 dan FATSz16==0), batas jumlah sektor, kode error bukan halt |

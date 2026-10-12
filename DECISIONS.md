@@ -49,3 +49,9 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 ## 2026-10-12 (sebelum C3b, disetujui pengguna; mengikuti rencana C0)
 - **Segmen TCP di luar urutan dibuang**, tidak disimpan; balas ACK posisi kita dan peer mengirim ulang. Alasan: tanpa buffer penyusun ulang, lebih sedikit keadaan dan permukaan serangan. Akibat: throughput turun bila ada paket hilang/tertukar.
 - **Jendela yang diiklankan = ruang kosong buffer yang benar-benar ada** (`TCP_BUF_SIZE` 1024 byte dikurangi isi). Data yang melebihi jendela dipotong; jendela 0 diiklankan saat buffer penuh, dan pembaruan jendela dikirim saat ruang kembali >= MSS.
+
+## 2026-10-12 (C3c retransmisi TCP)
+- **Tidak ada salinan segmen**: yang dikirim ulang adalah byte `snd_una..snd_nxt` yang masih ada di `g_tcp_buf` (buffer baru dibebaskan saat di-ACK), atau SYN-ACK di SYN_RCVD. Satu `ktimer_t` statis untuk satu TCB, di luar `g_tcb`.
+- **RTO awal tetap 100 tick (1 s), dilipatduakan sampai 800 tick, maks 5 kirim ulang lalu RST** (jeda 1, 2, 4, 8, 8 s, putus setelah ~31 s). Tanpa pengukuran RTT (Karn/Jacobson) karena satu jaringan lokal dan stop-and-wait; batas 8 s supaya total mendekati timeout menganggur 30 s yang lama. ACK yang memajukan `snd_una` (termasuk sebagian) mengembalikan RTO ke awal.
+- **Timeout menganggur 30 s tidak berlaku selama ada data belum di-ACK**: koneksi seperti itu diputus oleh batas kirim ulang. SYN_RCVD tetap putus 5 s (SYN-ACK dikirim ulang pada 1 s dan 3 s).
+- **Belum**: persist timer (jendela peer 0 dengan data menunggu tetap bergantung pada timeout 30 s), fast retransmit, FIN kita (C3d).

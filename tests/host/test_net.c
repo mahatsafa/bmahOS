@@ -46,6 +46,12 @@ int entropy_get(uint8_t *out, uint32_t len)
     return 1;
 }
 
+// ktimer.c ikut dikompilasi (C3c); ktimer_selftest memanggil task_sleep.
+void task_sleep(uint64_t ticks)
+{
+    timer_ticks += ticks;
+}
+
 void entropy_event(uint32_t src, uint64_t extra)
 {
     (void)src;
@@ -883,6 +889,120 @@ static void test_tcp_stream(void)
     memset(&g_tcb, 0, sizeof(g_tcb));
 }
 
+// ---- C3c: retransmisi ----
+
+// Majukan satu tick lalu jalankan timer dan net_tcp_tick seperti loop net
+// task. Return jumlah frame yang dikirim pada tick itu.
+static int step(void)
+{
+    g_tx_n = 0;
+    timer_ticks++;
+    ktimer_run();
+    net_tcp_tick();
+    return g_tx_n;
+}
+
+// Jalankan sampai ada frame keluar (maks `max` tick). Return jumlah tick.
+static uint32_t run_until_tx(uint32_t max)
+{
+    for (uint32_t i = 1; i <= max; i++) {
+        if (step() > 0) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+static void test_tcp_retx(void)
+{
+    static uint8_t f[1700];
+    uint8_t big[600];
+    struct seg s;
+    uint64_t retx0 = g_tcp_retx, give0 = g_tcp_retx_giveup, to0 = g_tcp_timeouts;
+
+    for (size_t i = 0; i < sizeof(big); i++) {
+        big[i] = (uint8_t)(i * 31 + 7);
+    }
+
+    // SYN-ACK tidak di-ACK: dikirim ulang setelah 100 lalu 200 tick, sama persis.
+    memset(&g_tcb, 0, sizeof(g_tcb));
+    g_isn_set = 1;
+    g_isn = 0xFFFFFFFFu;
+    rx(f, mk_tcp_w(f, 500, 0, F_SYN, 0, 0, 4096));
+    g_isn_set = 0;
+    CHECK(g_tx_n == 1 && ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(run_until_tx(1000) == 100);
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == (F_SYN | F_ACK) && s.seq == 0xFFFFFFFFu && s.ack == 501);
+    CHECK(run_until_tx(1000) == 200 && tx_seg(0).flags == (F_SYN | F_ACK));
+    CHECK(g_tcp_retx == retx0 + 2);
+
+    // ACK handshake: timer berhenti, backoff kembali ke awal.
+    g_iss = 0xFFFFFFFFu;
+    g_pseq = 501;
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 4096));
+    CHECK(g_tcb.state == TCP_ESTABLISHED && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tcb.rto == TCP_RTO_INIT && g_tcb.retries == 0);
+    // Diam tanpa data belum di-ACK: timeout menganggur biasa (RST setelah 3000 tick).
+    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1 && (tx_seg(0).flags & F_RST));
+    CHECK(g_tcb.state == TCP_CLOSED && g_tcp_timeouts == to0 + 1);
+
+    // Data tidak di-ACK: kirim ulang setelah 100, 200, 400, 800, 800 tick (isi
+    // dan seq sama, melewati 2^32), lalu RST setelah 800 tick lagi. Total
+    // 3100 tick > timeout menganggur 3000: timeout itu tidak berlaku.
+    tcp_open(0xFFFFFFF0u, 9000, 4096);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, big, 20, 4096));
+    g_pseq += 20;
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 20);
+    static const uint32_t gaps[5] = { 100, 200, 400, 800, 800 };
+    int same = 1;
+    for (int i = 0; i < 5; i++) {
+        uint32_t g = run_until_tx(2000);
+        s = tx_seg(0);
+        same &= g == gaps[i] && g_tx_n == 1 && s.seq == g_iss + 1 && s.ack == g_pseq &&
+                s.len == 20 && memcmp(s.data, big, 20) == 0 && s.flags == (0x08 | F_ACK);
+    }
+    CHECK(same);
+    CHECK(run_until_tx(2000) == 800);
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == (F_RST | F_ACK) && s.seq == g_iss + 21);
+    CHECK(g_tcb.state == TCP_CLOSED && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tcp_retx_giveup == give0 + 1 && g_tcp_timeouts == to0 + 1);
+    CHECK(run_until_tx(5000) == 0);
+
+    // ACK sebagian setelah 2 kirim ulang: backoff kembali ke 100 tick, yang
+    // dikirim ulang hanya sisa yang belum di-ACK.
+    tcp_open(1000, 2000, 4096);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, big, 600, 4096));
+    g_pseq += 600;
+    CHECK(tx_seg(0).len == TCP_MSS);
+    CHECK(run_until_tx(1000) == 100 && run_until_tx(1000) == 200);
+    uint32_t una = g_iss + 1 + 100;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 0 && g_tcb.retries == 0 && ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(run_until_tx(1000) == 100);
+    s = tx_seg(0);
+    CHECK(s.seq == una && s.len == TCP_MSS - 100 && memcmp(s.data, big + 100, TCP_MSS - 100) == 0);
+    // ACK penuh: sisa 64 byte dikirim, timer mulai lagi dari 100 tick.
+    una = g_iss + 1 + TCP_MSS;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.seq == una && s.len == 64 && g_tcb.rto == TCP_RTO_INIT);
+    CHECK(run_until_tx(1000) == 100 && tx_seg(0).len == 64);
+    // ACK semua: tidak ada lagi yang dikirim ulang.
+    rx(f, mk_tcp_w(f, g_pseq, una + 64, F_ACK, 0, 0, 4096));
+    CHECK(g_tcb.buf_count == 0 && !ktimer_pending(&g_tcp_rtx_timer));
+    // RST dari peer selagi data menunggu ACK: timer dibatalkan.
+    rx(f, mk_tcp_w(f, g_pseq, una + 64, F_ACK, big, 5, 4096));
+    g_pseq += 5;
+    CHECK(ktimer_pending(&g_tcp_rtx_timer));
+    rx(f, mk_tcp_w(f, g_pseq, 0, F_RST, 0, 0, 0));
+    CHECK(g_tcb.state == TCP_CLOSED && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(run_until_tx(3000) == 0);
+    CHECK(g_tx_bad == 0);
+    memset(&g_tcb, 0, sizeof(g_tcb));
+}
+
 int main(void)
 {
     test_checksum();
@@ -892,6 +1012,7 @@ int main(void)
     test_tcp();
     test_tcp_send();
     test_tcp_stream();
+    test_tcp_retx();
     test_limits();
     build_templates();
     test_truncation();
