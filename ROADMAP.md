@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. Berikutnya C3d.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. Berikutnya C4.
 
 ## 4. Templat tahap
 
@@ -119,7 +119,12 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   (jeda 100/200/400/800/800, RST, ACK sebagian); rawnet membuang ACK: SYN-ACK ulang ~1 s, data ulang 1 s lalu 2 s.
   Retransmisi hanya terbukti di QEMU (Windows tidak bisa membuang ACK). Sebelumnya PIT-1 (c30e268): tick QEMU
   ternyata 200/s (PIT mode 3), kini mode 2 = 100/s. Belum: persist timer, FIN kita (C3d).
-- [ ] **C3d** Penutupan: FIN dua arah, TIME_WAIT pendek, RST untuk keadaan salah. Tidak ada koneksi tersangkut.
+- [x] **C3d** (2026-10-12, make test 76 -> 87, PROD 75 -> 86, VMware lulus: TcpClient beruntun jeda 0,3 s, FIN setelah diam 30 s) Penutupan: FIN dua arah, TIME_WAIT pendek, RST untuk keadaan salah. Tidak ada koneksi tersangkut.
+  Hasil (76ad896): FIN peer -> CLOSE_WAIT -> FIN|ACK setelah echo habis dan di-ACK (LAST_ACK) -> CLOSED, port langsung
+  bebas. Diam 30 s dengan buffer kosong -> FIN (FIN_WAIT_1 -> FIN_WAIT_2 maks 10 s -> TIME_WAIT 2 s); CLOSING untuk tutup
+  bersamaan. FIN dikirim ulang lewat timer C3c (5x lalu RST). Data setelah FIN peer/FIN kita -> RST; RST di TIME_WAIT
+  diabaikan (RFC 1337). Setiap keadaan punya batas waktu atau retransmisi berujung RST. Metrics `tcp_close_ok`,
+  `tcp_rst_state`, `tcp_state`. Belum: persist timer (data tertahan jendela 0 tetap RST setelah 30 s).
 - [ ] **C4** Echo TCP port 7. Lulus: kirim 1 MB, terima 1 MB identik (bandingkan hash).
 - [ ] **C5a** Batas SYN per sumber dan tabel koneksi terbatas.
 - [ ] **C5b** Timeout koneksi menganggur dan setengah terbuka.
