@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. Berikutnya C4.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. Berikutnya C5a.
 
 ## 4. Templat tahap
 
@@ -125,7 +125,12 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   bersamaan. FIN dikirim ulang lewat timer C3c (5x lalu RST). Data setelah FIN peer/FIN kita -> RST; RST di TIME_WAIT
   diabaikan (RFC 1337). Setiap keadaan punya batas waktu atau retransmisi berujung RST. Metrics `tcp_close_ok`,
   `tcp_rst_state`, `tcp_state`. Belum: persist timer (data tertahan jendela 0 tetap RST setelah 30 s).
-- [ ] **C4** Echo TCP port 7. Lulus: kirim 1 MB, terima 1 MB identik (bandingkan hash).
+- [x] **C4** (2026-10-13, make test 87 -> 88, PROD 86 -> 87, VMware lulus: PowerShell 1 MB dalam 117 s, sha256 sama) Echo TCP port 7. Lulus: kirim 1 MB, terima 1 MB identik (bandingkan hash).
+  Hasil (a1cc407): `tests/tcp-echo.py` (klien Linux lewat slirp, kirim dan terima bersamaan, SHA-256) di `make test`:
+  QEMU ~31 s dev, ~11 s PROD. Segmen koneksi aktif tidak lagi kena batas UDP (20/s per IP, 100/s global), ganti batas
+  per koneksi 2000 segmen/s; ACK untuk segmen yang tidak diterima maks 10/s (keputusan disetujui pengguna, DECISIONS).
+  Interop: Windows TcpClient dan klien Python Linux lulus; `nc` Linux belum (CentOS tidak di VMnet2). Throughput
+  rendah (stop-and-wait, satu segmen per RTT) sesuai desain C0.
 - [ ] **C5a** Batas SYN per sumber dan tabel koneksi terbatas.
 - [ ] **C5b** Timeout koneksi menganggur dan setengah terbuka.
 - [ ] **C5c** (opsional) SYN cookie.
