@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. Berikutnya C3c.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. Berikutnya C3d.
 
 ## 4. Templat tahap
 
@@ -111,8 +111,14 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   dibalas ACK dan diabaikan, ACK lama diabaikan; `seq_lt`/`seq_le`. Metrics `tcp_tx_bytes`, `tcp_acked_bytes`.
   Uji host: putaran 2^32 (ISN kita dan peer), jendela 0/penuh/pembaruan, aliran 20 ribu byte utuh; rawnet: 600 byte
   -> 536 + 64. Belum: retransmisi (data hilang = macet sampai timeout 30 s), persist timer jendela 0, FIN kita.
-- [ ] **C3c** Retransmisi: simpan segmen belum di-ACK, kirim ulang saat timer habis, RTO awal konstan lalu
+- [x] **C3c** (2026-10-12, make test 70 -> 76, PROD 69 -> 75, VMware lulus: regresi echo 1000 byte, tcp_retx 0) Retransmisi: simpan segmen belum di-ACK, kirim ulang saat timer habis, RTO awal konstan lalu
   eksponensial. Uji dengan membuang paket sengaja.
+  Hasil (aee254a): SYN-ACK dan byte `snd_una..snd_nxt` dikirim ulang langsung dari `g_tcp_buf` (tanpa salinan
+  segmen), satu `ktimer_t`; RTO 100 tick, x2 sampai 800, maks 5 lalu RST; ACK yang memajukan `snd_una` mengembalikan
+  RTO. Timeout diam 30 s tidak berlaku selama ada data belum di-ACK. Metrics `tcp_retx`, `tcp_retx_giveup`. Uji host
+  (jeda 100/200/400/800/800, RST, ACK sebagian); rawnet membuang ACK: SYN-ACK ulang ~1 s, data ulang 1 s lalu 2 s.
+  Retransmisi hanya terbukti di QEMU (Windows tidak bisa membuang ACK). Sebelumnya PIT-1 (c30e268): tick QEMU
+  ternyata 200/s (PIT mode 3), kini mode 2 = 100/s. Belum: persist timer, FIN kita (C3d).
 - [ ] **C3d** Penutupan: FIN dua arah, TIME_WAIT pendek, RST untuk keadaan salah. Tidak ada koneksi tersangkut.
 - [ ] **C4** Echo TCP port 7. Lulus: kirim 1 MB, terima 1 MB identik (bandingkan hash).
 - [ ] **C5a** Batas SYN per sumber dan tabel koneksi terbatas.
