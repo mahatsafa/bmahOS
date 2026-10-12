@@ -99,7 +99,7 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
 
 ### Fase 2: TCP selesai
 
-- [ ] **C3a** (2026-10-12, make test 64 -> 66, PROD 63 -> 65) Timer API kernel (callback pada tick ke-N, bisa dibatalkan) dan `sleep`.
+- [x] **C3a** (2026-10-12, make test 64 -> 66, PROD 63 -> 65, VMware lulus: telat_maks 5 tick, sleep 20 -> 21) Timer API kernel (callback pada tick ke-N, bisa dibatalkan) dan `sleep`.
   `kernel/ktimer.c`: `ktimer_start/cancel/pending/run`, `ktimer_t` milik pemanggil (tanpa heap), senarai terurut
   deadline, callback di loop net task (konteks task, bukan IRQ). `sleep` sudah ada sebagai `task_sleep` (sched.c);
   C3a menambah uji ketepatannya. Self-test boot (urutan, batal, pasang ulang, telat <= 10 tick, sleep 20 -> 20..30 tick),
