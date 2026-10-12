@@ -372,6 +372,9 @@ static void net_task_entry(void)
     serial_write("\r\n");
     irq_restore(lf);
 
+    // C3a: butuh interrupt aktif (memakai task_sleep), ~0,5 s.
+    ktimer_selftest();
+
     for (;;) {
         static int irq_reported = 0;
 
@@ -396,6 +399,7 @@ static void net_task_entry(void)
 
         net_tcp_tick();
         entropy_poll();
+        ktimer_run();
         sem_wait(&g_net_rx_sem);
     }
 }

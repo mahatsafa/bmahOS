@@ -152,7 +152,10 @@ sys.exit(0 if n and 0.45 <= ones / n <= 0.55 else 1)"'
 # di QEMU dengan KVM (CI) semua perintah bisa jatuh dalam satu jendela 1 s.
 # Jeda > 1 s memulai jendela baru sebelum rangkaian perintah berikutnya.
 sleep 1.2
-check "metrics entropy_ready=1" '$BM metrics | grep -q "^entropy_ready=1$"'
+METRICS="$($BM metrics)"   # sekali saja: tiap perintah = 2 datagram dari jatah 20/s
+check "metrics entropy_ready=1" 'echo "$METRICS" | grep -q "^entropy_ready=1$"'
+check "timer self-test PASS (C3a)" 'grep -aq "^Timer: self-test PASS" "$LOG"'
+check "metrics ktimer_fired >= 5"  '[ "$(echo "$METRICS" | sed -n "s/^ktimer_fired=//p")" -ge 5 ]'
 
 check "CPUID: vendor dilaporkan"  'grep -aq "CPU: vendor=[^ ]" "$LOG"'
 check "CPUID: semua kunci fitur" 'grep -a "CPU: fitur" "$LOG" | grep -q "rdrand=[01] rdseed=[01] nx=[01] smep=[01] smap=[01] umip=[01] pcid=[01] apic=[01] x2apic=[01] tsc=[01] tsc_invarian=[01] sse2=[01]"'

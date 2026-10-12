@@ -105,7 +105,7 @@ HOST_BUILD  := $(BUILD_DIR)/host
 HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host
-HOST_TESTS  := crypto kprintf net auth entropy
+HOST_TESTS  := crypto kprintf net auth entropy ktimer
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_deps_net     := $(KERNEL_DIR)/net.c   # di-#include oleh test_net.c (akses fungsi static)
@@ -113,6 +113,8 @@ host_srcs_auth    := $(KERNEL_DIR)/crypto.c
 host_deps_auth    := $(KERNEL_DIR)/auth.c  # di-#include oleh test_auth.c
 host_srcs_entropy := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/kprintf.c
 host_deps_entropy := $(KERNEL_DIR)/entropy.c   # di-#include oleh test_entropy.c
+host_srcs_ktimer  := $(KERNEL_DIR)/kprintf.c
+host_deps_ktimer  := $(KERNEL_DIR)/ktimer.c    # di-#include oleh test_ktimer.c
 
 .SECONDEXPANSION:
 $(HOST_BUILD)/test_%: tests/host/test_%.c tests/host/stubs.c tests/host/test.h tests/host/drbg_vectors.h $(HDRS) $$(host_srcs_$$*) $$(host_deps_$$*)

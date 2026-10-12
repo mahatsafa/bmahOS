@@ -588,6 +588,24 @@ struct cpu_features {
 extern struct cpu_features g_cpu;
 void cpu_features_init(void);
 
+// ---- ktimer.c (C3a: timer dengan callback, bisa dibatalkan) ----
+// Callback dijalankan ktimer_run() di loop net task (konteks task, bukan IRQ).
+typedef struct ktimer {
+    uint64_t deadline;   // tick absolut
+    void (*fn)(void *arg);
+    void *arg;
+    int armed;
+    struct ktimer *next;
+} ktimer_t;
+void ktimer_start(ktimer_t *t, uint64_t ticks, void (*fn)(void *arg), void *arg);
+int ktimer_cancel(ktimer_t *t);
+int ktimer_pending(const ktimer_t *t);
+int ktimer_run(void);
+void ktimer_selftest(void);
+extern uint64_t g_ktimer_fired;
+extern uint64_t g_ktimer_cancelled;
+extern uint64_t g_ktimer_late_max;
+
 // ---- entropy.c (F1.8: kolam entropi + HMAC-DRBG SP 800-90A) ----
 // entropy_get() = 0 berarti entropi belum cukup: pemanggil WAJIB menolak.
 #define ENTROPY_SRC_TIMER   0

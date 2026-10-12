@@ -39,3 +39,9 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Pencarian nonce tanpa `break`**: semua 16 slot selalu dibandingkan. Sebelumnya hanya posisi slot yang cocok yang bocor lewat waktu (bukan isi nonce, dan nonce dikirim terbuka), tetapi biayanya kecil dan aturannya jadi sederhana.
 - **Bukti di kode mesin, bukan hanya sumber**: `make test` membongkar `ct_memeq` di kernel.elf dan menuntut tepat satu lompatan bersyarat (ulangan loop) tanpa call. Sengaja ketat untuk build tanpa `-O`; dengan `-O2` gcc menambah cabang `n == 0` (masih aman) dan cek gagal, yang memaksa audit ulang. Alternatif "<= 2 lompatan" ditolak karena versi keluar-awal pada `-O2` juga lolos.
 - **Tidak diubah**: penolakan format/nonce/kedaluwarsa terjadi sebelum HMAC dihitung (waktunya bergantung pada data publik penyerang sendiri); `auth_hexval` bercabang pada karakter hex kiriman (publik).
+
+## 2026-10-12 (C3a timer kernel)
+- **Callback dijalankan di loop net task, bukan di IRQ timer**, karena konsumen pertamanya (retransmisi TCP, C3c) mengirim paket dan menulis log; IRQ harus pendek. Akibat: timer hanya dilayani bila net task hidup (tanpa NIC tidak ada), dan bisa terlambat saat net task sibuk (dipantau `ktimer_late_max`). Alternatif task timer khusus ditunda sampai ada konsumen di luar jaringan.
+- **`ktimer_t` milik pemanggil + senarai terurut** (sisip O(n)), tanpa heap dan tanpa tabel tetap; batas atas = jumlah `ktimer_t` di kode. Alternatif timer wheel ditolak: jumlah timer kecil.
+- **`ticks = 0` dianggap 1** supaya callback yang memasang ulang dirinya tidak membuat `ktimer_run` berputar selamanya.
+- **`sleep` tidak ditulis ulang**: `task_sleep` (sched.c) sudah membangunkan task lewat `wake_at_tick` di `schedule()`; C3a hanya menambah uji ketepatannya (20 tick -> 20..30; QEMU 20-21). Batas telat self-test 10 tick karena net task bergiliran round-robin dengan task lain (QEMU dev: 2 tick).

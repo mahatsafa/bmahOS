@@ -280,6 +280,9 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("entropy_jitter_bits", g_entropy_jitter_bits);
         cmd_kv("entropy_denied", g_entropy_denied);
         cmd_kv("drbg_reseeds", g_drbg_reseeds);
+        cmd_kv("ktimer_fired", g_ktimer_fired);
+        cmd_kv("ktimer_cancelled", g_ktimer_cancelled);
+        cmd_kv("ktimer_late_max", g_ktimer_late_max);
         cmd_kv("auth_ok", g_auth_ok);
         cmd_kv("auth_nonaktif", g_auth_denied[1]);
         cmd_kv("auth_format", g_auth_denied[2]);

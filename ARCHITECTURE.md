@@ -34,6 +34,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `ahci.c` | inisialisasi port, `ahci_read` (polling, satu frame) | pci, vmm, pmm |
 | `fat32.c` | validasi BPB, root directory, cluster chain, `fat32_find_file`/`fat32_load_file` | ahci |
 | `sched.c` | `task_t`, scheduler round-robin preemptive, sleep/wait/exit, semaphore, task user, `spawn` | vmm, pmm, `task.S` |
+| `ktimer.c` | timer dengan callback (`ktimer_start/cancel/run`), senarai terurut deadline, callback dijalankan loop net task; self-test boot | sched (`task_sleep` di self-test) |
 | `e1000.c` | driver Intel 8254x: ring TX/RX (64 slot), kirim, eksperimen GSI INTx, statistik | pci, vmm, apic |
 | `net.c` | ARP, IPv4, ICMP echo, UDP (echo 7777), batas laju, TCP (port 7), dispatch RX, `net_poll` | e1000, auth |
 | `crypto.c` | SHA-256, HMAC-SHA256, `ct_memeq` (perbandingan waktu-konstan), self-test vektor resmi | — |
@@ -97,6 +98,7 @@ dengan no-op (instruksi itu fault di user mode); build kernel tidak berubah.
 | `test_crypto` | SHA-256 (FIPS 180-4, sejuta 'a', panjang 0..200 + semua titik potong update), HMAC RFC 4231 kasus 1-7, panjang kunci 0..130, `ct_memeq` (panjang 0..64, tiap bit, pointer tidak sejajar) |
 | `test_kprintf` | `ksnprintf` dibandingkan `snprintf` libc untuk semua ukuran buffer, `%p`, NULL, format tak dikenal, self-test |
 | `test_net` | checksum (RFC 1071, acak 0..1500 byte), ARP, ICMP, UDP echo/7778, TCP RST + handshake port 7, batas ukuran, frame dipotong di semua panjang, 200 ribu frame acak (checksum dibetulkan); tiap frame keluar dicek checksum-nya |
+| `test_ktimer` | urutan deadline (sama = urutan pasang), batal, pasang ulang (juga dari callback, `ticks = 0` = 1), batal dari callback, 200 ribu operasi acak dibandingkan model |
 | `test_entropy` | HMAC-DRBG vs 32 vektor CAVP, estimator (teratur = 0 bit), tolak sebelum siap, siap tepat setelah 256 tick berjitter, batas kolam cepat, jeda reseed, 100 ribu nonce unik, FIPS 140-2 (monobit, poker, runs) atas keluaran |
 | `test_auth` | `auth_load_key`, jalur counter, jalur nonce (TTL, sekali pakai, slot tidak dibebaskan saat HMAC salah), `net_cmd_handle` (CHAL, batas 4 nonce per IP), potongan + 100 ribu pesan acak |
 
