@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. Berikutnya C5b.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. C5b (2026-10-13): timeout hanya diperpanjang kemajuan. Berikutnya C5c (opsional).
 
 ## 4. Templat tahap
 
@@ -138,7 +138,7 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   (tabel laju SYN terpisah tidak dibuat, DECISIONS). Metrics `tcp_conn_active`. host-test net 195 -> 220.
   VMware: 2 koneksi bersamaan echo benar, ke-3 ditolak (Windows mengulang SYN 5x dalam 2,2 s). Penggusuran dan
   banjir SYN 20 IP hanya terbukti di QEMU (Windows satu IP).
-- [ ] **C5b** Timeout koneksi menganggur dan setengah terbuka.
+- [x] **C5b** (2026-10-13, 191d616, make test 99 -> 101, PROD 98 -> 100, VMware lulus) Timeout koneksi menganggur dan setengah terbuka.
   Hasil: timeout C2/C3d sudah ada (SYN_RCVD 5 s, diam 30 s -> FIN, FIN_WAIT_2 10 s, TIME_WAIT 2 s,
   kirim ulang 5x -> RST), tetapi `last` diperbarui oleh segmen apa pun yang cocok 4-tuple, jadi ACK duplikat,
   keepalive, ACK jendela 0, SYN ulang, atau RST seq salah menahan slot tanpa batas. Kini hanya kemajuan
