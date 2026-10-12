@@ -54,7 +54,8 @@ Build:
 Flag uji (bisa digabung):
 
     NOIRQ=1             # jaringan tanpa interrupt E1000 (hanya dibangunkan tiap tick)
-    NORDRAND=1          # nonce tanpa rdrand (uji jalur cadangan sumber acak)
+    NORDRAND=1          # tanpa rdseed/rdrand: kolam entropi hanya dari jitter TSC (siap setelah beberapa detik)
+    NOENTROPY=1         # kolam entropi tidak pernah dikredit: CHAL dan SYN port 7 harus ditolak
     NOKBDRESET=1        # reboot tanpa 8042 (uji jalur cadangan triple fault)
     NOACPIRESET=1       # reboot tanpa register reset ACPI (uji jalur 8042)
     LEGACYCTR=1         # nyalakan lagi jalur counter lama (transisi; lihat di bawah)
@@ -98,7 +99,8 @@ memakai jatah global, jadi banjir dari satu IP tidak membuat perintah dari IP la
 
 ### Autentikasi (jalur nonce)
 
-1. Kirim `CHAL`; balasan `nonce: <32 hex>` (16 byte acak dari SHA-256 atas rdrand, TSC, tick, RTC, pool).
+1. Kirim `CHAL`; balasan `nonce: <32 hex>` (16 byte dari HMAC-DRBG SP 800-90A, lihat "Entropi" di bawah).
+   Sebelum kolam entropi cukup, balasannya `ERR: entropi belum cukup, coba lagi`.
 2. Kirim `<nonce> <perintah> <hmac-hex-64>`, `hmac` = HMAC-SHA256 (kunci dari `KEY.TXT`) atas string
    `<nonce> <perintah>`.
 
@@ -126,6 +128,15 @@ Counter `priv_*` menghitung semua perintah lewat jalur nonce, bukan hanya `pping
 
 Kode tolak (juga dihitung di baris `priv:` perintah `stats`): nonaktif, format, nonce tidak dikenal/
 sudah dipakai, kedaluwarsa, hmac salah.
+
+### Entropi (nonce dan ISN TCP)
+
+Kolam SHA-256 mengumpulkan TSC saat interrupt timer, interrupt E1000, dan frame RX (dikredit maksimal
+1 bit per kejadian, 0 bila waktunya teratur), plus rdseed/rdrand bila CPU punya (dikredit penuh,
+seperti default Linux). Setelah 256 bit, kolam meng-seed HMAC-DRBG (SHA-256, self-test vektor CAVP saat
+boot), lalu reseed paling cepat tiap 60 detik. Sebelum itu `CHAL` ditolak dan SYN ke port 7 dibuang.
+Metrics: `entropy_ready`, `entropy_ready_tick`, `entropy_events`, `entropy_hw_bits`,
+`entropy_jitter_bits`, `entropy_denied`, `drbg_reseeds`, `chal_noentropy`, `tcp_noentropy`.
 
 ### Jalur counter lama (dimatikan)
 
@@ -176,7 +187,9 @@ diterima tapi tidak diperlukan lagi. Kode keluar: 0 sukses, 1 balasan `ERR`, 2 t
   menghabiskan jatah global (dan menggusur slot tabel 8 sumber), sehingga perintah sah ikut terbuang
 - Tabel nonce 16 slot (maks 4 per IP): banjir `CHAL` dari satu IP tidak lagi menggusur nonce IP lain,
   tetapi banjir dari 16 IP palsu atau lebih masih bisa (penolakan layanan ringan)
-- Tanpa rdrand, nonce hanya bergantung pada TSC, tick, RTC, dan pool (kualitas entropi belum dinilai)
+- Entropi: rdseed/rdrand dipercaya penuh bila ada. Tanpa itu kolam bergantung pada jitter TSC; di VM
+  hypervisor mengendalikan TSC dan interrupt, jadi kredit jitter di VM tidak mewakili perangkat keras
+  asli (estimator hanya menolak pola yang jelas teratur, bukan pengukuran entropi yang sebenarnya)
 - Reset ACPI hanya mendukung register reset di ruang I/O (umum: port `0xCF9`); ruang memori/PCI
   belum, reboot lalu memakai 8042
 - GSI interrupt E1000 (19) adalah hasil pengamatan di VMware, bukan nilai universal

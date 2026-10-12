@@ -226,6 +226,7 @@ uint64_t g_auth_denied[5] = {0, 0, 0, 0, 0};
 // Net-18A: [1] nonaktif [2] format [3] nonce tak dikenal/dipakai
 // [4] kedaluwarsa [5] hmac salah
 uint64_t g_chal_issued = 0;
+uint64_t g_chal_noentropy = 0;
 uint64_t g_chal_ip_recycled = 0;
 uint64_t g_priv_ok = 0;
 uint64_t g_priv_denied[6] = {0, 0, 0, 0, 0, 0};
@@ -281,6 +282,7 @@ uint64_t g_tcp_conn_open = 0;
 uint64_t g_tcp_busy = 0;
 uint64_t g_tcp_rx_bytes = 0;
 uint64_t g_tcp_timeouts = 0;
+uint64_t g_tcp_noentropy = 0;
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -857,9 +859,14 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             return 0;
         }
 
-        uint8_t isn[16];
+        uint8_t isn[4];
 
-        priv_nonce_generate(isn);
+        // F1.8: tanpa entropi cukup SYN dibuang (bukan RST); peer mengulang.
+        if (!entropy_get(isn, sizeof(isn))) {
+            g_tcp_noentropy++;
+            net_tcp_log("SYN dibuang: entropi belum cukup");
+            return 1;
+        }
 
         for (int i = 0; i < 6; i++) {
             t->mac[i] = buf[6 + i];
@@ -1184,6 +1191,7 @@ int net_poll(void)
             (volatile uint8_t *)(g_e1000_rx_buf_phys[g_e1000_rx_next] + hhdm_offset);
 
         g_net_rx_frames++;
+        entropy_event(ENTROPY_SRC_RX, len);
 
         if (desc[0x0D] == 0) {
             net_rx_dispatch(buf, len);

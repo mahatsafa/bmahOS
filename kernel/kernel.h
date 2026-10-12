@@ -405,6 +405,7 @@ extern uint64_t g_net_rx_errors;
 extern uint64_t g_auth_ok;
 extern uint64_t g_auth_denied[5];
 extern uint64_t g_chal_issued;
+extern uint64_t g_chal_noentropy;
 extern uint64_t g_chal_ip_recycled;
 extern uint64_t g_priv_ok;
 extern uint64_t g_priv_denied[6];
@@ -421,6 +422,7 @@ extern uint64_t g_tcp_conn_open;
 extern uint64_t g_tcp_busy;
 extern uint64_t g_tcp_rx_bytes;
 extern uint64_t g_tcp_timeouts;
+extern uint64_t g_tcp_noentropy;
 extern uint64_t g_e1000_mpc;
 extern uint64_t g_e1000_rnbc;
 extern uint64_t g_net_log_muted;
@@ -433,7 +435,6 @@ int net_poll(void);
 // ---- kernel.c (dipakai modul lain) ----
 #define NET_UDP_CMD_PORT 7778
 extern volatile uint64_t timer_ticks;
-void priv_nonce_generate(uint8_t out[16]);
 void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len);
 
 // ---- auth.c (kunci, HMAC, nonce, perintah berprivilege): tanpa simbol baru ----
@@ -585,6 +586,38 @@ struct cpu_features {
 };
 extern struct cpu_features g_cpu;
 void cpu_features_init(void);
+
+// ---- entropy.c (F1.8: kolam entropi + HMAC-DRBG SP 800-90A) ----
+// entropy_get() = 0 berarti entropi belum cukup: pemanggil WAJIB menolak.
+#define ENTROPY_SRC_TIMER   0
+#define ENTROPY_SRC_NIC_IRQ 1
+#define ENTROPY_SRC_RX      2
+#define ENTROPY_SRC_COUNT   3
+typedef struct {
+    uint8_t k[32];
+    uint8_t v[32];
+    uint64_t reseed_counter;
+} hmac_drbg_t;
+void hmac_drbg_instantiate(hmac_drbg_t *d, const uint8_t *ent, uint32_t ent_len,
+                           const uint8_t *nonce, uint32_t nonce_len,
+                           const uint8_t *pers, uint32_t pers_len);
+void hmac_drbg_reseed(hmac_drbg_t *d, const uint8_t *ent, uint32_t ent_len,
+                      const uint8_t *add, uint32_t add_len);
+void hmac_drbg_generate(hmac_drbg_t *d, uint8_t *out, uint32_t out_len,
+                        const uint8_t *add, uint32_t add_len);
+int hmac_drbg_selftest(void);
+void entropy_init(void);
+void entropy_event(uint32_t src, uint64_t extra);
+void entropy_event_tsc(uint32_t src, uint64_t tsc, uint64_t extra);
+void entropy_poll(void);
+int entropy_get(uint8_t *out, uint32_t len);
+extern int g_entropy_ready;
+extern uint64_t g_entropy_ready_tick;
+extern uint64_t g_entropy_events;
+extern uint64_t g_entropy_jitter_bits;
+extern uint64_t g_entropy_hw_bits;
+extern uint64_t g_entropy_denied;
+extern uint64_t g_drbg_reseeds;
 
 // ---- kprintf.c (F1.6: kprintf, ksnprintf, ASSERT) ----
 // Format: %s %c %d %u %x %p %%, awalan 'l' = 64-bit untuk d/u/x.

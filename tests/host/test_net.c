@@ -26,11 +26,25 @@ void e1000_log_ip(volatile uint8_t *p)
     (void)p;
 }
 
-void priv_nonce_generate(uint8_t out[16])
+// entropy_get: byte tetap 0xA0.. (ISN yang bisa diperiksa), atau tolak
+// bila g_entropy_ok = 0 (kolam belum siap).
+static int g_entropy_ok = 1;
+
+int entropy_get(uint8_t *out, uint32_t len)
 {
-    for (int i = 0; i < 16; i++) {
+    if (!g_entropy_ok) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < len; i++) {
         out[i] = (uint8_t)(0xA0 + i);
     }
+    return 1;
+}
+
+void entropy_event(uint32_t src, uint64_t extra)
+{
+    (void)src;
+    (void)extra;
 }
 
 static int g_cmd_calls;
@@ -484,6 +498,17 @@ static void test_tcp(void)
     CHECK(g_tx_n == 1 && get32(g_tx[0] + 34 + 8) == 7007);
     CHECK(g_tcb.state == TCP_CLOSE_WAIT);
     CHECK(g_tx_bad == 0);
+
+    // Entropi belum cukup: SYN port 7 dibuang tanpa balasan (bukan RST),
+    // TCB tetap CLOSED; port tertutup tetap dibalas RST.
+    memset(&g_tcb, 0, sizeof(g_tcb));
+    g_entropy_ok = 0;
+    uint64_t ne0 = g_tcp_noentropy;
+    rx(f, mk_tcp(f, 4003, 7, 100, 0, F_SYN, ""));
+    CHECK(g_tx_n == 0 && g_tcb.state == TCP_CLOSED && g_tcp_noentropy == ne0 + 1);
+    rx(f, mk_tcp(f, 4003, 80, 100, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && (g_tx[0][34 + 13] & F_RST));
+    g_entropy_ok = 1;
 
     // Checksum TCP salah: dibuang dan dihitung.
     uint64_t bad0 = g_tcp_badsum;

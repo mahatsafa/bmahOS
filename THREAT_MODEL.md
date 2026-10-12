@@ -72,7 +72,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Ketahanan terhadap banjir paket | Sebagian: batas laju, batas nonce, boot aman tanpa NIC | C5, firewall (P4) |
 | Kerahasiaan balasan | **Tidak ada** (teks polos) | D8 |
 | Isolasi user/kernel | Ada: user mode, NX | R6, SMEP/SMAP bila CPU mendukung |
-| Entropi nonce | **Belum teruji** | F1.8 |
+| Entropi nonce | Ada (F1.8): kolam SHA-256 + HMAC-DRBG, tolak sebelum 256 bit; rdseed/rdrand dipercaya | Nilai ulang jitter di perangkat keras asli (H0) |
 | Otorisasi berbasis peran | Belum | D4 |
 | Audit | Belum | D5 |
 | Integritas update | Belum ada OTA | P7 |
@@ -85,6 +85,8 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 3. Balasan perintah berupa teks polos: penyerang di jalur bisa membaca, tetapi tidak bisa memalsukan perintah.
 4. Satu koneksi TCP: satu klien bisa menahan port 7 (diperbaiki di C3/C5).
 5. Kunci HMAC tersimpan di mesin dan di klien. Penyerang yang mendapat salah satunya mendapat kendali.
+6. Entropi (F1.8): rdseed/rdrand dipercaya penuh (CPU atau hypervisor jahat bisa mengatur nonce). Tanpa
+   itu, kredit jitter adalah perkiraan kasar; di VM jitter bisa diatur hypervisor.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

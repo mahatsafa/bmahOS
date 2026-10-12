@@ -203,10 +203,12 @@ void irq_handler(struct exception_context *context)
 
     if (irq_num == 0) {
         timer_ticks++;
+        entropy_event(ENTROPY_SRC_TIMER, 0);
         net_rx_tick_wake();
     }
 
     if (irq_num == 1) {
+        entropy_event(ENTROPY_SRC_NIC_IRQ, 0);
         e1000_irq_service();
     }
 

@@ -272,6 +272,14 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("tcp_dropped_busy", g_tcp_busy);
         cmd_kv("tcp_rx_bytes", g_tcp_rx_bytes);
         cmd_kv("tcp_timeout", g_tcp_timeouts);
+        cmd_kv("tcp_noentropy", g_tcp_noentropy);
+        cmd_kv("entropy_ready", (uint64_t)g_entropy_ready);
+        cmd_kv("entropy_ready_tick", g_entropy_ready_tick);
+        cmd_kv("entropy_events", g_entropy_events);
+        cmd_kv("entropy_hw_bits", g_entropy_hw_bits);
+        cmd_kv("entropy_jitter_bits", g_entropy_jitter_bits);
+        cmd_kv("entropy_denied", g_entropy_denied);
+        cmd_kv("drbg_reseeds", g_drbg_reseeds);
         cmd_kv("auth_ok", g_auth_ok);
         cmd_kv("auth_nonaktif", g_auth_denied[1]);
         cmd_kv("auth_format", g_auth_denied[2]);
@@ -279,6 +287,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("auth_replay", g_auth_denied[4]);
         cmd_kv("auth_counter_off", g_auth_ctr_off);
         cmd_kv("priv_chal", g_chal_issued);
+        cmd_kv("chal_noentropy", g_chal_noentropy);
         cmd_kv("chal_ip_recycled", g_chal_ip_recycled);
         cmd_kv("priv_ok", g_priv_ok);
         cmd_kv("priv_nonaktif", g_priv_denied[1]);

@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). Berikutnya F1.8.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. Berikutnya F1.9.
 
 ## 4. Templat tahap
 
@@ -72,7 +72,8 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   Lulus: `make test` tetap 50/50 setelah tiap commit.
 - [x] **F1.5** (2026-10-11, make test 50 -> 53) Modul CPUID/fitur: laporan fitur CPU (rdrand, NX, SMEP/SMAP, APIC, dll.) di serial.
   Catatan: `nx_init` dan `priv_have_rdrand` masih memanggil CPUID sendiri; dialihkan ke `g_cpu` lewat refactor terpisah
-  (paling lambat F1.8, yang butuh info rdrand/rdseed).
+  (paling lambat F1.8, yang butuh info rdrand/rdseed). Selesai di F1.8: `nx_init` memakai `g_cpu.nx`,
+  `priv_have_rdrand` dihapus bersama generator nonce lama.
 - [x] **F1.6** (2026-10-11, make test 53 -> 55) `kprintf` minimal (`%s %d %u %x %p`) dan `ASSERT()` yang mencetak file:baris.
   Juga `%c %%`, awalan `l` (64-bit), `ksnprintf` (semantik snprintf), atribut format printf, self-test 12 kasus,
   flag `ASSERTTEST=1`. Kode lama belum dialihkan ke `kprintf` (refactor terpisah bila perlu).
@@ -81,11 +82,14 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   Juga parser perintah (`auth.c`), frame dipotong di semua panjang + fuzz acak, job CI `host-test`.
   Kernel tidak berubah (`kernel.elf` identik byte-per-byte, default dan PROD); guard `BMAHOS_HOST_TEST`
   di `kernel.h` hanya untuk cli/sti dan port I/O. Rincian di `ARCHITECTURE.md` bagian 6.
-- [ ] **F1.8** Modul entropi: pengumpul (rdrand bila CPUID mengizinkan, jitter TSC antar-interrupt, timing RX)
+- [x] **F1.8** (2026-10-12, make test 55 -> 61 (PROD 60), host-test + test_entropy, VMware lulus) Modul entropi: pengumpul (rdrand bila CPUID mengizinkan, jitter TSC antar-interrupt, timing RX)
   ke kolam yang dicampur SHA-256, lalu HMAC-DRBG (NIST SP 800-90A) untuk nonce. Sebelum kolam cukup,
   perintah yang butuh nonce **menolak**. Lulus: nonce tidak berulang, uji statistik sederhana lulus,
   perilaku "belum cukup entropi" teruji. Catatan: di VM jitter cenderung teratur, jangan menganggap
   hasil VM mewakili perangkat keras asli.
+  Hasil: `kernel/entropy.c`, self-test CAVP saat boot, flag `NOENTROPY=1` (mode tolak) dan `NORDRAND=1` (siap dari
+  jitter, tick ~256 di QEMU). VMware (Zen 2): siap di tick 0 dari rdseed; estimator jitter mengkredit hampir tiap tick
+  (2479 bit dalam 2478 tick), bukti bahwa kredit jitter di VM tidak bisa dipercaya sebagai ukuran entropi.
 - [ ] **F1.9** Audit perbandingan HMAC: pastikan waktu-konstan (tidak keluar lebih awal saat byte berbeda).
 
 ### Fase 2: TCP selesai

@@ -15,6 +15,7 @@ uint16_t g_acpi_reset_port = 0;
 uint8_t g_acpi_reset_value = 0;
 uint64_t g_auth_ctr_off = 0;
 uint64_t g_chal_issued = 0;
+uint64_t g_chal_noentropy = 0;
 uint64_t g_chal_ip_recycled = 0;
 uint64_t g_priv_ok = 0;
 uint64_t g_priv_denied[6];
@@ -68,6 +69,23 @@ void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl)
     (void)req;
     (void)ihl;
     g_replies++;
+}
+
+// entropy_get: nonce unik dari counter (urutan bisa diulang), atau tolak
+// bila g_entropy_ok = 0.
+static int g_entropy_ok = 1;
+static uint64_t g_entropy_ctr;
+
+int entropy_get(uint8_t *out, uint32_t len)
+{
+    if (!g_entropy_ok) {
+        return 0;
+    }
+    g_entropy_ctr++;
+    for (uint32_t i = 0; i < len; i++) {
+        out[i] = (uint8_t)(g_entropy_ctr >> (8 * (i % 8))) ^ (uint8_t)(i * 37);
+    }
+    return 1;
 }
 
 // Kunci dari "disk": fat32_find_file/fat32_load_file membaca g_disk_key.
@@ -402,6 +420,20 @@ static void test_handle(void)
         used += g_priv_nonces[i].in_use;
     }
     CHECK(used == PRIV_NONCE_PER_IP);
+
+    // Entropi belum cukup: CHAL ditolak, tabel tidak disentuh.
+    memset(g_priv_nonces, 0, sizeof(g_priv_nonces));
+    put_nonce(5, 0x55, nh);
+    g_entropy_ok = 0;
+    uint64_t ne0 = g_chal_noentropy, ch0 = g_chal_issued;
+    CHECK_STR(handle("CHAL"), "ERR: entropi belum cukup, coba lagi\n");
+    CHECK(g_chal_noentropy == ne0 + 1 && g_chal_issued == ch0 && g_replies == 1);
+    used = 0;
+    for (int i = 0; i < PRIV_NONCE_SLOTS; i++) {
+        used += g_priv_nonces[i].in_use;
+    }
+    CHECK(used == 1 && g_priv_nonces[5].in_use);
+    g_entropy_ok = 1;
 
     // Kunci tidak dimuat: CHAL ditolak.
     uint32_t kl = g_auth_key_len;

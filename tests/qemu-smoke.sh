@@ -85,6 +85,71 @@ echo "boot selesai dalam ~${waited} s"
 
 BM="python3 $ROOT/client/bmctl.py --key $KEY --host 127.0.0.1 --port $PORT --timeout 10"
 
+# F1.8: CHAL hanya dilayani setelah kolam entropi cukup (build NORDRAND:
+# beberapa detik dari jitter). Build NOENTROPY tidak pernah siap.
+NOENTROPY=0
+if strings "$ROOT/build/kernel.elf" | grep -q "build NOENTROPY"; then
+    NOENTROPY=1
+fi
+
+check "DRBG self-test PASS (CAVP)"      'grep -aq "DRBG: self-test PASS" "$LOG"'
+check "entropi: tolak sebelum siap"     'grep -aq "Entropi: tolak sebelum siap PASS" "$LOG"'
+
+# Kirim CHAL mentah N kali (jeda 60 ms, di bawah batas 20/s per IP).
+# Keluaran: satu balasan per baris.
+chal() {
+    python3 - "$PORT" "$1" <<'PYEOF'
+import socket, sys, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(10)
+for _ in range(int(sys.argv[2])):
+    s.sendto(b"CHAL", ("127.0.0.1", int(sys.argv[1])))
+    print(s.recvfrom(4096)[0].decode().strip())
+    time.sleep(0.06)
+PYEOF
+}
+
+if [ "$NOENTROPY" -eq 1 ]; then
+    echo "build NOENTROPY: hanya uji penolakan, lalu selesai"
+    sleep 5
+    check "NOENTROPY: kolam tidak pernah siap" '! grep -aq "Entropi: siap" "$LOG"'
+    check "NOENTROPY: CHAL ditolak" '[ "$(chal 1)" = "ERR: entropi belum cukup, coba lagi" ]'
+    check "NOENTROPY: pping gagal tertutup" '! $BM pping 2>/dev/null | grep -q "^ppong"'
+    check "tanpa exception/fault di log" \
+        '! grep -qiE "EXCEPTION|#GP|#PF|fault|panic|FATAL" "$LOG"'
+    echo
+    echo "hasil: $PASS lulus, $FAIL gagal (log: $LOG)"
+    [ "$FAIL" -eq 0 ]
+    exit
+fi
+
+waited=0
+until grep -aq "Entropi: siap" "$LOG" 2>/dev/null; do
+    if [ "$waited" -ge "$BOOT_TIMEOUT" ]; then
+        break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+done
+check "entropi: kolam siap (DRBG ter-seed)" 'grep -aq "Entropi: siap tick=" "$LOG"'
+grep -a "Entropi: siap" "$LOG"
+
+# 40 nonce: semua unik, 32 hex, dan proporsi bit 1 di 5120 bit dalam
+# 0,45..0,55 (simpangan baku ~0,007; batas ini ~7 sigma).
+NONCES="$(chal 40)"
+check "nonce: 40 CHAL, semua unik dan 32 hex" \
+    '[ "$(echo "$NONCES" | grep -cE "^nonce: [0-9a-f]{32}$")" -eq 40 ] &&
+     [ "$(echo "$NONCES" | sort -u | wc -l)" -eq 40 ]'
+check "nonce: proporsi bit 1 dalam 0,45..0,55" \
+    'echo "$NONCES" | python3 -c "
+import sys
+b = \"\".join(l.split()[1] for l in sys.stdin if l.startswith(\"nonce: \"))
+ones = bin(int(b, 16)).count(\"1\") if b else 0
+n = len(b) * 4
+print(\"bit 1: %d dari %d\" % (ones, n), file=sys.stderr)
+sys.exit(0 if n and 0.45 <= ones / n <= 0.55 else 1)"'
+check "metrics entropy_ready=1" '$BM metrics | grep -q "^entropy_ready=1$"'
+
 check "CPUID: vendor dilaporkan"  'grep -aq "CPU: vendor=[^ ]" "$LOG"'
 check "CPUID: semua kunci fitur" 'grep -a "CPU: fitur" "$LOG" | grep -q "rdrand=[01] rdseed=[01] nx=[01] smep=[01] smap=[01] umip=[01] pcid=[01] apic=[01] x2apic=[01] tsc=[01] tsc_invarian=[01] sse2=[01]"'
 check "CPUID: nx=1 cocok NX self-test" 'grep -aq "CPU: fitur.* nx=1" "$LOG" && grep -q "NX: self-test PASS" "$LOG"'

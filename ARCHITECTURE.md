@@ -37,13 +37,14 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `e1000.c` | driver Intel 8254x: ring TX/RX (64 slot), kirim, eksperimen GSI INTx, statistik | pci, vmm, apic |
 | `net.c` | ARP, IPv4, ICMP echo, UDP (echo 7777), batas laju, TCP (port 7), dispatch RX, `net_poll` | e1000, auth |
 | `crypto.c` | SHA-256, HMAC-SHA256, self-test vektor resmi | — |
-| `auth.c` | kunci dari `KEY.TXT`, nonce (tabel 16 slot), verifikasi HMAC, perintah berprivilege, reboot, pintu UDP 7778 | crypto, fat32, cmd |
+| `entropy.c` | kolam entropi (jitter TSC dari IRQ timer/E1000 dan RX, rdseed/rdrand), HMAC-DRBG SP 800-90A, `entropy_get` (0 = belum cukup, pemanggil menolak), self-test CAVP | crypto, cpufeat |
+| `auth.c` | kunci dari `KEY.TXT`, nonce (tabel 16 slot, isi dari `entropy_get`), verifikasi HMAC, perintah berprivilege, reboot, pintu UDP 7778 | crypto, entropy, fat32, cmd |
 | `cmd.c` | isi perintah baca (`help uptime mem log irq stats metrics mac ip tasks`) dan pengirim balasan | net, sched, log |
 | `gdt.S`, `interrupt.S`, `task.S` | muat GDT/TSS, stub ISR/IRQ, `context_switch`, `enter_usermode` | — |
 
 ## 3. Urutan boot (`kmain`)
 
-1. `serial_init`, `cpu_features_init` (CPUID), `kprintf_selftest`, PCI scan dan `pci_find_devices`, `nx_init`.
+1. `serial_init`, `cpu_features_init` (CPUID), `kprintf_selftest`, `entropy_init` (self-test DRBG, rdseed/rdrand, RTC), PCI scan dan `pci_find_devices`, `nx_init`.
 2. GDT + TSS, IDT (vektor 0-19, 32, 33, 0x80), cetak register segmen.
 3. PMM dari memmap Limine (uji alloc/free), VMM (dump PML4, NX di half atas), heap kernel.
 4. ACPI (MADT, FADT), Local APIC, AHCI (lalu FAT32: baca `HELLO.TXT`, `spawn` dari `PROG.BIN`),
@@ -87,7 +88,7 @@ build default dan `PROD=1`.
 
 `make host-test` (F1.7) menjalankan uji unit di host Linux dengan ASan + UBSan (`clang`, ganti lewat
 `HOST_CC`). Tiap `tests/host/test_X.c` dikompilasi bersama modul yang diuji dan `tests/host/stubs.c`
-(stub `serial_*` yang menangkap keluaran). `net.c` dan `auth.c` di-`#include` langsung oleh ujinya supaya
+(stub `serial_*` yang menangkap keluaran). `net.c`, `auth.c`, dan `entropy.c` di-`#include` langsung oleh ujinya supaya
 fungsi `static` bisa diuji. Saat `BMAHOS_HOST_TEST` aktif, `kernel.h` mengganti `cli`/`sti` dan port I/O
 dengan no-op (instruksi itu fault di user mode); build kernel tidak berubah.
 
@@ -96,6 +97,7 @@ dengan no-op (instruksi itu fault di user mode); build kernel tidak berubah.
 | `test_crypto` | SHA-256 (FIPS 180-4, sejuta 'a', panjang 0..200 + semua titik potong update), HMAC RFC 4231 kasus 1-7, panjang kunci 0..130 |
 | `test_kprintf` | `ksnprintf` dibandingkan `snprintf` libc untuk semua ukuran buffer, `%p`, NULL, format tak dikenal, self-test |
 | `test_net` | checksum (RFC 1071, acak 0..1500 byte), ARP, ICMP, UDP echo/7778, TCP RST + handshake port 7, batas ukuran, frame dipotong di semua panjang, 200 ribu frame acak (checksum dibetulkan); tiap frame keluar dicek checksum-nya |
+| `test_entropy` | HMAC-DRBG vs 32 vektor CAVP, estimator (teratur = 0 bit), tolak sebelum siap, siap tepat setelah 256 tick berjitter, batas kolam cepat, jeda reseed, 100 ribu nonce unik, FIPS 140-2 (monobit, poker, runs) atas keluaran |
 | `test_auth` | `auth_load_key`, jalur counter, jalur nonce (TTL, sekali pakai, slot tidak dibebaskan saat HMAC salah), `net_cmd_handle` (CHAL, batas 4 nonce per IP), potongan + 100 ribu pesan acak |
 
 Frame dan pesan dimasukkan dalam buffer `malloc` seukuran persis, jadi pembacaan lewat batas tertangkap ASan.

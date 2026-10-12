@@ -392,8 +392,12 @@ def main():
             if qemu.poll() is not None:
                 print("QEMU (rawnet) berhenti sebelum net task jalan")
                 return 1
-            if os.path.exists(log) and b"net task dimulai" in open(log, "rb").read():
-                break
+            # F1.8: CHAL baru dilayani setelah kolam entropi siap; dengan
+            # rdseed/rdrand itu terjadi sebelum net task jalan, jadi tunggu keduanya.
+            if os.path.exists(log):
+                text = open(log, "rb").read()
+                if b"net task dimulai" in text and b"Entropi: siap" in text:
+                    break
             if time.time() > end:
                 print("timeout menunggu boot (rawnet)")
                 return 1

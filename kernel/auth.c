@@ -187,124 +187,12 @@ typedef struct {
 } priv_nonce_t;
 
 static priv_nonce_t g_priv_nonces[PRIV_NONCE_SLOTS];
-static uint8_t g_nonce_pool[32];
-static uint64_t g_nonce_ctr = 0;
-static int g_rdrand_state = -1;   // -1 belum dicek, 0 tidak ada, 1 ada
-
-static inline uint64_t priv_rdtsc(void)
-{
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
-}
-
-static int priv_have_rdrand(void)
-{
-#ifdef BMAHOS_NORDRAND
-    return 0;
-#else
-    uint32_t a = 1, b, c = 0, d;
-    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
-    return (c >> 30) & 1;
-#endif
-}
-
-static int priv_rdrand64(uint64_t *out)
-{
-#ifdef BMAHOS_NORDRAND
-    (void)out;
-    return 0;
-#else
-    for (int i = 0; i < 10; i++) {
-        uint64_t v;
-        uint8_t ok;
-        __asm__ volatile("rdrand %0; setc %1" : "=r"(v), "=qm"(ok) : : "cc");
-        if (ok) {
-            *out = v;
-            return 1;
-        }
-    }
-    return 0;
-#endif
-}
-
-static uint8_t priv_cmos_read(uint8_t reg)
-{
-    outb(0x70, reg);
-    return inb(0x71);
-}
-
-// SHA-256 atas pool + rdrand + TSC + timer_ticks + counter + RTC.
-// Pool diperbarui dari hash dengan label berbeda dari keluaran nonce.
-void priv_nonce_generate(uint8_t out[16])
-{
-    static const uint8_t rtc_regs[6] = {0x00, 0x02, 0x04, 0x07, 0x08, 0x09};
-    sha256_ctx_t ctx;
-    uint8_t h[32];
-    uint8_t t[32];
-    uint64_t v;
-
-    if (g_rdrand_state < 0) {
-        g_rdrand_state = priv_have_rdrand();
-
-        uint64_t lf = irq_save();
-#ifdef BMAHOS_NORDRAND
-        serial_write("Net-18: sumber nonce tanpa rdrand (build NORDRAND)\r\n");
-#else
-        serial_write(g_rdrand_state
-                     ? "Net-18: sumber nonce memakai rdrand\r\n"
-                     : "Net-18: CPU tanpa rdrand, nonce dari TSC/tick/RTC saja\r\n");
-#endif
-        irq_restore(lf);
-    }
-
-    g_nonce_ctr++;
-
-    sha256_init(&ctx);
-    sha256_update(&ctx, g_nonce_pool, 32);
-
-    if (g_rdrand_state == 1) {
-        for (int i = 0; i < 4; i++) {
-            if (priv_rdrand64(&v)) {
-                sha256_update(&ctx, (const uint8_t *)&v, 8);
-            }
-        }
-    }
-
-    v = priv_rdtsc();
-    sha256_update(&ctx, (const uint8_t *)&v, 8);
-    v = timer_ticks;
-    sha256_update(&ctx, (const uint8_t *)&v, 8);
-    sha256_update(&ctx, (const uint8_t *)&g_nonce_ctr, 8);
-
-    for (int i = 0; i < 6; i++) {
-        uint8_t r = priv_cmos_read(rtc_regs[i]);
-        sha256_update(&ctx, &r, 1);
-    }
-
-    sha256_final(&ctx, h);
-
-    sha256_init(&ctx);
-    sha256_update(&ctx, h, 32);
-    sha256_update(&ctx, (const uint8_t *)"pool", 4);
-    sha256_final(&ctx, g_nonce_pool);
-
-    sha256_init(&ctx);
-    sha256_update(&ctx, h, 32);
-    sha256_update(&ctx, (const uint8_t *)"nonce", 5);
-    sha256_final(&ctx, t);
-
-    for (int i = 0; i < 16; i++) {
-        out[i] = t[i];
-    }
-}
-
 // M1: slot kosong/kedaluwarsa dipakai dulu. IP yang sudah punya
 // PRIV_NONCE_PER_IP nonce hidup hanya mengganti nonce miliknya sendiri yang
 // tertua, jadi banjir CHAL satu IP tidak menggusur nonce IP lain.
 // Tabel penuh oleh banyak IP berbeda: ganti yang tertua (batas diketahui).
 
-static uint32_t priv_nonce_issue(const volatile uint8_t *ip)
+static uint32_t priv_nonce_issue(const volatile uint8_t *ip, const uint8_t nonce[16])
 {
     uint32_t slot = 0;
     int found = 0;
@@ -352,7 +240,9 @@ static uint32_t priv_nonce_issue(const volatile uint8_t *ip)
         g_priv_nonces[slot].ip[i] = ip[i];
     }
 
-    priv_nonce_generate(g_priv_nonces[slot].nonce);
+    for (int i = 0; i < 16; i++) {
+        g_priv_nonces[slot].nonce[i] = nonce[i];
+    }
     g_priv_nonces[slot].issued = timer_ticks;
     g_priv_nonces[slot].in_use = 1;
 
@@ -558,7 +448,17 @@ static int priv_try_handle(volatile uint8_t *cmd, uint32_t len,
             return 1;
         }
 
-        uint32_t slot = priv_nonce_issue(src_ip);
+        // F1.8: nonce dari DRBG; sebelum entropi cukup, tolak tanpa
+        // menyentuh tabel (slot klien lain tidak digusur).
+        uint8_t nonce[16];
+
+        if (!entropy_get(nonce, sizeof(nonce))) {
+            g_chal_noentropy++;
+            cmd_puts("ERR: entropi belum cukup, coba lagi\n");
+            return 1;
+        }
+
+        uint32_t slot = priv_nonce_issue(src_ip, nonce);
         g_chal_issued++;
 
         cmd_puts("nonce: ");

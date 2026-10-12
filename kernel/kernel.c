@@ -395,6 +395,7 @@ static void net_task_entry(void)
         }
 
         net_tcp_tick();
+        entropy_poll();
         sem_wait(&g_net_rx_sem);
     }
 }
@@ -707,6 +708,7 @@ void kmain(void)
     serial_init();
     cpu_features_init();
     kprintf_selftest();
+    entropy_init();
 #ifdef BMAHOS_ASSERTTEST
     ASSERT(1 + 1 == 3);
 #endif
