@@ -20,6 +20,7 @@ QEMU="${QEMU:-$(command -v qemu-system-x86_64 2>/dev/null || echo /usr/libexec/q
 OVMF_CODE="${OVMF_CODE:-/usr/share/edk2/ovmf/OVMF_CODE.fd}"
 OVMF_VARS="${OVMF_VARS:-/usr/share/edk2/ovmf/OVMF_VARS.fd}"
 PORT="${BMTEST_PORT:-17778}"
+TPORT="${BMTEST_TCP_PORT:-17007}"   # C4: echo TCP port 7
 BOOT_TIMEOUT="${BMTEST_BOOT_TIMEOUT:-180}"
 
 PASS=0
@@ -61,7 +62,7 @@ cp "$OVMF_VARS" "$WORK/vars.fd"
     -drive if=pflash,format=raw,file="$WORK/vars.fd" \
     -cdrom "$ISO" \
     -drive id=d0,file="$DISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
-    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778 \
+    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=tcp:127.0.0.1:$TPORT-192.168.50.200:7 \
     -device e1000,netdev=n0 \
     -display none -serial file:"$LOG" -no-reboot \
     >"$WORK/qemu.out" 2>&1 &
@@ -194,6 +195,12 @@ T0=$(date +%s.%N); U0=$(tick_now); sleep 6; T1=$(date +%s.%N); U1=$(tick_now)
 HZ=$(python3 -c "print(round(($U1 - $U0) / ($T1 - $T0)))" 2>/dev/null || echo 0)
 echo "info  laju tick: $HZ tick/s"
 check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115 ]'
+
+# C4: echo TCP 1 MB lewat slirp (klien TCP Linux sungguhan), hash harus sama.
+ECHO_OUT="$(python3 "$ROOT/tests/tcp-echo.py" 127.0.0.1 "$TPORT" --size 1048576 --timeout 300 2>&1)"
+ECHO_RC=$?
+echo "info  $ECHO_OUT"
+check "C4: echo TCP 1 MB identik (sha256)" '[ "$ECHO_RC" -eq 0 ]'
 
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
 check "kunci salah ditolak" \

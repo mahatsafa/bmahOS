@@ -289,6 +289,8 @@ uint64_t g_tcp_retx = 0;          // C3c: segmen dikirim ulang (SYN-ACK + data)
 uint64_t g_tcp_retx_giveup = 0;   // C3c: koneksi diputus setelah TCP_RTX_MAX
 uint64_t g_tcp_close_ok = 0;      // C3d: koneksi selesai lewat FIN dua arah
 uint64_t g_tcp_rst_state = 0;     // C3d: RST karena data di keadaan penutupan
+uint64_t g_tcp_conn_dropped = 0;  // C4: segmen koneksi aktif melewati batas per koneksi
+uint64_t g_tcp_dupack_limited = 0; // C4: ACK untuk segmen di luar urutan yang tidak dikirim
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -649,6 +651,13 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 #define TCP_RTX_MAX         5      // kirim ulang maks 5x, berikutnya RST
 #define TCP_FIN_WAIT_2_TIMEOUT 1000   // tick (10 detik) menunggu FIN peer (C3d)
 #define TCP_TIME_WAIT_TICKS 200    // tick (2 detik), bukan 2*MSL (C0, C3d)
+// C4: segmen dari peer koneksi aktif (IP + port cocok TCB) tidak memakai batas
+// UDP (20/s per IP, 100/s global) yang terlalu kecil untuk aliran data, tetapi
+// dibatasi per koneksi; lebihnya dibuang (peer mengirim ulang). Balasan ACK
+// untuk segmen di luar urutan/duplikat/ACK berlebih dibatasi supaya segmen
+// palsu dengan 4-tuple tertebak tidak bisa memicu banjir balasan.
+#define TCP_CONN_SEG_PER_SEC 2000
+#define TCP_DUPACK_PER_SEC  10
 
 // Nilai juga dipakai metrics tcp_state.
 enum { TCP_CLOSED = 0, TCP_SYN_RCVD, TCP_ESTABLISHED, TCP_CLOSE_WAIT,
@@ -678,6 +687,8 @@ typedef struct {
 
 static tcp_tcb_t g_tcb;
 static uint8_t g_tcp_buf[TCP_BUF_SIZE];
+static uint64_t g_tcp_seg_window, g_tcp_dupack_window;   // C4: awal jendela 1 detik
+static uint32_t g_tcp_seg_used, g_tcp_dupack_used;
 static ktimer_t g_tcp_rtx_timer;   // C3c: di luar g_tcb (ada di senarai ktimer)
 
 static void net_tcp_rtx_arm(void);
@@ -810,6 +821,59 @@ static void net_tcp_tcb_send(uint32_t seq, uint8_t flags, int mss_opt)
 {
     net_tcp_send_seg(g_tcb.mac, g_tcb.ip, g_tcb.lport, g_tcb.rport,
                      seq, g_tcb.rcv_nxt, flags, mss_opt, 0, 0);
+}
+
+// C4: ACK posisi kita sebagai balasan segmen yang tidak diterima (di luar
+// urutan, duplikat, ACK melewati snd_nxt). Maks TCP_DUPACK_PER_SEC per detik.
+static void net_tcp_send_dupack(void)
+{
+    uint64_t now = timer_ticks;
+
+    if (now - g_tcp_dupack_window >= 100) {
+        g_tcp_dupack_window = now;
+        g_tcp_dupack_used = 0;
+    }
+    if (g_tcp_dupack_used >= TCP_DUPACK_PER_SEC) {
+        g_tcp_dupack_limited++;
+        return;
+    }
+    g_tcp_dupack_used++;
+    net_tcp_tcb_send(g_tcb.snd_nxt, TCP_ACK, 0);
+}
+
+// C4: 1 bila segmen milik koneksi aktif (IP sumber, port sumber, port tujuan
+// sama dengan TCB). Dipakai sebelum checksum, hanya untuk memilih batas laju.
+static int net_tcp_is_conn(const volatile uint8_t *buf, uint32_t r)
+{
+    const tcp_tcb_t *t = &g_tcb;
+    uint16_t sport = (uint16_t)(((uint32_t)buf[r + 0] << 8) | buf[r + 1]);
+    uint16_t dport = (uint16_t)(((uint32_t)buf[r + 2] << 8) | buf[r + 3]);
+
+    if (t->state == TCP_CLOSED || sport != t->rport || dport != t->lport) {
+        return 0;
+    }
+    for (int i = 0; i < 4; i++) {
+        if (buf[26 + i] != t->ip[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int net_tcp_conn_budget_ok(void)
+{
+    uint64_t now = timer_ticks;
+
+    if (now - g_tcp_seg_window >= 100) {
+        g_tcp_seg_window = now;
+        g_tcp_seg_used = 0;
+    }
+    if (g_tcp_seg_used >= TCP_CONN_SEG_PER_SEC) {
+        g_tcp_conn_dropped++;
+        return 0;
+    }
+    g_tcp_seg_used++;
+    return 1;
 }
 
 // C3d: FIN kita. Hanya dipanggil bila data kita habis dan semua di-ACK
@@ -1060,7 +1124,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         // C3b: ACK untuk data kita. ACK melewati snd_nxt (data yang belum
         // pernah dikirim) diabaikan dan dibalas ACK; ACK lama diabaikan.
         if (seq_lt(t->snd_nxt, ack)) {
-            net_tcp_tcb_send(t->snd_nxt, TCP_ACK, 0);
+            net_tcp_send_dupack();
             return 1;
         }
         if (seq_lt(t->snd_una, ack)) {
@@ -1096,7 +1160,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
 
         if (seq != t->rcv_nxt) {
             // Di luar urutan / duplikat: dibuang, balas ACK posisi kita.
-            net_tcp_tcb_send(t->snd_nxt, TCP_ACK, 0);
+            net_tcp_send_dupack();
             return 1;
         }
 
@@ -1218,12 +1282,20 @@ static void net_handle_tcp(volatile uint8_t *buf, uint32_t ihl,
         return;
     }
 
-    if (!net_udp_src_budget_ok(buf + 26)) {
-        return;
-    }
+    // C4: koneksi aktif memakai batas per koneksi; segmen lain (SYN, port
+    // tertutup) tetap memakai batas per IP + global seperti UDP.
+    if (net_tcp_is_conn(buf, r)) {
+        if (!net_tcp_conn_budget_ok()) {
+            return;
+        }
+    } else {
+        if (!net_udp_src_budget_ok(buf + 26)) {
+            return;
+        }
 
-    if (!net_udp_budget_ok()) {
-        return;
+        if (!net_udp_budget_ok()) {
+            return;
+        }
     }
 
     g_tcp_rx++;

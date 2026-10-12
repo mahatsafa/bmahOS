@@ -34,8 +34,10 @@ Belum pernah diuji di hardware asli.
 - Perintah jarak jauh terautentikasi HMAC-SHA256 (SHA-256/HMAC ditulis sendiri, self-test vektor resmi saat boot)
 - Challenge-response nonce untuk perintah berprivilege, termasuk `reboot` (register reset ACPI dari
   FADT, lalu 8042, lalu cadangan triple fault)
-- Batas laju 20 datagram/detik per IP sumber dan 100 per detik global, ring log 8 KB, counter di
+- Batas laju 20 datagram/detik per IP sumber dan 100 per detik global (juga untuk SYN dan segmen TCP
+  di luar koneksi; koneksi TCP aktif dibatasi 2000 segmen/detik), ring log 8 KB, counter di
   perintah `stats` dan `metrics`
+- Echo TCP port 7: 1 MB bolak-balik dengan SHA-256 sama di `make test` (`tests/tcp-echo.py`)
 - Diagnosis RX: `metrics` menampilkan `rx_missed` (register MPC), `rx_nobuf` (RNBC), dan
   `rx_overrun_irq` (interrupt RXO) untuk membedakan paket hilang di ring RX bmahOS dari yang hilang di luar
 

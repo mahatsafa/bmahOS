@@ -1135,6 +1135,75 @@ static void test_tcp_close(void)
     memset(&g_tcb, 0, sizeof(g_tcb));
 }
 
+// ---- C4: batas laju koneksi TCP ----
+
+// Seperti rx(), tetapi tanpa memajukan timer_ticks (banyak frame dalam satu
+// jendela batas laju).
+static void rx_now(const uint8_t *f, size_t len)
+{
+    uint8_t *b = malloc(len ? len : 1);
+    memcpy(b, f, len);
+    g_tx_n = 0;
+    net_rx_dispatch(b, (uint32_t)len);
+    free(b);
+}
+
+static void test_tcp_limits(void)
+{
+    static uint8_t f[1700];
+    uint64_t drop0 = g_tcp_conn_dropped, lim0 = g_tcp_dupack_limited;
+
+    // Koneksi aktif: 2000 segmen dalam satu detik diproses (jauh di atas
+    // batas UDP 20/s per IP), segmen ke-2001 dibuang.
+    tcp_open(1000, 3000, 4096);
+    timer_ticks += 100;   // jendela baru
+    uint64_t rx0 = g_tcp_rx;
+    int acks = 0;
+    for (uint32_t j = 0; j < TCP_CONN_SEG_PER_SEC / 2; j++) {
+        rx_now(f, mk_tcp_w(f, g_pseq, g_iss + 1 + j, F_ACK, (const uint8_t *)"a", 1, 4096));
+        g_pseq++;
+        acks += g_tx_n;
+        // Echo "a" di-ACK supaya buffer tidak penuh.
+        rx_now(f, mk_tcp_w(f, g_pseq, g_iss + 1 + j + 1, F_ACK, 0, 0, 4096));
+    }
+    CHECK(g_tcp_rx == rx0 + TCP_CONN_SEG_PER_SEC && g_tcp_conn_dropped == drop0 && acks == TCP_CONN_SEG_PER_SEC / 2);
+    rx_now(f, mk_tcp_w(f, g_pseq, g_iss + 1 + TCP_CONN_SEG_PER_SEC / 2, F_ACK, (const uint8_t *)"b", 1, 4096));
+    CHECK(g_tx_n == 0 && g_tcp_conn_dropped == drop0 + 1 && g_tcp_rx == rx0 + TCP_CONN_SEG_PER_SEC);
+    // Jendela berikutnya: diproses lagi.
+    timer_ticks += 100;
+    rx_now(f, mk_tcp_w(f, g_pseq, g_iss + 1 + TCP_CONN_SEG_PER_SEC / 2, F_ACK, (const uint8_t *)"b", 1, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 1);
+    g_pseq++;
+
+    // Segmen bukan milik koneksi (IP sama, port lain) tetap kena batas per IP.
+    uint64_t src0 = g_net_udp_src_dropped;
+    timer_ticks += 100;
+    int rst = 0;
+    for (int i = 0; i < 30; i++) {
+        rx_now(f, mk_tcp(f, 4500, 80, 1, 0, F_SYN, ""));
+        rst += g_tx_n;
+    }
+    CHECK(rst == NET_UDP_SRC_PER_SEC && g_net_udp_src_dropped == src0 + 30 - NET_UDP_SRC_PER_SEC);
+
+    // ACK untuk segmen di luar urutan: maks TCP_DUPACK_PER_SEC per detik.
+    timer_ticks += 100;
+    int dup = 0;
+    for (int i = 0; i < 25; i++) {
+        rx_now(f, mk_tcp_w(f, g_pseq + 5000, g_iss + 1 + TCP_CONN_SEG_PER_SEC / 2 + 1, F_ACK,
+                            (const uint8_t *)"zz", 2, 4096));
+        dup += g_tx_n;
+    }
+    CHECK(dup == TCP_DUPACK_PER_SEC && g_tcp_dupack_limited == lim0 + 25 - TCP_DUPACK_PER_SEC);
+    // ACK melewati snd_nxt juga dihitung di batas yang sama.
+    rx_now(f, mk_tcp_w(f, g_pseq, g_iss + 99999, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 0 && g_tcp_dupack_limited == lim0 + 25 - TCP_DUPACK_PER_SEC + 1);
+    timer_ticks += 100;
+    rx_now(f, mk_tcp_w(f, g_pseq + 5000, g_iss + 1, F_ACK, (const uint8_t *)"zz", 2, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == F_ACK && tx_seg(0).ack == g_pseq);
+    CHECK(g_tx_bad == 0);
+    memset(&g_tcb, 0, sizeof(g_tcb));
+}
+
 int main(void)
 {
     test_checksum();
@@ -1146,6 +1215,7 @@ int main(void)
     test_tcp_stream();
     test_tcp_retx();
     test_tcp_close();
+    test_tcp_limits();
     test_limits();
     build_templates();
     test_truncation();

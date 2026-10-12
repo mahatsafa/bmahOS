@@ -63,3 +63,9 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **TIME_WAIT 2 s** (C0; bukan 2*MSL) dan dimulai ulang oleh segmen apa pun dari peer; SYN lain selama itu dibalas RST (satu TCB). **FIN_WAIT_2 maks 10 s** lalu RST. Tutup bersamaan didukung (CLOSING), menyimpang dari C0 karena hanya satu keadaan tambahan.
 - **RST untuk keadaan salah**: data baru setelah FIN peer (melanggar protokol) dan data setelah FIN kita (tidak ada pembaca, seperti Linux untuk soket yang sudah ditutup) -> RST dan TCB dibebaskan (`tcp_rst_state`). Segmen di luar urutan/duplikat tetap dibalas ACK.
 - **RST di TIME_WAIT diabaikan** (RFC 1337, mencegah TIME_WAIT dibunuh segmen lama/palsu); keadaan itu berakhir sendiri setelah 2 s.
+
+## 2026-10-12 (C4 echo TCP 1 MB, batas laju koneksi; disetujui pengguna)
+- **Segmen milik koneksi TCP aktif (IP sumber + kedua port cocok TCB) tidak memakai batas UDP** (20/s per IP, 100/s global), karena echo 1 MB butuh ~4000 segmen masuk dan segmen yang dibuang memicu retransmisi dengan backoff. Penggantinya batas per koneksi 2000 segmen/s (`tcp_conn_dropped`). SYN dan segmen ke port tertutup tetap memakai batas lama. Pemilihan batas dilakukan sebelum checksum (hanya membandingkan alamat/port).
+- **ACK balasan untuk segmen yang tidak diterima** (di luar urutan, duplikat, ACK melewati `snd_nxt`) **maks 10/s** (`tcp_dupack_limited`), mirip batas challenge ACK RFC 5961, supaya segmen palsu dengan 4-tuple tertebak tidak bisa memantulkan banjir balasan. ACK untuk data yang diterima tidak dibatasi.
+- **Uji 1 MB memakai klien TCP Linux sungguhan lewat slirp** (`tests/tcp-echo.py`, kirim dan terima bersamaan, SHA-256), bukan rawnet: rawnet tidak punya tumpukan TCP. QEMU TCG: ~31 s (~33 KB/s, stop-and-wait).
+

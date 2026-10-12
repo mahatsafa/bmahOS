@@ -430,6 +430,8 @@ extern uint64_t g_tcp_retx;
 extern uint64_t g_tcp_retx_giveup;
 extern uint64_t g_tcp_close_ok;
 extern uint64_t g_tcp_rst_state;
+extern uint64_t g_tcp_conn_dropped;
+extern uint64_t g_tcp_dupack_limited;
 int net_tcp_state(void);
 extern uint64_t g_e1000_mpc;
 extern uint64_t g_e1000_rnbc;

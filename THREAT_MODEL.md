@@ -54,7 +54,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Permukaan | Risiko utama | Pertahanan yang ada / direncanakan |
 |---|---|---|
 | Parser ARP/IP/ICMP/UDP | Baca di luar batas, panjang palsu | Validasi panjang ketat; fuzzing (R7) |
-| Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda, retransmisi terbatas (5x lalu RST, C3c), setiap keadaan penutupan punya batas waktu (C3d) |
+| Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda, retransmisi terbatas (5x lalu RST, C3c), setiap keadaan penutupan punya batas waktu (C3d), batas 2000 segmen/s per koneksi dan 10 ACK duplikat/s (C4) |
 | Protokol perintah | Replay, penebakan nonce, banjir CHAL | HMAC-SHA256, nonce sekali pakai, tabel nonce 16 slot, maks 4 per IP, batas laju per IP dan global |
 | Nonce | Nonce dapat ditebak melemahkan challenge-response | Modul entropi + HMAC-DRBG (F1.8); menolak jika entropi belum cukup |
 | Parser FAT32 | Struktur disk rusak | Validasi BPB (RootEntryCount==0 dan FATSz16==0), batas jumlah sektor, kode error bukan halt |
@@ -79,7 +79,9 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 
 ## 6. Keterbatasan yang diketahui (diterima sementara)
 
-1. Batas laju per IP bisa dikelabui dengan IP sumber palsu.
+1. Batas laju per IP bisa dikelabui dengan IP sumber palsu. Segmen yang memalsukan 4-tuple koneksi TCP
+   aktif (IP + kedua port) memakai batas per koneksi 2000/s, bukan 20/s per IP (C4); balasannya dibatasi
+   10 ACK/s, dan data hanya diterima bila nomor urutnya tepat.
 2. Banjir CHAL dari 16 IP palsu atau lebih masih dapat menggusur nonce sah (denial of service ringan,
    bukan pembobolan autentikasi).
 3. Balasan perintah berupa teks polos: penyerang di jalur bisa membaca, tetapi tidak bisa memalsukan perintah.
