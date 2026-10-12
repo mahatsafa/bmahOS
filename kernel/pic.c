@@ -82,11 +82,14 @@ static void pic_send_eoi(uint8_t irq)
 
 // Set frekuensi PIT. PIT berjalan di clock dasar ~1.193182 MHz,
 // jadi divisor = base_clock / frekuensi_diinginkan.
+// PIT-1: mode 2 (rate generator), satu pulsa per periode. Mode 3 (square
+// wave) di QEMU q35 menghasilkan 2 interrupt per periode lewat IOAPIC
+// (terukur 200 tick/s untuk 100 Hz), jadi semua "detik" kernel cuma 0,5 s.
 void pit_init(uint32_t frequency_hz)
 {
     uint32_t divisor = 1193182 / frequency_hz;
 
-    outb(PIT_COMMAND, 0x36); // channel 0, mode 3 (square wave), binary
+    outb(PIT_COMMAND, 0x34); // channel 0, lobyte/hibyte, mode 2 (rate generator), binary
     outb(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));        // low byte
     outb(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF)); // high byte
 }

@@ -188,6 +188,13 @@ check "uptime"                   '$BM uptime | grep -q "^uptime: "'
 check "metrics kunci=nilai"      '$BM metrics | grep -q "^uptime_ticks="'
 check "metrics rx_missed/rx_nobuf" '$BM metrics | grep -q "^rx_nobuf="'
 
+# PIT-1: laju tick terhadap jam dinding harus ~100/s (dulu 200/s di QEMU).
+tick_now() { $BM metrics | sed -n "s/^uptime_ticks=//p"; }
+T0=$(date +%s.%N); U0=$(tick_now); sleep 6; T1=$(date +%s.%N); U1=$(tick_now)
+HZ=$(python3 -c "print(round(($U1 - $U0) / ($T1 - $T0)))" 2>/dev/null || echo 0)
+echo "info  laju tick: $HZ tick/s"
+check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115 ]'
+
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
 check "kunci salah ditolak" \
     'python3 $ROOT/client/bmctl.py --key $WORK/bad.txt --host 127.0.0.1 --port $PORT --timeout 10 ping | grep -q "^ERR: hmac salah"'
