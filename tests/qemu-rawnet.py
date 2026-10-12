@@ -338,8 +338,10 @@ def test_tcp_handshake(net, cli):
     check("C2: di luar urutan -> ACK ack=5006",
           r == [(iss + 6, 5006, 0x10, 0)], repr(r))
     net.send(tcp_frame(b, 47001, 7, 7000, 0, 0x02))
-    r = net.tcp_replies(b, 47001, 2)
-    check("C2: koneksi kedua saat sibuk -> RST|ACK", r == [(0, 7001, 0x14, 0)], repr(r))
+    r = net.tcp_replies(b, 47001, 2, limit=1)
+    check("C5a: koneksi kedua (IP lain) diterima -> SYN-ACK",
+          len(r) == 1 and r[0][2] == 0x12 and r[0][1] == 7001, repr(r))
+    net.send(tcp_frame(b, 47001, 7, 7001, 0, 0x04))
     net.send(tcp_frame(a, 47000, 7, 5006, iss + 6, 0x11))
     r = net.tcp_replies(a, 47000, 2, limit=1)
     check("C3d: FIN -> FIN|ACK ack=5007 (echo kosong, LAST_ACK)",
@@ -359,8 +361,8 @@ def test_tcp_handshake(net, cli):
         check("C2: metrics akhir", False)
         return
     d = {k: m1[k] - m0[k] for k in ("tcp_conn_open", "tcp_dropped_busy", "tcp_rx_bytes", "tcp_tx_bytes")}
-    check("C2: metrics conn_open +1, dropped_busy +1, rx_bytes +5, tx_bytes +5",
-          d == {"tcp_conn_open": 1, "tcp_dropped_busy": 1, "tcp_rx_bytes": 5, "tcp_tx_bytes": 5}, repr(d))
+    check("C2: metrics conn_open +1, dropped_busy +0, rx_bytes +5, tx_bytes +5",
+          d == {"tcp_conn_open": 1, "tcp_dropped_busy": 0, "tcp_rx_bytes": 5, "tcp_tx_bytes": 5}, repr(d))
 
 
 def test_tcp_send(net, cli):
@@ -499,7 +501,9 @@ def test_tcp_close(net, cli):
     d = bytes([192, 168, 50, 23])
     net.send(tcp_frame(d, 47303, 7, 400, 0, 0x02))
     r = net.tcp_replies(d, 47303, 1, limit=1)
-    check("C3d: SYN lain saat TIME_WAIT -> RST|ACK", r == [(0, 401, 0x14, 0)], repr(r))
+    check("C5a: SYN lain saat TIME_WAIT memakai slot lain -> SYN-ACK",
+          len(r) == 1 and r[0][2] == 0x12 and r[0][1] == 401, repr(r))
+    net.send(tcp_frame(d, 47303, 7, 401, 0, 0x04))
     time.sleep(2.5)
     iss = open_conn(d, 47304, 500)
     check("C3d: setelah TIME_WAIT 2 s koneksi baru diterima", iss is not None)
@@ -515,6 +519,114 @@ def test_tcp_close(net, cli):
     check("C3d: metrics close_ok +2, rst_state +1, timeout +1, tcp_state=0",
           dd == {"tcp_close_ok": 2, "tcp_rst_state": 1, "tcp_timeout": 1} and m1["tcp_state"] == 0,
           repr((dd, m1.get("tcp_state"))))
+
+
+def test_tcp_table(net, cli):
+    """C5a: tabel 4 TCB, maks 2 per IP, SYN_RCVD tertua digusur saat penuh,
+    semua aktif -> RST, banjir SYN dari banyak IP tidak menghalangi klien sah."""
+    m0 = cli.metrics()
+    if m0 is None:
+        check("C5a: metrics awal", False)
+        return
+
+    def syn(ip, port, pseq):
+        net.send(tcp_frame(ip, port, 7, pseq, 0, 0x02))
+        r = net.tcp_replies(ip, port, 2, limit=1)
+        if len(r) == 1 and r[0][2] == 0x12 and r[0][1] == pseq + 1:
+            return r[0][0]
+        return None
+
+    def echo(ip, port, pseq, iss, data):
+        net.send(tcp_frame(ip, port, 7, pseq, iss + 1, 0x18, data))
+        r = net.tcp_replies(ip, port, 2, payload=True, limit=1)
+        net.send(tcp_frame(ip, port, 7, pseq + len(data), iss + 1 + len(data), 0x10))
+        return r == [(iss + 1, pseq + len(data), 0x18, data)], r
+
+    a = bytes([192, 168, 50, 30])
+    i1 = syn(a, 47500, 1000)
+    i2 = syn(a, 47501, 2000)
+    check("C5a: dua koneksi dari satu IP diterima", i1 is not None and i2 is not None)
+    if i1 is None or i2 is None:
+        return
+    net.send(tcp_frame(a, 47500, 7, 1001, i1 + 1, 0x10))
+    net.send(tcp_frame(a, 47501, 7, 2001, i2 + 1, 0x10))
+    net.send(tcp_frame(a, 47502, 7, 3000, 0, 0x02))
+    r = net.tcp_replies(a, 47502, 2)
+    check("C5a: koneksi ketiga dari IP yang sama -> RST|ACK", r == [(0, 3001, 0x14, 0)], repr(r))
+    ok1, r1 = echo(a, 47500, 1001, i1, b"satu")
+    ok2, r2 = echo(a, 47501, 2001, i2, b"dua")
+    check("C5a: dua koneksi bersamaan, echo masing-masing benar", ok1 and ok2, repr((r1, r2)))
+
+    # Dua SYN_RCVD (.31 lalu .32) -> tabel penuh; .33 menggusur .31.
+    b = bytes([192, 168, 50, 31])
+    c = bytes([192, 168, 50, 32])
+    d = bytes([192, 168, 50, 33])
+    ib = syn(b, 47510, 4000)
+    time.sleep(0.2)
+    ic = syn(c, 47520, 5000)
+    time.sleep(0.2)
+    idd = syn(d, 47530, 6000)
+    check("C5a: tabel penuh, SYN baru tetap dapat SYN-ACK (SYN_RCVD digusur)",
+          None not in (ib, ic, idd))
+    if None in (ib, ic, idd):
+        return
+    net.send(tcp_frame(b, 47510, 7, 4001, ib + 1, 0x10))
+    r = net.tcp_replies(b, 47510, 2, limit=1)
+    check("C5a: ACK dari SYN_RCVD yang digusur -> RST", r == [(ib + 1, 0, 0x04, 0)], repr(r))
+    net.send(tcp_frame(c, 47520, 7, 5001, ic + 1, 0x10))
+    net.send(tcp_frame(d, 47530, 7, 6001, idd + 1, 0x10))
+    e = bytes([192, 168, 50, 34])
+    net.send(tcp_frame(e, 47540, 7, 7000, 0, 0x02))
+    r = net.tcp_replies(e, 47540, 2)
+    check("C5a: 4 koneksi aktif -> SYN berikutnya RST|ACK", r == [(0, 7001, 0x14, 0)], repr(r))
+    ok, r = echo(d, 47530, 6001, idd, b"empat")
+    check("C5a: koneksi yang menggusur bekerja (echo)", ok, repr(r))
+    time.sleep(1.2)
+    m1 = cli.metrics()
+    if m1 is None:
+        check("C5a: metrics tengah", False)
+        return
+    dd = {k: m1[k] - m0[k] for k in ("tcp_src_full", "tcp_synrcvd_evicted", "tcp_dropped_busy")}
+    check("C5a: metrics src_full +1, evicted +1, busy +1, conn_active 4",
+          dd == {"tcp_src_full": 1, "tcp_synrcvd_evicted": 1, "tcp_dropped_busy": 1}
+          and m1["tcp_conn_active"] == 4, repr((dd, m1.get("tcp_conn_active"))))
+    for ip, port, seq in ((a, 47500, 1005), (a, 47501, 2004), (c, 47520, 5001), (d, 47530, 6006)):
+        net.send(tcp_frame(ip, port, 7, seq, 0, 0x04))
+    time.sleep(0.5)
+    net.drain()
+
+    # Banjir SYN dari 20 IP palsu, klien sah tetap tersambung; banjir kedua
+    # tidak menggusur koneksi ESTABLISHED.
+    for i in range(20):
+        net.send(tcp_frame(bytes([192, 168, 50, 100 + i]), 48000 + i, 7, 9000, 0, 0x02))
+        time.sleep(0.01)
+    time.sleep(0.3)
+    net.drain()
+    g = bytes([192, 168, 50, 35])
+    ig = syn(g, 47550, 8000)
+    check("C5a: klien sah dapat SYN-ACK setelah banjir SYN 20 IP", ig is not None)
+    if ig is None:
+        return
+    net.send(tcp_frame(g, 47550, 7, 8001, ig + 1, 0x10))
+    for i in range(10):
+        net.send(tcp_frame(bytes([192, 168, 50, 120 + i]), 48100 + i, 7, 9000, 0, 0x02))
+        time.sleep(0.01)
+    time.sleep(0.3)
+    net.drain()
+    ok, r = echo(g, 47550, 8001, ig, b"sah")
+    check("C5a: koneksi sah tetap jalan selama banjir SYN kedua", ok, repr(r))
+    net.send(tcp_frame(g, 47550, 7, 8004, 0, 0x04))
+    # SYN_RCVD palsu berakhir sendiri (5 s).
+    time.sleep(6.5)
+    net.drain()
+    m2 = cli.metrics()
+    if m2 is None:
+        check("C5a: metrics akhir", False)
+        return
+    ev = m2["tcp_synrcvd_evicted"] - m1["tcp_synrcvd_evicted"]
+    check("C5a: banjir menggusur SYN_RCVD (20..27), semua slot bebas lagi",
+          20 <= ev <= 27 and m2["tcp_conn_active"] == 0 and m2["tcp_state"] == 0,
+          repr((ev, m2.get("tcp_conn_active"), m2.get("tcp_state"))))
 
 
 def main():
@@ -590,6 +702,8 @@ def main():
         test_tcp_retx(net, cli)
         time.sleep(1.2)
         test_tcp_close(net, cli)
+        time.sleep(1.2)
+        test_tcp_table(net, cli)
 
         text = open(log, "rb").read().decode(errors="replace")
         check("rawnet: tanpa exception di log",

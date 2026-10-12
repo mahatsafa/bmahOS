@@ -213,8 +213,7 @@ menjalankan beban kerja IoT, cukup tulis program user-space di atas socket API (
 
 ## 7. Batasan yang berlaku sekarang
 
-- Satu koneksi TCP; setelah klien menutup, port 7 bebas lagi setelah timeout sementara 30 detik (diganti di C3/C5).
-- Data TCP yang diterima dibuang setelah di-ACK sampai echo C4.
+- TCP: maks 4 koneksi, maks 2 per IP (C5a); stop-and-wait; belum persist timer dan SYN cookie (C5c).
 - Batas laju per IP bisa dikelabui IP palsu; banjir CHAL dari 16 IP palsu atau lebih masih bisa menggusur nonce sah.
 - Balasan perintah berupa teks polos (keaslian terjamin, kerahasiaan tidak) sampai D8.
 - Hanya driver E1000 dan AHCI; belum berjalan di perangkat keras asli.

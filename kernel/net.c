@@ -291,6 +291,8 @@ uint64_t g_tcp_close_ok = 0;      // C3d: koneksi selesai lewat FIN dua arah
 uint64_t g_tcp_rst_state = 0;     // C3d: RST karena data di keadaan penutupan
 uint64_t g_tcp_conn_dropped = 0;  // C4: segmen koneksi aktif melewati batas per koneksi
 uint64_t g_tcp_dupack_limited = 0; // C4: ACK untuk segmen di luar urutan yang tidak dikirim
+uint64_t g_tcp_src_full = 0;       // C5a: SYN ditolak, IP sumber sudah punya TCP_MAX_PER_IP TCB
+uint64_t g_tcp_synrcvd_evicted = 0; // C5a: SYN_RCVD tertua digusur saat tabel penuh
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -626,7 +628,12 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
     }
 }
 
-// ---- C2/C3b: satu koneksi TCP (port 7) ----
+// ---- C2/C3b/C5a: koneksi TCP (port 7) ----
+// C5a: tabel statis TCP_MAX_CONN TCB, masing-masing dengan buffer dan timer
+// retransmisi sendiri. SYN baru: IP sumber yang sudah memegang TCP_MAX_PER_IP
+// TCB (keadaan apa pun) -> RST; slot kosong dipakai; tabel penuh -> SYN_RCVD
+// tertua digusur diam-diam (tanpa RST, umumnya IP palsu; peer sah mengulang
+// SYN); tidak ada SYN_RCVD -> RST. Koneksi ESTABLISHED tidak pernah digusur.
 // C3b: data yang diterima masuk ke g_tcp_buf lalu dikirim balik (echo
 // sementara; uji echo penuh 1 MB di C4). Jendela yang diiklankan = ruang
 // kosong g_tcp_buf; segmen di luar urutan dibuang (DECISIONS 2026-10-12).
@@ -658,8 +665,9 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 // palsu dengan 4-tuple tertebak tidak bisa memicu banjir balasan.
 #define TCP_CONN_SEG_PER_SEC 2000
 #define TCP_DUPACK_PER_SEC  10
-// C5a: jumlah slot TCB (tabel statis, tanpa heap).
-#define TCP_MAX_CONN        1
+// C5a: jumlah slot TCB (tabel statis, tanpa heap) dan batas per IP sumber.
+#define TCP_MAX_CONN        4
+#define TCP_MAX_PER_IP      2
 
 // Nilai juga dipakai metrics tcp_state.
 enum { TCP_CLOSED = 0, TCP_SYN_RCVD, TCP_ESTABLISHED, TCP_CLOSE_WAIT,
@@ -700,9 +708,25 @@ static ktimer_t g_tcp_rtx_timer[TCP_MAX_CONN];
 static void net_tcp_rtx_arm(tcp_tcb_t *t);
 static void net_tcp_log(const char *msg);
 
+// Metrics tcp_state: keadaan slot aktif pertama, 0 bila semua CLOSED.
 int net_tcp_state(void)
 {
-    return g_tcbs[0].state;
+    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+        if (g_tcbs[k].state != TCP_CLOSED) {
+            return g_tcbs[k].state;
+        }
+    }
+    return TCP_CLOSED;
+}
+
+int net_tcp_conn_active(void)
+{
+    int n = 0;
+
+    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+        n += g_tcbs[k].state != TCP_CLOSED;
+    }
+    return n;
 }
 
 static inline int seq_lt(uint32_t a, uint32_t b)
@@ -1229,12 +1253,37 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
 
     if (dport == NET_TCP_ECHO_PORT && (flags & TCP_SYN) &&
         !(flags & (TCP_ACK | TCP_RST))) {
-        for (uint32_t k = 0; t == 0 && k < TCP_MAX_CONN; k++) {
-            if (g_tcbs[k].state == TCP_CLOSED) {
-                t = &g_tcbs[k];
+        uint32_t same_ip = 0;
+        tcp_tcb_t *victim = 0;
+
+        for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+            tcp_tcb_t *e = &g_tcbs[k];
+            int eq = 1;
+
+            if (e->state == TCP_CLOSED) {
+                if (t == 0) {
+                    t = e;
+                }
+                continue;
+            }
+            for (int i = 0; i < 4; i++) {
+                if (e->ip[i] != buf[26 + i]) {
+                    eq = 0;
+                }
+            }
+            same_ip += eq;
+            if (e->state == TCP_SYN_RCVD &&
+                (victim == 0 || e->last < victim->last)) {
+                victim = e;
             }
         }
-        if (t == 0) {
+        // C5a: batas per IP dicek sebelum penggusuran, jadi satu IP tidak
+        // bisa menggusur koneksi setengah terbuka milik IP lain berulang-ulang.
+        if (same_ip >= TCP_MAX_PER_IP) {
+            g_tcp_src_full++;
+            return 0;
+        }
+        if (t == 0 && victim == 0) {
             g_tcp_busy++;
             return 0;
         }
@@ -1246,6 +1295,14 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             g_tcp_noentropy++;
             net_tcp_log("SYN dibuang: entropi belum cukup");
             return 1;
+        }
+        // C5a: tabel penuh: SYN_RCVD tertua digusur tanpa RST dan tanpa log
+        // serial (banjir SYN tidak boleh membebani UART, lihat B4b).
+        if (t == 0) {
+            ktimer_cancel(TCB_TIMER(victim));
+            victim->state = TCP_CLOSED;
+            g_tcp_synrcvd_evicted++;
+            t = victim;
         }
 
         for (int i = 0; i < 6; i++) {

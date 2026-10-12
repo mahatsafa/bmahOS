@@ -36,7 +36,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `sched.c` | `task_t`, scheduler round-robin preemptive, sleep/wait/exit, semaphore, task user, `spawn` | vmm, pmm, `task.S` |
 | `ktimer.c` | timer dengan callback (`ktimer_start/cancel/run`), senarai terurut deadline, callback dijalankan loop net task; self-test boot | sched (`task_sleep` di self-test) |
 | `e1000.c` | driver Intel 8254x: ring TX/RX (64 slot), kirim, eksperimen GSI INTx, statistik | pci, vmm, apic |
-| `net.c` | ARP, IPv4, ICMP echo, UDP (echo 7777), batas laju, TCP (port 7: satu koneksi, buffer 1024 byte, kirim stop-and-wait, retransmisi lewat ktimer, penutupan FIN/TIME_WAIT, echo sementara), dispatch RX, `net_poll` | e1000, auth, entropy, ktimer |
+| `net.c` | ARP, IPv4, ICMP echo, UDP (echo 7777), batas laju, TCP (port 7: tabel 4 TCB maks 2 per IP, buffer 1024 byte per koneksi, kirim stop-and-wait, retransmisi lewat ktimer, penutupan FIN/TIME_WAIT, echo sementara), dispatch RX, `net_poll` | e1000, auth, entropy, ktimer |
 | `crypto.c` | SHA-256, HMAC-SHA256, `ct_memeq` (perbandingan waktu-konstan), self-test vektor resmi | — |
 | `entropy.c` | kolam entropi (jitter TSC dari IRQ timer/E1000 dan RX, rdseed/rdrand), HMAC-DRBG SP 800-90A, `entropy_get` (0 = belum cukup, pemanggil menolak), self-test CAVP | crypto, cpufeat |
 | `auth.c` | kunci dari `KEY.TXT`, nonce (tabel 16 slot, isi dari `entropy_get`), verifikasi HMAC, perintah berprivilege, reboot, pintu UDP 7778 | crypto, entropy, fat32, cmd |

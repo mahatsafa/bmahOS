@@ -54,7 +54,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Permukaan | Risiko utama | Pertahanan yang ada / direncanakan |
 |---|---|---|
 | Parser ARP/IP/ICMP/UDP | Baca di luar batas, panjang palsu | Validasi panjang ketat; fuzzing (R7) |
-| Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda, retransmisi terbatas (5x lalu RST, C3c), setiap keadaan penutupan punya batas waktu (C3d), batas 2000 segmen/s per koneksi dan 10 ACK duplikat/s (C4) |
+| Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda, retransmisi terbatas (5x lalu RST, C3c), setiap keadaan penutupan punya batas waktu (C3d), batas 2000 segmen/s per koneksi dan 10 ACK duplikat/s (C4), tabel 4 TCB, maks 2 per IP, SYN_RCVD tertua digusur saat penuh (C5a) |
 | Protokol perintah | Replay, penebakan nonce, banjir CHAL | HMAC-SHA256, nonce sekali pakai, tabel nonce 16 slot, maks 4 per IP, batas laju per IP dan global |
 | Nonce | Nonce dapat ditebak melemahkan challenge-response | Modul entropi + HMAC-DRBG (F1.8); menolak jika entropi belum cukup |
 | Parser FAT32 | Struktur disk rusak | Validasi BPB (RootEntryCount==0 dan FATSz16==0), batas jumlah sektor, kode error bukan halt |
@@ -85,8 +85,9 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 2. Banjir CHAL dari 16 IP palsu atau lebih masih dapat menggusur nonce sah (denial of service ringan,
    bukan pembobolan autentikasi).
 3. Balasan perintah berupa teks polos: penyerang di jalur bisa membaca, tetapi tidak bisa memalsukan perintah.
-4. Satu koneksi TCP: satu klien bisa menahan port 7 (C3d: penutupan normal membebaskan port seketika,
-   TIME_WAIT 2 s; klien yang tetap aktif atau membuka ulang terus-menerus masih bisa menahannya sampai C5).
+4. Tabel TCP 4 koneksi, maks 2 per IP (C5a): klien dari 2 IP atau lebih yang tetap aktif bisa memenuhi tabel
+   (koneksi diam ditutup setelah 30 s). Banjir SYN dari banyak IP palsu hanya menggusur SYN_RCVD, tetapi
+   bisa mengganggu handshake klien sah (dia mengulang SYN) sampai SYN cookie (C5c).
 5. Kunci HMAC tersimpan di mesin dan di klien. Penyerang yang mendapat salah satunya mendapat kendali.
 6. Entropi (F1.8): rdseed/rdrand dipercaya penuh (CPU atau hypervisor jahat bisa mengatur nonce). Tanpa
    itu, kredit jitter adalah perkiraan kasar; di VM jitter bisa diatur hypervisor.

@@ -69,3 +69,17 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **ACK balasan untuk segmen yang tidak diterima** (di luar urutan, duplikat, ACK melewati `snd_nxt`) **maks 10/s** (`tcp_dupack_limited`), mirip batas challenge ACK RFC 5961, supaya segmen palsu dengan 4-tuple tertebak tidak bisa memantulkan banjir balasan. ACK untuk data yang diterima tidak dibatasi.
 - **Uji 1 MB memakai klien TCP Linux sungguhan lewat slirp** (`tests/tcp-echo.py`, kirim dan terima bersamaan, SHA-256), bukan rawnet: rawnet tidak punya tumpukan TCP. QEMU TCG: ~31 s (~33 KB/s, stop-and-wait).
 
+## 2026-10-13 (C5a tabel koneksi TCP; 4 TCB disetujui pengguna)
+- **Tabel 4 TCB statis** (`TCP_MAX_CONN`), masing-masing dengan buffer 1024 byte dan `ktimer_t` sendiri (4 KB
+  buffer total, tanpa heap), menggantikan TCB tunggal C0. Dipisah jadi refactor (C5a-1, 1 slot, perilaku sama) dan
+  fitur (C5a-2). Alasan: satu SYN palsu tidak lagi menahan port 7, dan Tahap D butuh sesi CLI di samping echo.
+- **Maks 2 TCB per IP sumber** (`TCP_MAX_PER_IP`, keadaan apa pun termasuk SYN_RCVD/TIME_WAIT); SYN berikutnya
+  dibalas RST (`tcp_src_full`). Ini "batas SYN per sumber" C5a; laju SYN tetap memakai batas per IP 20/s dan global
+  100/s yang sudah ada. Tabel laju SYN terpisah (rencana awal 4/s) tidak dibuat: tidak menambah perlindungan
+  karena satu IP sudah dibatasi 2 slot dan tidak bisa menggusur slot IP lain.
+- **Tabel penuh: SYN_RCVD tertua digusur** (diam-diam, tanpa RST, tanpa log serial; `tcp_synrcvd_evicted`); bila
+  semua slot aktif (bukan SYN_RCVD), SYN dibalas RST (`tcp_dropped_busy`). Koneksi ESTABLISHED tidak pernah
+  digusur. Batas per IP dicek sebelum penggusuran. Batasan: banjir SYN dari banyak IP palsu yang cukup cepat bisa
+  menggusur handshake klien sah sebelum ACK-nya tiba (klien mengulang SYN); SYN cookie = C5c.
+- **Metrics**: `tcp_conn_active` (slot tidak CLOSED); `tcp_state` kini keadaan slot aktif pertama (0 = semua CLOSED).
+

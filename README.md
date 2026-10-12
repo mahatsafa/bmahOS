@@ -198,10 +198,10 @@ diterima tapi tidak diperlukan lagi. Kode keluar: 0 sukses, 1 balasan `ERR`, 2 t
 - Hanya driver E1000 (device ID `0x100F` 82545EM dan `0x100E` 82540EM yang sudah diuji); belum ada
   driver untuk NIC hardware target
 - Hanya controller AHCI pertama yang dipakai
-- TCP masih minimal: satu koneksi di port 7 (echo), kirim stop-and-wait, retransmisi dengan RTO tetap
+- TCP masih minimal: maks 4 koneksi di port 7 (echo), maks 2 per IP sumber, kirim stop-and-wait, retransmisi dengan RTO tetap
   1 detik lalu eksponensial (maks 8 detik, 5 kali, lalu RST), tanpa pengukuran RTT. Penutupan FIN dua arah:
   klien menutup -> bmahOS membalas FIN setelah echo habis (port langsung bebas); koneksi diam 30 detik ditutup
-  dengan FIN, TIME_WAIT hanya 2 detik (bukan 2*MSL) dan selama itu port 7 sibuk. Belum ada persist timer
+  dengan FIN, TIME_WAIT hanya 2 detik (bukan 2*MSL) dan selama itu memakai satu slot. Belum ada persist timer
   (data tertahan jendela 0 diputus RST setelah 30 detik). Belum ada DHCP atau IPv6
 
 ## Catatan pengembangan
