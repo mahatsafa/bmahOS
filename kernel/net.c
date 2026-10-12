@@ -647,11 +647,16 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 // FIN_WAIT_2 (maks TCP_FIN_WAIT_2_TIMEOUT) -> TIME_WAIT (TCP_TIME_WAIT_TICKS);
 // FIN bersamaan -> CLOSING. FIN kita memakai satu nomor urut dan dikirim
 // ulang seperti data. Data baru setelah FIN peer atau setelah FIN kita -> RST.
+// C5b: `last` (dasar semua timeout keadaan) hanya diperbarui oleh kemajuan:
+// handshake selesai, ACK yang memajukan snd_una, data baru dalam urutan, FIN
+// peer. ACK duplikat, keepalive, jendela 0 berulang, SYN ulang, dan RST/segmen
+// di luar urutan tidak memperpanjang timeout, jadi peer (atau penebak 4-tuple)
+// tidak bisa menahan slot TCB tanpa batas dengan segmen kosong.
 #define NET_TCP_ECHO_PORT   7
 #define TCP_BUF_SIZE        1024
 #define TCP_MSS             536
 #define TCP_SYNRCVD_TIMEOUT 500    // tick (5 detik)
-#define TCP_IDLE_TIMEOUT    3000   // tick (30 detik), sementara sampai C5; tidak
+#define TCP_IDLE_TIMEOUT    3000   // tick (30 detik) tanpa kemajuan (C5b); tidak
                                    // berlaku selama ada segmen belum di-ACK
 #define TCP_RTO_INIT        100    // tick (1 detik), RTO awal tetap (C3c)
 #define TCP_RTO_MAX         800    // tick: backoff 1, 2, 4, 8, 8 detik
@@ -1115,8 +1120,6 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
     tcp_tcb_t *t = net_tcp_find(buf, r);
 
     if (t) {
-        t->last = timer_ticks;
-
         if (flags & TCP_RST) {
             // C3d: RST di TIME_WAIT diabaikan (RFC 1337), keadaan itu
             // berakhir sendiri setelah TCP_TIME_WAIT_TICKS.
@@ -1147,6 +1150,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             t->snd_una = ack;
             net_tcp_rtx_progress(t);
             t->state = TCP_ESTABLISHED;
+            t->last = timer_ticks;   // C5b: kemajuan
             g_tcp_conn_open++;
             net_tcp_log("ESTABLISHED");
         }
@@ -1168,6 +1172,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             t->buf_head = (t->buf_head + acked) % TCP_BUF_SIZE;
             t->buf_count -= acked;
             t->snd_una = ack;
+            t->last = timer_ticks;   // C5b: kemajuan
             g_tcp_acked_bytes += acked;
             net_tcp_rtx_progress(t);
 
@@ -1218,12 +1223,19 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             t->buf_count += n;
             t->rcv_nxt += n;
             g_tcp_rx_bytes += n;
+            if (n > 0) {
+                t->last = timer_ticks;   // C5b: kemajuan
+            }
         }
 
         // FIN peer hanya berarti di ESTABLISHED/FIN_WAIT_1/FIN_WAIT_2; di
         // keadaan lain FIN peer sudah diterima (FIN baru dibalas ACK saja).
         if ((flags & TCP_FIN) && n == dlen) {
             need_ack = 1;
+            if (t->state == TCP_ESTABLISHED || t->state == TCP_FIN_WAIT_1 ||
+                t->state == TCP_FIN_WAIT_2) {
+                t->last = timer_ticks;   // C5b: FIN peer pertama = kemajuan
+            }
             if (t->state == TCP_ESTABLISHED) {
                 t->rcv_nxt++;
                 t->state = TCP_CLOSE_WAIT;

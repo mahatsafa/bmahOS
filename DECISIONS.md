@@ -69,6 +69,17 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **ACK balasan untuk segmen yang tidak diterima** (di luar urutan, duplikat, ACK melewati `snd_nxt`) **maks 10/s** (`tcp_dupack_limited`), mirip batas challenge ACK RFC 5961, supaya segmen palsu dengan 4-tuple tertebak tidak bisa memantulkan banjir balasan. ACK untuk data yang diterima tidak dibatasi.
 - **Uji 1 MB memakai klien TCP Linux sungguhan lewat slirp** (`tests/tcp-echo.py`, kirim dan terima bersamaan, SHA-256), bukan rawnet: rawnet tidak punya tumpukan TCP. QEMU TCG: ~31 s (~33 KB/s, stop-and-wait).
 
+## 2026-10-13 (C5b timeout tanpa kemajuan)
+- **`last` hanya diperbarui oleh kemajuan**: handshake selesai, ACK yang memajukan snd_una, data baru dalam urutan,
+  FIN peer pertama. Segmen lain (ACK duplikat, keepalive seq-1, ACK jendela 0 berulang, SYN ulang di SYN_RCVD,
+  RST/segmen seq salah, FIN ulang di TIME_WAIT) tetap diproses seperti dulu tetapi tidak memperpanjang timeout
+  apa pun. Alasan: sebelumnya peer, atau penebak 4-tuple tanpa melihat lalu lintas, bisa menahan slot TCB
+  selamanya dengan segmen kosong (2 IP cukup untuk mengunci port 7).
+- Akibat: keepalive TCP klien (Windows default 2 jam) tidak menjaga koneksi diam; koneksi tanpa data 30 s tetap
+  ditutup FIN. TIME_WAIT tidak di-restart oleh FIN ulang (RFC 793 me-restart; di sini 2 s tetap).
+- **Tidak dibuat**: batas umur koneksi / laju minimum (slowloris 1 byte tiap < 30 s masih menahan slot). Diputuskan
+  di D4 bersama timeout sesi CLI.
+
 ## 2026-10-13 (C5a tabel koneksi TCP; 4 TCB disetujui pengguna)
 - **Tabel 4 TCB statis** (`TCP_MAX_CONN`), masing-masing dengan buffer 1024 byte dan `ktimer_t` sendiri (4 KB
   buffer total, tanpa heap), menggantikan TCB tunggal C0. Dipisah jadi refactor (C5a-1, 1 slot, perilaku sama) dan

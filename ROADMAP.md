@@ -139,6 +139,12 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   VMware: 2 koneksi bersamaan echo benar, ke-3 ditolak (Windows mengulang SYN 5x dalam 2,2 s). Penggusuran dan
   banjir SYN 20 IP hanya terbukti di QEMU (Windows satu IP).
 - [ ] **C5b** Timeout koneksi menganggur dan setengah terbuka.
+  Hasil: timeout C2/C3d sudah ada (SYN_RCVD 5 s, diam 30 s -> FIN, FIN_WAIT_2 10 s, TIME_WAIT 2 s,
+  kirim ulang 5x -> RST), tetapi `last` diperbarui oleh segmen apa pun yang cocok 4-tuple, jadi ACK duplikat,
+  keepalive, ACK jendela 0, SYN ulang, atau RST seq salah menahan slot tanpa batas. Kini hanya kemajuan
+  (handshake, ACK memajukan snd_una, data baru, FIN peer) yang memperpanjang. make test 99 -> 101, PROD 98 -> 100,
+  host-test net 220 -> 234. VMware: keepalive Windows tiap 5 s tidak menahan koneksi (FIN setelah 30 s);
+  SYN ulang, RST seq salah, dan ACK jendela 0 hanya terbukti di QEMU/host-test.
 - [ ] **C5c** (opsional) SYN cookie.
 
 Keputusan yang harus tertulis sebelum C3b: segmen di luar urutan dibuang atau disimpan, dan ukuran window
@@ -220,6 +226,8 @@ menjalankan beban kerja IoT, cukup tulis program user-space di atas socket API (
 ## 7. Batasan yang berlaku sekarang
 
 - TCP: maks 4 koneksi, maks 2 per IP (C5a); stop-and-wait; belum persist timer dan SYN cookie (C5c).
+  Timeout hanya diperpanjang kemajuan (C5b); peer yang mengirim 1 byte tiap < 30 s tetap bisa menahan slot
+  (tanpa batas umur koneksi; diputuskan di D4).
 - Batas laju per IP bisa dikelabui IP palsu; banjir CHAL dari 16 IP palsu atau lebih masih bisa menggusur nonce sah.
 - Balasan perintah berupa teks polos (keaslian terjamin, kerahasiaan tidak) sampai D8.
 - Hanya driver E1000 dan AHCI; belum berjalan di perangkat keras asli.

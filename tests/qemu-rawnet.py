@@ -490,11 +490,30 @@ def test_tcp_close(net, cli):
     iss = open_conn(c, 47302, 300)
     if iss is None:
         return
+    # C5b: gangguan pada 2, 7, 12, 17, 22 s (ACK duplikat, keepalive seq-1,
+    # RST seq salah) tidak memperpanjang timeout diam; keepalive dibalas ACK.
+    noise = [tcp_frame(c, 47302, 7, 301, iss + 1, 0x10),
+             tcp_frame(c, 47302, 7, 300, iss + 1, 0x10),
+             tcp_frame(c, 47302, 7, 9999, 0, 0x04)]
     t0 = time.time()
-    r = net.tcp_replies(c, 47302, 34, limit=1)
-    dt = time.time() - t0
+    fin, acks, other, k = None, 0, [], 0
+    while fin is None and time.time() - t0 < 34:
+        if k < 5 and time.time() - t0 >= 5 * k + 2:
+            net.send(noise[k % 3])
+            k += 1
+        for x in net.tcp_replies(c, 47302, 0.3, stamp=True):
+            if x[1:] == (iss + 1, 301, 0x11, 0):
+                fin = fin or x
+            elif x[1:] == (iss + 1, 301, 0x10, 0):
+                acks += 1
+            else:
+                other.append(x[1:])
+    dt = (fin[0] if fin else time.time()) - t0
     check("C3d: diam ~30 s -> FIN|ACK seq=iss+1 (FIN_WAIT_1)",
-          r == [(iss + 1, 301, 0x11, 0)] and 28 <= dt <= 34, "%r %.1f s" % (r, dt))
+          fin is not None and 28 <= dt <= 34, "%r %.1f s" % (fin, dt))
+    check("C5b: 5 gangguan tidak menunda FIN, keepalive dibalas ACK 2x",
+          fin is not None and k == 5 and acks == 2 and other == [],
+          "k=%d acks=%d other=%r" % (k, acks, other))
     net.send(tcp_frame(c, 47302, 7, 301, iss + 2, 0x11))
     r = net.tcp_replies(c, 47302, 2, limit=1)
     check("C3d: FIN peer -> ACK ack=302 (TIME_WAIT)", r == [(iss + 2, 302, 0x10, 0)], repr(r))
@@ -510,14 +529,33 @@ def test_tcp_close(net, cli):
     if iss is not None:
         net.send(tcp_frame(d, 47304, 7, 501, iss + 1, 0x04))
         net.tcp_replies(d, 47304, 0.5)
+
+    # C5b: SYN diulang tiap 1 s tidak menahan SYN_RCVD; RST|ACK ~5 s setelah
+    # SYN pertama (dulu: baru setelah SYN terakhir + 5 s).
+    e = bytes([192, 168, 50, 24])
+    syn = tcp_frame(e, 47305, 7, 600, 0, 0x02)
+    t0 = time.time()
+    net.send(syn)
+    rst, k = None, 1
+    while rst is None and time.time() - t0 < 9:
+        if k < 5 and time.time() - t0 >= k:
+            net.send(syn)
+            k += 1
+        for x in net.tcp_replies(e, 47305, 0.2, stamp=True):
+            if x[3] & 0x04:
+                rst = rst or x
+    dt = (rst[0] if rst else time.time()) - t0
+    check("C5b: SYN ulang tiap 1 s -> SYN_RCVD tetap RST|ACK ~5 s",
+          rst is not None and rst[3] == 0x14 and k == 5 and 4.3 <= dt <= 6.8,
+          "%r k=%d %.1f s" % (rst and rst[1:], k, dt))
     time.sleep(1.2)
     m1 = cli.metrics()
     if m1 is None:
         check("C3d: metrics akhir", False)
         return
     dd = {k: m1[k] - m0[k] for k in ("tcp_close_ok", "tcp_rst_state", "tcp_timeout")}
-    check("C3d: metrics close_ok +2, rst_state +1, timeout +1, tcp_state=0",
-          dd == {"tcp_close_ok": 2, "tcp_rst_state": 1, "tcp_timeout": 1} and m1["tcp_state"] == 0,
+    check("C3d: metrics close_ok +2, rst_state +1, timeout +2 (C5b), tcp_state=0",
+          dd == {"tcp_close_ok": 2, "tcp_rst_state": 1, "tcp_timeout": 2} and m1["tcp_state"] == 0,
           repr((dd, m1.get("tcp_state"))))
 
 

@@ -1100,16 +1100,14 @@ static void test_tcp_close(void)
     CHECK(g_tx_n == 1 && tx_seg(0).flags == F_ACK && tx_seg(0).ack == g_pseq + 1);
     rx(f, mk_tcp_w(f, g_pseq + 1, 0, F_RST, 0, 0, 0));
     CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_TIME_WAIT);
-    rx(f, mk_tcp(f, 4200, 7, 1, 0, F_SYN, ""));
+    rx_now(f, mk_tcp(f, 4200, 7, 1, 0, F_SYN, ""));
     CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_SYN | F_ACK) && g_tcp_busy == busy0);
     CHECK(g_tcbs[1].state == TCP_SYN_RCVD);
     rx_now(f, mk_tcp(f, 4200, 7, 2, 0, F_RST, ""));   // tutup slot 1, waktu tetap
     CHECK(g_tx_n == 0 && g_tcbs[1].state == TCP_CLOSED);
-    int tw = 1;
-    for (int i = 0; i < TCP_TIME_WAIT_TICKS - 100; i++) {   // rx terakhir sudah +100
-        tw &= step() == 0 && g_tcbs[0].state == TCP_TIME_WAIT;
-    }
-    CHECK(tw);
+    // C5b: FIN ulang dan RST (2 x 100 tick) tidak memperpanjang TIME_WAIT:
+    // sudah TCP_TIME_WAIT_TICKS sejak FIN peer pertama, berakhir tick berikutnya.
+    CHECK(TCP_TIME_WAIT_TICKS == 200 && g_tcbs[0].state == TCP_TIME_WAIT);
     CHECK(step() == 0 && g_tcbs[0].state == TCP_CLOSED && g_tcp_close_ok == ok0 + 2);
 
     // E. FIN_WAIT_2 tanpa FIN peer: RST setelah TCP_FIN_WAIT_2_TIMEOUT.
@@ -1301,6 +1299,102 @@ static void test_tcp_table(void)
     tcp_reset();
 }
 
+// ---- C5b: timeout hanya diperpanjang oleh kemajuan ----
+
+// Jalankan `n` tick tanpa frame keluar. Return 1 bila memang sunyi.
+static int quiet(uint32_t n)
+{
+    int ok = 1;
+    for (uint32_t i = 0; i < n; i++) {
+        ok &= step() == 0;
+    }
+    return ok;
+}
+
+static void test_tcp_idle(void)
+{
+    static uint8_t f[600];
+    uint64_t to0 = g_tcp_timeouts;
+    uint64_t t0;
+    int ok;
+
+    // A. ESTABLISHED: ACK duplikat, keepalive (seq - 1), jendela berubah,
+    // RST seq salah, SYN: tidak ada yang memperpanjang. FIN tetap tepat
+    // TCP_IDLE_TIMEOUT + 1 tick setelah handshake.
+    tcp_open(1000, 2000, 4096);
+    t0 = timer_ticks;
+    ok = 1;
+    for (int i = 0; i < 5; i++) {
+        ok &= quiet(400);
+        if (i == 0) {
+            rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 4096));
+        } else if (i == 1) {
+            rx(f, mk_tcp_w(f, g_pseq - 1, g_iss + 1, F_ACK, 0, 0, 4096));
+        } else if (i == 2) {
+            rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 100));
+        } else if (i == 3) {
+            rx(f, mk_tcp_w(f, g_pseq + 5000, 0, F_RST, 0, 0, 0));
+        } else {
+            rx(f, mk_tcp_w(f, 77, 0, F_SYN, 0, 0, 4096));
+        }
+        ok &= g_tcbs[0].state == TCP_ESTABLISHED;
+    }
+    CHECK(ok);
+    CHECK(run_until_tx(5000) > 0 && timer_ticks - t0 == TCP_IDLE_TIMEOUT + 1);
+    CHECK(tx_seg(0).flags == (F_FIN | F_ACK) && g_tcbs[0].state == TCP_FIN_WAIT_1);
+    CHECK(g_tcp_timeouts == to0 + 1);
+
+    // B. Kemajuan memperpanjang: data baru + ACK echo-nya di tick ~2500,
+    // FIN TCP_IDLE_TIMEOUT + 1 tick setelah ACK itu.
+    tcp_open(3000, 4000, 4096);
+    CHECK(quiet(2400));
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, (const uint8_t *)"x", 1, 4096));
+    g_pseq++;
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 1);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK, 0, 0, 4096));
+    t0 = timer_ticks;
+    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1 && tx_seg(0).flags == (F_FIN | F_ACK));
+
+    // C. SYN_RCVD: SYN ulang tiap 100 tick tidak memperpanjang; RST tepat
+    // TCP_SYNRCVD_TIMEOUT + 1 tick setelah SYN pertama.
+    tcp_reset();
+    rx(f, mk_tcp_w(f, 800, 0, F_SYN, 0, 0, 4096));
+    t0 = timer_ticks;
+    ok = g_tx_n == 1 && g_tcbs[0].state == TCP_SYN_RCVD;
+    for (int i = 0; i < 4; i++) {
+        rx(f, mk_tcp_w(f, 800, 0, F_SYN, 0, 0, 4096));
+        ok &= g_tx_n == 1 && tx_seg(0).flags == (F_SYN | F_ACK);
+    }
+    CHECK(ok);
+    int rst = 0;
+    for (uint32_t i = 0; i < 2000 && !rst; i++) {
+        step();
+        for (int j = 0; j < g_tx_n; j++) {
+            rst |= (tx_seg(j).flags & F_RST) != 0;
+        }
+    }
+    CHECK(rst && timer_ticks - t0 == TCP_SYNRCVD_TIMEOUT + 1 && g_tcbs[0].state == TCP_CLOSED);
+
+    // D. Data tertahan jendela 0: ACK jendela 0 berulang tidak menahan
+    // koneksi; RST TCP_IDLE_TIMEOUT + 1 tick setelah data terakhir.
+    tcp_open(5000, 6000, 4096);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, (const uint8_t *)"abc", 3, 0));
+    g_pseq += 3;
+    t0 = timer_ticks;
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 0 && g_tcbs[0].buf_count == 3);
+    ok = 1;
+    for (int i = 0; i < 5; i++) {
+        ok &= quiet(400);
+        rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 0));
+        ok &= g_tx_n == 0 && g_tcbs[0].state == TCP_ESTABLISHED;
+    }
+    CHECK(ok);
+    CHECK(run_until_tx(5000) > 0 && timer_ticks - t0 == TCP_IDLE_TIMEOUT + 1);
+    CHECK(tx_seg(0).flags == (F_RST | F_ACK) && g_tcbs[0].state == TCP_CLOSED);
+    CHECK(g_tx_bad == 0);
+    tcp_reset();
+}
+
 int main(void)
 {
     test_checksum();
@@ -1314,6 +1408,7 @@ int main(void)
     test_tcp_close();
     test_tcp_limits();
     test_tcp_table();
+    test_tcp_idle();
     test_limits();
     build_templates();
     test_truncation();
