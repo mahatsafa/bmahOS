@@ -113,12 +113,10 @@ int vmm_nx_of(uint64_t pml4_phys, uint64_t vaddr)
     return -1;
 }
 
+// Butuh cpu_features_init() lebih dulu (F1.8a: NX dibaca dari g_cpu).
 void nx_init(void)
 {
-    uint32_t a = 0x80000001, b, c = 0, d;
-    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
-
-    if (!(d & (1u << 20))) {
+    if (!g_cpu.nx) {
         serial_write("NX: CPU tidak mendukung NX/XD, halaman data tetap executable\r\n");
         return;
     }
