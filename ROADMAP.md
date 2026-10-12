@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. Berikutnya C5a.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. Berikutnya C5b.
 
 ## 4. Templat tahap
 
@@ -131,7 +131,13 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   per koneksi 2000 segmen/s; ACK untuk segmen yang tidak diterima maks 10/s (keputusan disetujui pengguna, DECISIONS).
   Interop: Windows TcpClient dan klien Python Linux lulus; `nc` Linux belum (CentOS tidak di VMnet2). Throughput
   rendah (stop-and-wait, satu segmen per RTT) sesuai desain C0.
-- [ ] **C5a** Batas SYN per sumber dan tabel koneksi terbatas.
+- [x] **C5a** (2026-10-13, 785a7af + 5f83f7f, make test 88 -> 99, PROD 87 -> 98, VMware lulus) Batas SYN per sumber dan tabel koneksi terbatas.
+  Hasil: refactor C5a-1 (785a7af, TCB jadi tabel 1 slot, perilaku sama) lalu fitur C5a-2 (5f83f7f): 4 TCB statis
+  (buffer 1024 + timer per slot), maks 2 per IP sumber (lebih: RST, `tcp_src_full`), tabel penuh: SYN_RCVD tertua
+  digusur tanpa RST (`tcp_synrcvd_evicted`), semua aktif: RST. Laju SYN tetap batas per IP 20/s + global 100/s
+  (tabel laju SYN terpisah tidak dibuat, DECISIONS). Metrics `tcp_conn_active`. host-test net 195 -> 220.
+  VMware: 2 koneksi bersamaan echo benar, ke-3 ditolak (Windows mengulang SYN 5x dalam 2,2 s). Penggusuran dan
+  banjir SYN 20 IP hanya terbukti di QEMU (Windows satu IP).
 - [ ] **C5b** Timeout koneksi menganggur dan setengah terbuka.
 - [ ] **C5c** (opsional) SYN cookie.
 
