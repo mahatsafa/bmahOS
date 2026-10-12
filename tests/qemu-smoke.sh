@@ -159,7 +159,17 @@ check "CPUID: semua kunci fitur" 'grep -a "CPU: fitur" "$LOG" | grep -q "rdrand=
 check "CPUID: nx=1 cocok NX self-test" 'grep -aq "CPU: fitur.* nx=1" "$LOG" && grep -q "NX: self-test PASS" "$LOG"'
 check "kprintf self-test PASS"   'grep -aq "kprintf: self-test PASS" "$LOG"'
 check "tanpa PANIC/ASSERT gagal" '! grep -aq "PANIC:" "$LOG"'
-check "self-test crypto (5 PASS)" '[ "$(grep -c "^Crypto: .* PASS" "$LOG")" -eq 5 ]'
+check "self-test crypto (5 PASS)" '[ "$(grep -v ct_memeq "$LOG" | grep -c "^Crypto: .* PASS")" -eq 5 ]'
+check "ct_memeq self-test PASS"  'grep -aq "^Crypto: ct_memeq PASS" "$LOG"'
+# F1.9: kode mesin ct_memeq hanya boleh punya satu lompatan bersyarat (ulangan
+# loop i < n), tanpa call, dan dipakai auth.o untuk 2 HMAC + 1 nonce.
+# Sengaja ketat untuk build tanpa -O: bila CFLAGS diberi -O, gcc menambah
+# cabang n == 0 (masih aman) dan cek ini gagal, yang memaksa audit ulang.
+CT_ASM="$(objdump -d --no-show-raw-insn --disassemble=ct_memeq "$ROOT/build/kernel.elf" | sed -n "/<ct_memeq>:/,\$p")"
+check "ct_memeq: 1 lompatan bersyarat, tanpa call" \
+    '[ "$(echo "$CT_ASM" | grep -E "\sj[a-z]+\s" | grep -vc "\sjmp\s")" -eq 1 ] &&
+     ! echo "$CT_ASM" | grep -qE "\scall"'
+check "auth.o memanggil ct_memeq 3x" '[ "$(objdump -dr "$ROOT/build/auth.o" | grep -c "R_X86_64_PLT32.*ct_memeq\|R_X86_64_PC32.*ct_memeq")" -eq 3 ]'
 check "PCI-1 menemukan AHCI"     'grep -q "PCI-1: AHCI di" "$LOG"'
 check "PCI-1 menemukan E1000"    'grep -q "PCI-1: E1000 di" "$LOG"'
 check "KEY.TXT dimuat"           'grep -q "Net-11: kunci dimuat" "$LOG"'

@@ -93,7 +93,8 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 - Semua panjang dari luar divalidasi **sebelum** dipakai untuk mengindeks atau menyalin.
 - Setiap tabel atau buffer punya batas atas tertulis dan perilaku saat penuh (tolak, bukan crash).
 - Gagal tertutup (fail-closed): kondisi tak jelas berarti menolak.
-- Perbandingan rahasia (HMAC, nonce) waktu-konstan.
+- Perbandingan rahasia (HMAC, nonce) waktu-konstan: selalu lewat `ct_memeq` (F1.9), yang kode mesinnya
+  dicek di `make test`.
 - Jangan menulis primitif kripto sendiri selain komposisi di atas HMAC-SHA256 yang sudah ada; sisanya library teruji.
 - Log tidak memuat kunci, nonce penuh, atau isi rahasia. Log serial dibatasi lajunya.
 - Setiap parser baru wajib punya uji unit di host dengan sanitizer dan masuk daftar fuzzing.

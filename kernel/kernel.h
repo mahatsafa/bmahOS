@@ -388,6 +388,7 @@ void sha256_init(sha256_ctx_t *ctx);
 void sha256_update(sha256_ctx_t *ctx, const uint8_t *data, uint32_t len);
 void sha256_final(sha256_ctx_t *ctx, uint8_t *hash);
 void hmac_sha256(const uint8_t *key, uint32_t keylen, const uint8_t *msg, uint32_t msglen, uint8_t *out);
+int ct_memeq(const void *a, const void *b, uint32_t n);
 
 // ---- net.c (ARP/IPv4/ICMP/UDP/TCP) ----
 #define NET_UDP_BUDGET_PER_SEC 100

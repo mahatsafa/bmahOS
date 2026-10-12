@@ -148,13 +148,7 @@ static int auth_verify(volatile uint8_t *d, uint32_t len,
     uint8_t mac[32];
     hmac_sha256(g_auth_key, g_auth_key_len, m, msg_len, mac);
 
-    uint8_t diff = 0;
-
-    for (uint32_t i = 0; i < 32; i++) {
-        diff |= (uint8_t)(mac[i] ^ rx[i]);
-    }
-
-    if (diff != 0) {
+    if (!ct_memeq(mac, rx, 32)) {
         return 3;
     }
 
@@ -307,22 +301,15 @@ static int priv_verify(volatile uint8_t *d, uint32_t len,
         rx[i] = (uint8_t)((hi << 4) | lo);
     }
 
+    // F1.9: semua slot dibandingkan (tanpa break), jadi waktu tidak
+    // bergantung pada posisi atau isi nonce yang cocok.
     int slot = -1;
 
     for (uint32_t i = 0; i < PRIV_NONCE_SLOTS; i++) {
-        if (!g_priv_nonces[i].in_use) {
-            continue;
-        }
+        int eq = ct_memeq(g_priv_nonces[i].nonce, nonce, 16);
 
-        uint8_t nd = 0;
-
-        for (uint32_t j = 0; j < 16; j++) {
-            nd |= (uint8_t)(g_priv_nonces[i].nonce[j] ^ nonce[j]);
-        }
-
-        if (nd == 0) {
+        if (eq && g_priv_nonces[i].in_use && slot < 0) {
             slot = (int)i;
-            break;
         }
     }
 
@@ -343,13 +330,7 @@ static int priv_verify(volatile uint8_t *d, uint32_t len,
     uint8_t mac[32];
     hmac_sha256(g_auth_key, g_auth_key_len, m, msg_len, mac);
 
-    uint8_t diff = 0;
-
-    for (uint32_t i = 0; i < 32; i++) {
-        diff |= (uint8_t)(mac[i] ^ rx[i]);
-    }
-
-    if (diff != 0) {
+    if (!ct_memeq(mac, rx, 32)) {
         return 5;
     }
 

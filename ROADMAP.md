@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. Berikutnya F1.9.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 (2026-10-12): `ct_memeq`. Berikutnya Fase 2 (C3a).
 
 ## 4. Templat tahap
 
@@ -90,7 +90,12 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   Hasil: `kernel/entropy.c`, self-test CAVP saat boot, flag `NOENTROPY=1` (mode tolak) dan `NORDRAND=1` (siap dari
   jitter, tick ~256 di QEMU). VMware (Zen 2): siap di tick 0 dari rdseed; estimator jitter mengkredit hampir tiap tick
   (2479 bit dalam 2478 tick), bukti bahwa kredit jitter di VM tidak bisa dipercaya sebagai ukuran entropi.
-- [ ] **F1.9** Audit perbandingan HMAC: pastikan waktu-konstan (tidak keluar lebih awal saat byte berbeda).
+- [ ] **F1.9** (2026-10-12, make test 61 -> 64, PROD 60 -> 63) Audit perbandingan HMAC: pastikan waktu-konstan (tidak keluar lebih awal saat byte berbeda).
+  Temuan: dua perbandingan HMAC di `auth.c` sudah akumulasi OR (waktu-konstan di sumber); pencarian nonce keluar
+  (`break`) di slot yang cocok (bocor hanya posisi slot, bukan isi). Kernel dikompilasi tanpa `-O`, jadi kode mesin
+  mengikuti sumber, tetapi itu tidak dijamin bila flag berubah. Perbaikan: `ct_memeq` (crypto.c; volatile, noinline,
+  hasil tanpa cabang) dipakai di ketiga tempat, pencarian nonce memindai semua slot. Uji: self-test boot, cek statis
+  kode mesin di `make test` (tepat 1 lompatan bersyarat, tanpa call; auth.o memanggil 3x), uji host semua panjang/bit.
 
 ### Fase 2: TCP selesai
 

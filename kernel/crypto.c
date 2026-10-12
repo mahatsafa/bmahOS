@@ -174,6 +174,26 @@ void hmac_sha256(const uint8_t *key, uint32_t keylen,
     sha256_final(&ctx, out);
 }
 
+// F1.9: bandingkan n byte rahasia (HMAC, nonce) dalam waktu yang tidak
+// bergantung pada isinya: tanpa keluar lebih awal dan tanpa cabang pada
+// hasil. volatile mencegah compiler mengubah loop menjadi memcmp/keluar
+// awal; noinline supaya kode mesinnya bisa diperiksa (tests/qemu-smoke.sh).
+// Return 1 bila sama, 0 bila beda.
+__attribute__((noinline))
+int ct_memeq(const void *a, const void *b, uint32_t n)
+{
+    const volatile uint8_t *x = a;
+    const volatile uint8_t *y = b;
+    uint32_t d = 0;
+
+    for (uint32_t i = 0; i < n; i++) {
+        d |= (uint32_t)(x[i] ^ y[i]);
+    }
+
+    // d dalam 0..255: d == 0 -> (d - 1) >> 8 = 0xFFFFFF -> 1; selain itu 0.
+    return (int)(1u & ((d - 1u) >> 8));
+}
+
 static uint32_t crypto_strlen(const char *s)
 {
     uint32_t n = 0;
@@ -261,6 +281,28 @@ void crypto_selftest(void)
         hmac_sha256(key, 131, (const uint8_t *)m, crypto_strlen(m), out);
         ok &= crypto_check("hmac-rfc4231-tc6-kunci-panjang", out,
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+    }
+
+    // F1.9: ct_memeq benar untuk sama, beda di tiap posisi, dan n = 0.
+    {
+        uint8_t a[32], b[32];
+        int ct_ok = 1;
+
+        for (uint32_t i = 0; i < 32; i++) {
+            a[i] = (uint8_t)(i * 7 + 1);
+            b[i] = a[i];
+        }
+        ct_ok &= ct_memeq(a, b, 32) == 1;
+        ct_ok &= ct_memeq(a, b, 0) == 1;
+        for (uint32_t i = 0; i < 32; i++) {
+            for (uint32_t bit = 0; bit < 8; bit++) {
+                b[i] ^= (uint8_t)(1u << bit);
+                ct_ok &= ct_memeq(a, b, 32) == 0;
+                b[i] ^= (uint8_t)(1u << bit);
+            }
+        }
+        serial_write(ct_ok ? "Crypto: ct_memeq PASS\r\n" : "Crypto: ct_memeq FAIL\r\n");
+        ok &= ct_ok;
     }
 
     g_crypto_ok = ok;

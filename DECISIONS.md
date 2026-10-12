@@ -33,3 +33,9 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Gagal tertutup**: sebelum siap, `CHAL` dibalas `ERR: entropi belum cukup, coba lagi` tanpa menyentuh tabel nonce, dan SYN port 7 dibuang (bukan RST; peer mengulang). Port tertutup tetap RST (tidak butuh ISN).
 - **Reseed paling cepat tiap 6000 tick (60 s)** saat kolam punya >= 256 bit baru (rdseed/rdrand ditambahkan saat itu); tanpa prediction resistance. Ekstraksi mengganti kolam dengan hash satu arah dari isinya.
 - **Generator nonce lama dihapus** (`priv_nonce_generate`, pool di auth.c); RTC tetap dicampur ke kolam saat init tanpa kredit. `nx_init` memakai `g_cpu.nx` (refactor F1.8a, commit terpisah).
+
+## 2026-10-12 (F1.9 perbandingan waktu-konstan)
+- **Satu fungsi `ct_memeq` di crypto.c untuk semua perbandingan rahasia** (HMAC jalur counter, HMAC jalur nonce, pencarian nonce), karena tiga loop OR terpisah mudah menyimpang saat diubah. `volatile` + `noinline`, hasil akhir `1 & ((d - 1) >> 8)` tanpa cabang.
+- **Pencarian nonce tanpa `break`**: semua 16 slot selalu dibandingkan. Sebelumnya hanya posisi slot yang cocok yang bocor lewat waktu (bukan isi nonce, dan nonce dikirim terbuka), tetapi biayanya kecil dan aturannya jadi sederhana.
+- **Bukti di kode mesin, bukan hanya sumber**: `make test` membongkar `ct_memeq` di kernel.elf dan menuntut tepat satu lompatan bersyarat (ulangan loop) tanpa call. Sengaja ketat untuk build tanpa `-O`; dengan `-O2` gcc menambah cabang `n == 0` (masih aman) dan cek gagal, yang memaksa audit ulang. Alternatif "<= 2 lompatan" ditolak karena versi keluar-awal pada `-O2` juga lolos.
+- **Tidak diubah**: penolakan format/nonce/kedaluwarsa terjadi sebelum HMAC dihitung (waktunya bergantung pada data publik penyerang sendiri); `auth_hexval` bercabang pada karakter hex kiriman (publik).

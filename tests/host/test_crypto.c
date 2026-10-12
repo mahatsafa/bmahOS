@@ -152,6 +152,37 @@ static void test_hmac_keylens(void)
     CHECK(test_hex_eq(d, 32, "fbcc7bed675523886a9a0675f7723db2336a7cc8547ee9e8bd2a32dc4c544cd8"));
 }
 
+// F1.9: ct_memeq sama dengan memcmp(...) == 0 untuk semua panjang 0..64,
+// beda di tiap posisi dan tiap bit, dan pointer tidak sejajar.
+static void test_ct_memeq(void)
+{
+    uint8_t a[80], b[80];
+    int ok = 1;
+
+    for (size_t i = 0; i < sizeof(a); i++) {
+        a[i] = b[i] = (uint8_t)(i * 31 + 7);
+    }
+    for (uint32_t n = 0; n <= 64; n++) {
+        for (uint32_t off = 0; off < 3; off++) {
+            ok &= ct_memeq(a + off, b + off, n) == 1;
+            for (uint32_t i = 0; i < n; i++) {
+                for (int bit = 0; bit < 8; bit++) {
+                    b[off + i] ^= (uint8_t)(1 << bit);
+                    ok &= ct_memeq(a + off, b + off, n) == 0;
+                    b[off + i] ^= (uint8_t)(1 << bit);
+                }
+            }
+        }
+    }
+    // Semua nilai beda 0x01..0xFF di satu byte (cek hasil tanpa cabang).
+    for (int v = 1; v < 256; v++) {
+        b[5] ^= (uint8_t)v;
+        ok &= ct_memeq(a, b, 16) == 0;
+        b[5] ^= (uint8_t)v;
+    }
+    CHECK(ok);
+}
+
 // Self-test saat boot juga harus lulus di host dan menyalakan g_crypto_ok.
 static void test_selftest(void)
 {
@@ -160,6 +191,7 @@ static void test_selftest(void)
     crypto_selftest();
     CHECK(g_crypto_ok == 1);
     CHECK(strstr(g_serial_cap, "Crypto: self-test SEMUA LULUS") != NULL);
+    CHECK(strstr(g_serial_cap, "Crypto: ct_memeq PASS") != NULL);
     CHECK(strstr(g_serial_cap, "FAIL") == NULL);
 }
 
@@ -172,6 +204,7 @@ int main(void)
     test_lengths();
     test_hmac_rfc4231();
     test_hmac_keylens();
+    test_ct_memeq();
     test_selftest();
     return test_done("crypto");
 }
