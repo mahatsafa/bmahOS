@@ -341,8 +341,9 @@ def test_tcp_handshake(net, cli):
     r = net.tcp_replies(b, 47001, 2)
     check("C2: koneksi kedua saat sibuk -> RST|ACK", r == [(0, 7001, 0x14, 0)], repr(r))
     net.send(tcp_frame(a, 47000, 7, 5006, iss + 6, 0x11))
-    r = net.tcp_replies(a, 47000, 2)
-    check("C2: FIN -> ACK ack=5007", r == [(iss + 6, 5007, 0x10, 0)], repr(r))
+    r = net.tcp_replies(a, 47000, 2, limit=1)
+    check("C3d: FIN -> FIN|ACK ack=5007 (echo kosong, LAST_ACK)",
+          r == [(iss + 6, 5007, 0x11, 0)], repr(r))
     net.send(tcp_frame(a, 47000, 7, 5007, iss + 6, 0x04))
     r = net.tcp_replies(a, 47000, 1)
     check("C2: RST dari peer tidak dibalas", r == [], repr(r))
@@ -433,6 +434,89 @@ def test_tcp_retx(net, cli):
           d == {"tcp_retx": 3, "tcp_retx_giveup": 0, "tcp_conn_open": 1}, repr(d))
 
 
+def test_tcp_close(net, cli):
+    """C3d: tutup pasif (FIN|ACK, port langsung bebas), FIN dikirim ulang, data
+    setelah FIN -> RST, tutup aktif saat diam 30 s sampai TIME_WAIT 2 s."""
+    m0 = cli.metrics()
+    if m0 is None:
+        check("C3d: metrics awal", False)
+        return
+
+    def open_conn(ip, port, pseq):
+        net.send(tcp_frame(ip, port, 7, pseq, 0, 0x02))
+        r = net.tcp_replies(ip, port, 2, limit=1)
+        if not (len(r) == 1 and r[0][2] == 0x12):
+            check("C3d: SYN-ACK dari %s:%d" % (ip[3], port), False, repr(r))
+            return None
+        net.send(tcp_frame(ip, port, 7, pseq + 1, r[0][0] + 1, 0x10))
+        return r[0][0]
+
+    a = bytes([192, 168, 50, 20])
+    iss = open_conn(a, 47300, 100)
+    if iss is None:
+        return
+    net.send(tcp_frame(a, 47300, 7, 101, iss + 1, 0x18, b"tutup"))
+    r = net.tcp_replies(a, 47300, 2, payload=True, limit=1)
+    check("C3d: echo sebelum tutup", r == [(iss + 1, 106, 0x18, b"tutup")], repr(r))
+    net.send(tcp_frame(a, 47300, 7, 106, iss + 6, 0x10))
+    net.send(tcp_frame(a, 47300, 7, 106, iss + 6, 0x11))
+    r = net.tcp_replies(a, 47300, 2, limit=1)
+    check("C3d: tutup pasif: FIN peer -> FIN|ACK seq=iss+6 ack=107",
+          r == [(iss + 6, 107, 0x11, 0)], repr(r))
+    net.send(tcp_frame(a, 47300, 7, 107, iss + 7, 0x10))
+    r = net.tcp_replies(a, 47300, 1.5)
+    check("C3d: ACK untuk FIN kita tidak dibalas", r == [], repr(r))
+
+    # Port langsung bebas (dulu: sibuk sampai timeout 30 s).
+    b = bytes([192, 168, 50, 21])
+    iss = open_conn(b, 47301, 200)
+    check("C3d: koneksi baru langsung diterima setelah tutup", iss is not None)
+    if iss is None:
+        return
+    net.send(tcp_frame(b, 47301, 7, 201, iss + 1, 0x11))
+    r = net.tcp_replies(b, 47301, 1.7, stamp=True)
+    ok = len(r) == 2 and all(x[1:] == (iss + 1, 202, 0x11, 0) for x in r)
+    check("C3d: FIN kita tanpa ACK dikirim ulang (~1 s)",
+          ok and 0.7 <= r[1][0] - r[0][0] <= 1.5,
+          repr([(round(x[0] - r[0][0], 2),) + x[1:] for x in r]))
+    net.send(tcp_frame(b, 47301, 7, 202, iss + 1, 0x18, b"telat"))
+    r = net.tcp_replies(b, 47301, 2, limit=1)
+    check("C3d: data setelah FIN peer -> RST|ACK", r == [(iss + 2, 202, 0x14, 0)], repr(r))
+
+    # Tutup aktif: diam 30 s -> FIN kita; FIN peer -> ACK; TIME_WAIT 2 s.
+    c = bytes([192, 168, 50, 22])
+    iss = open_conn(c, 47302, 300)
+    if iss is None:
+        return
+    t0 = time.time()
+    r = net.tcp_replies(c, 47302, 34, limit=1)
+    dt = time.time() - t0
+    check("C3d: diam ~30 s -> FIN|ACK seq=iss+1 (FIN_WAIT_1)",
+          r == [(iss + 1, 301, 0x11, 0)] and 28 <= dt <= 34, "%r %.1f s" % (r, dt))
+    net.send(tcp_frame(c, 47302, 7, 301, iss + 2, 0x11))
+    r = net.tcp_replies(c, 47302, 2, limit=1)
+    check("C3d: FIN peer -> ACK ack=302 (TIME_WAIT)", r == [(iss + 2, 302, 0x10, 0)], repr(r))
+    d = bytes([192, 168, 50, 23])
+    net.send(tcp_frame(d, 47303, 7, 400, 0, 0x02))
+    r = net.tcp_replies(d, 47303, 1, limit=1)
+    check("C3d: SYN lain saat TIME_WAIT -> RST|ACK", r == [(0, 401, 0x14, 0)], repr(r))
+    time.sleep(2.5)
+    iss = open_conn(d, 47304, 500)
+    check("C3d: setelah TIME_WAIT 2 s koneksi baru diterima", iss is not None)
+    if iss is not None:
+        net.send(tcp_frame(d, 47304, 7, 501, iss + 1, 0x04))
+        net.tcp_replies(d, 47304, 0.5)
+    time.sleep(1.2)
+    m1 = cli.metrics()
+    if m1 is None:
+        check("C3d: metrics akhir", False)
+        return
+    dd = {k: m1[k] - m0[k] for k in ("tcp_close_ok", "tcp_rst_state", "tcp_timeout")}
+    check("C3d: metrics close_ok +2, rst_state +1, timeout +1, tcp_state=0",
+          dd == {"tcp_close_ok": 2, "tcp_rst_state": 1, "tcp_timeout": 1} and m1["tcp_state"] == 0,
+          repr((dd, m1.get("tcp_state"))))
+
+
 def main():
     p = argparse.ArgumentParser()
     for a in ("qemu", "ovmf-code", "ovmf-vars", "iso", "disk", "key", "work"):
@@ -504,6 +588,8 @@ def main():
         test_tcp_send(net, cli)
         time.sleep(1.2)
         test_tcp_retx(net, cli)
+        time.sleep(1.2)
+        test_tcp_close(net, cli)
 
         text = open(log, "rb").read().decode(errors="replace")
         check("rawnet: tanpa exception di log",

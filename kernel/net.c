@@ -287,6 +287,8 @@ uint64_t g_tcp_tx_bytes = 0;      // C3b: byte data dikirim (pertama kali)
 uint64_t g_tcp_acked_bytes = 0;   // C3b: byte data kita yang di-ACK peer
 uint64_t g_tcp_retx = 0;          // C3c: segmen dikirim ulang (SYN-ACK + data)
 uint64_t g_tcp_retx_giveup = 0;   // C3c: koneksi diputus setelah TCP_RTX_MAX
+uint64_t g_tcp_close_ok = 0;      // C3d: koneksi selesai lewat FIN dua arah
+uint64_t g_tcp_rst_state = 0;     // C3d: RST karena data di keadaan penutupan
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -629,8 +631,13 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 // Kirim stop-and-wait: maks satu segmen data belum di-ACK, <= TCP_MSS dan
 // <= jendela peer. Nomor urut dibandingkan bertanda (seq_lt/seq_le) karena
 // berputar di 2^32. C3c: SYN-ACK dan data yang belum di-ACK dikirim ulang
-// (lihat net_tcp_rtx_fire). FIN kita (C3d) belum ada; timeout menganggur
-// tetap supaya satu TCB tidak mengunci port selamanya.
+// (lihat net_tcp_rtx_fire).
+// C3d penutupan: FIN peer -> CLOSE_WAIT; setelah echo habis dan di-ACK, FIN
+// kita -> LAST_ACK -> CLOSED (tutup pasif, port langsung bebas). Koneksi diam
+// TCP_IDLE_TIMEOUT dengan buffer kosong ditutup aktif: FIN -> FIN_WAIT_1 ->
+// FIN_WAIT_2 (maks TCP_FIN_WAIT_2_TIMEOUT) -> TIME_WAIT (TCP_TIME_WAIT_TICKS);
+// FIN bersamaan -> CLOSING. FIN kita memakai satu nomor urut dan dikirim
+// ulang seperti data. Data baru setelah FIN peer atau setelah FIN kita -> RST.
 #define NET_TCP_ECHO_PORT   7
 #define TCP_BUF_SIZE        1024
 #define TCP_MSS             536
@@ -640,8 +647,13 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 #define TCP_RTO_INIT        100    // tick (1 detik), RTO awal tetap (C3c)
 #define TCP_RTO_MAX         800    // tick: backoff 1, 2, 4, 8, 8 detik
 #define TCP_RTX_MAX         5      // kirim ulang maks 5x, berikutnya RST
+#define TCP_FIN_WAIT_2_TIMEOUT 1000   // tick (10 detik) menunggu FIN peer (C3d)
+#define TCP_TIME_WAIT_TICKS 200    // tick (2 detik), bukan 2*MSL (C0, C3d)
 
-enum { TCP_CLOSED = 0, TCP_SYN_RCVD, TCP_ESTABLISHED, TCP_CLOSE_WAIT };
+// Nilai juga dipakai metrics tcp_state.
+enum { TCP_CLOSED = 0, TCP_SYN_RCVD, TCP_ESTABLISHED, TCP_CLOSE_WAIT,
+       TCP_LAST_ACK, TCP_FIN_WAIT_1, TCP_FIN_WAIT_2, TCP_CLOSING,
+       TCP_TIME_WAIT };
 
 typedef struct {
     int state;
@@ -661,6 +673,7 @@ typedef struct {
     uint32_t buf_count; // isi g_tcp_buf: belum di-ACK + belum dikirim
     uint32_t rto;       // C3c: RTO berikutnya (tick)
     uint32_t retries;   // C3c: kirim ulang sejak kemajuan snd_una terakhir
+    int fin_sent;       // C3d: FIN kita terkirim (nomor urutnya snd_nxt - 1)
 } tcp_tcb_t;
 
 static tcp_tcb_t g_tcb;
@@ -668,6 +681,12 @@ static uint8_t g_tcp_buf[TCP_BUF_SIZE];
 static ktimer_t g_tcp_rtx_timer;   // C3c: di luar g_tcb (ada di senarai ktimer)
 
 static void net_tcp_rtx_arm(void);
+static void net_tcp_log(const char *msg);
+
+int net_tcp_state(void)
+{
+    return g_tcb.state;
+}
 
 static inline int seq_lt(uint32_t a, uint32_t b)
 {
@@ -793,6 +812,20 @@ static void net_tcp_tcb_send(uint32_t seq, uint8_t flags, int mss_opt)
                      seq, g_tcb.rcv_nxt, flags, mss_opt, 0, 0);
 }
 
+// C3d: FIN kita. Hanya dipanggil bila data kita habis dan semua di-ACK
+// (snd_una == snd_nxt, buf_count == 0), jadi FIN satu-satunya yang menunggu
+// ACK dan timer retransmisi mengirim ulang FIN saja.
+static void net_tcp_send_fin(int next_state)
+{
+    tcp_tcb_t *t = &g_tcb;
+
+    net_tcp_tcb_send(t->snd_nxt, TCP_FIN | TCP_ACK, 0);
+    t->snd_nxt++;
+    t->fin_sent = 1;
+    t->state = next_state;
+    net_tcp_rtx_arm();
+}
+
 // Kirim data yang menunggu bila tidak ada segmen data yang belum di-ACK
 // (stop-and-wait). Return 1 bila segmen terkirim (segmen data membawa ACK).
 static int net_tcp_output(void)
@@ -815,6 +848,13 @@ static int net_tcp_output(void)
         n = t->snd_wnd;
     }
     if (n == 0) {
+        // C3d: peer sudah FIN dan echo habis terkirim + di-ACK: FIN kita
+        // (sekaligus ACK untuk FIN peer).
+        if (t->state == TCP_CLOSE_WAIT && t->buf_count == 0) {
+            net_tcp_send_fin(TCP_LAST_ACK);
+            net_tcp_log("FIN dikirim (LAST_ACK)");
+            return 1;
+        }
         return 0;
     }
 
@@ -893,6 +933,8 @@ static void net_tcp_rtx_fire(void *arg)
 
     if (t->state == TCP_SYN_RCVD) {
         net_tcp_tcb_send(t->iss, TCP_SYN | TCP_ACK, 1);
+    } else if (t->fin_sent) {
+        net_tcp_tcb_send(t->snd_una, TCP_FIN | TCP_ACK, 0);   // C3d
     } else {
         uint8_t seg[TCP_MSS];
 
@@ -905,7 +947,7 @@ static void net_tcp_rtx_fire(void *arg)
     t->retries++;
     g_tcp_retx++;
     kprintf("C3c: TCP kirim ulang ke-%u seq=%x len=%u rto=%u tick\r\n",
-            t->retries, t->snd_una, t->state == TCP_SYN_RCVD ? 0 : n, t->rto);
+            t->retries, t->snd_una, t->state == TCP_SYN_RCVD || t->fin_sent ? 0 : n, t->rto);
     t->rto = t->rto * 2 > TCP_RTO_MAX ? TCP_RTO_MAX : t->rto * 2;
     net_tcp_rtx_arm();
 }
@@ -918,18 +960,41 @@ void net_tcp_tick(void)
     }
     // C3c: selama ada segmen belum di-ACK, retransmisi (TCP_RTX_MAX) yang
     // memutus koneksi macet; timeout menganggur hanya untuk koneksi diam.
+    // Termasuk FIN_WAIT_1/CLOSING/LAST_ACK: FIN kita selalu menunggu ACK.
     if (g_tcb.state != TCP_SYN_RCVD && ktimer_pending(&g_tcp_rtx_timer)) {
         return;
     }
 
-    uint64_t limit = g_tcb.state == TCP_SYN_RCVD ? TCP_SYNRCVD_TIMEOUT
-                                                 : TCP_IDLE_TIMEOUT;
+    uint64_t limit = TCP_IDLE_TIMEOUT;
 
-    if (timer_ticks - g_tcb.last > limit) {
-        net_tcp_tcb_send(g_tcb.snd_nxt, TCP_RST | TCP_ACK, 0);
-        g_tcp_timeouts++;
-        net_tcp_close("timeout, koneksi diputus (RST)");
+    if (g_tcb.state == TCP_SYN_RCVD) {
+        limit = TCP_SYNRCVD_TIMEOUT;
+    } else if (g_tcb.state == TCP_TIME_WAIT) {
+        limit = TCP_TIME_WAIT_TICKS;
+    } else if (g_tcb.state == TCP_FIN_WAIT_2) {
+        limit = TCP_FIN_WAIT_2_TIMEOUT;
     }
+
+    if (timer_ticks - g_tcb.last <= limit) {
+        return;
+    }
+    if (g_tcb.state == TCP_TIME_WAIT) {
+        g_tcp_close_ok++;
+        net_tcp_close("TIME_WAIT selesai (CLOSED)");
+        return;
+    }
+    g_tcp_timeouts++;
+    // C3d: koneksi diam tanpa data menunggu ditutup baik-baik (FIN). Data
+    // yang tertahan (jendela peer 0, belum ada persist timer) atau FIN peer
+    // yang tak kunjung datang di FIN_WAIT_2: RST.
+    if (g_tcb.state == TCP_ESTABLISHED && g_tcb.buf_count == 0 &&
+        g_tcb.snd_una == g_tcb.snd_nxt) {
+        net_tcp_send_fin(TCP_FIN_WAIT_1);
+        net_tcp_log("diam, FIN dikirim (FIN_WAIT_1)");
+        return;
+    }
+    net_tcp_tcb_send(g_tcb.snd_nxt, TCP_RST | TCP_ACK, 0);
+    net_tcp_close("timeout, koneksi diputus (RST)");
 }
 
 // Return 1 jika segmen sudah ditangani, 0 jika harus dibalas RST (port tutup).
@@ -958,7 +1023,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         t->last = timer_ticks;
 
         if (flags & TCP_RST) {
-            if (seq == t->rcv_nxt) {
+            // C3d: RST di TIME_WAIT diabaikan (RFC 1337), keadaan itu
+            // berakhir sendiri setelah TCP_TIME_WAIT_TICKS.
+            if (seq == t->rcv_nxt && t->state != TCP_TIME_WAIT) {
                 net_tcp_close("RST dari peer, koneksi ditutup");
             }
             return 1;
@@ -998,12 +1065,30 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         }
         if (seq_lt(t->snd_una, ack)) {
             uint32_t acked = ack - t->snd_una;
+            // C3d: FIN kita memakai satu nomor urut tanpa byte di buffer.
+            int fin_acked = t->fin_sent && ack == t->snd_nxt;
 
+            if (fin_acked) {
+                acked--;
+            }
             t->buf_head = (t->buf_head + acked) % TCP_BUF_SIZE;
             t->buf_count -= acked;
             t->snd_una = ack;
             g_tcp_acked_bytes += acked;
             net_tcp_rtx_progress();
+
+            if (fin_acked && t->state == TCP_LAST_ACK) {
+                g_tcp_close_ok++;
+                net_tcp_close("FIN kita di-ACK, koneksi ditutup (CLOSED)");
+                return 1;
+            }
+            if (fin_acked && t->state == TCP_FIN_WAIT_1) {
+                t->state = TCP_FIN_WAIT_2;
+                net_tcp_log("FIN kita di-ACK (FIN_WAIT_2)");
+            } else if (fin_acked && t->state == TCP_CLOSING) {
+                t->state = TCP_TIME_WAIT;
+                net_tcp_log("FIN kita di-ACK (TIME_WAIT)");
+            }
         }
         if (seq_le(t->snd_una, ack)) {
             t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
@@ -1017,6 +1102,15 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
 
         uint32_t n = 0;
         int need_ack = dlen > 0;
+
+        // C3d: data baru setelah FIN peer melanggar protokol; data setelah FIN
+        // kita tidak punya pembaca (echo sudah menutup). Keduanya: RST.
+        if (t->state != TCP_ESTABLISHED && dlen > 0) {
+            net_tcp_tcb_send(t->snd_nxt, TCP_RST | TCP_ACK, 0);
+            g_tcp_rst_state++;
+            net_tcp_close("data di keadaan penutupan, RST");
+            return 1;
+        }
 
         if (t->state == TCP_ESTABLISHED && dlen > 0) {
             // Hanya sebanyak ruang buffer (= jendela yang kita iklankan).
@@ -1032,11 +1126,23 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             g_tcp_rx_bytes += n;
         }
 
+        // FIN peer hanya berarti di ESTABLISHED/FIN_WAIT_1/FIN_WAIT_2; di
+        // keadaan lain FIN peer sudah diterima (FIN baru dibalas ACK saja).
         if ((flags & TCP_FIN) && n == dlen) {
-            t->rcv_nxt++;
-            t->state = TCP_CLOSE_WAIT;
-            net_tcp_log("FIN dari peer (CLOSE_WAIT)");
             need_ack = 1;
+            if (t->state == TCP_ESTABLISHED) {
+                t->rcv_nxt++;
+                t->state = TCP_CLOSE_WAIT;
+                net_tcp_log("FIN dari peer (CLOSE_WAIT)");
+            } else if (t->state == TCP_FIN_WAIT_1) {
+                t->rcv_nxt++;
+                t->state = TCP_CLOSING;   // FIN kita belum di-ACK: tutup bersamaan
+                net_tcp_log("FIN dari peer (CLOSING)");
+            } else if (t->state == TCP_FIN_WAIT_2) {
+                t->rcv_nxt++;
+                t->state = TCP_TIME_WAIT;
+                net_tcp_log("FIN dari peer (TIME_WAIT)");
+            }
         }
 
         // Jendela terbuka lagi (ACK membebaskan buffer): kabari peer.
@@ -1087,6 +1193,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         t->buf_count = 0;
         t->rto = TCP_RTO_INIT;
         t->retries = 0;
+        t->fin_sent = 0;
         t->state = TCP_SYN_RCVD;
         net_tcp_tcb_send(t->iss, TCP_SYN | TCP_ACK, 1);
         net_tcp_rtx_arm();

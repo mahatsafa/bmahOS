@@ -277,6 +277,9 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("tcp_acked_bytes", g_tcp_acked_bytes);
         cmd_kv("tcp_retx", g_tcp_retx);
         cmd_kv("tcp_retx_giveup", g_tcp_retx_giveup);
+        cmd_kv("tcp_close_ok", g_tcp_close_ok);
+        cmd_kv("tcp_rst_state", g_tcp_rst_state);
+        cmd_kv("tcp_state", (uint64_t)net_tcp_state());
         cmd_kv("entropy_ready", (uint64_t)g_entropy_ready);
         cmd_kv("entropy_ready_tick", g_entropy_ready_tick);
         cmd_kv("entropy_events", g_entropy_events);

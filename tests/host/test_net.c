@@ -943,9 +943,10 @@ static void test_tcp_retx(void)
     rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 4096));
     CHECK(g_tcb.state == TCP_ESTABLISHED && !ktimer_pending(&g_tcp_rtx_timer));
     CHECK(g_tcb.rto == TCP_RTO_INIT && g_tcb.retries == 0);
-    // Diam tanpa data belum di-ACK: timeout menganggur biasa (RST setelah 3000 tick).
-    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1 && (tx_seg(0).flags & F_RST));
-    CHECK(g_tcb.state == TCP_CLOSED && g_tcp_timeouts == to0 + 1);
+    // Diam tanpa data belum di-ACK: timeout menganggur biasa (C3d: FIN
+    // setelah 3000 tick, bukan RST).
+    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1 && tx_seg(0).flags == (F_FIN | F_ACK));
+    CHECK(g_tcb.state == TCP_FIN_WAIT_1 && g_tcp_timeouts == to0 + 1);
 
     // Data tidak di-ACK: kirim ulang setelah 100, 200, 400, 800, 800 tick (isi
     // dan seq sama, melewati 2^32), lalu RST setelah 800 tick lagi. Total
@@ -1003,6 +1004,137 @@ static void test_tcp_retx(void)
     memset(&g_tcb, 0, sizeof(g_tcb));
 }
 
+// ---- C3d: penutupan ----
+
+static void test_tcp_close(void)
+{
+    static uint8_t f[1700];
+    struct seg s;
+    uint64_t ok0 = g_tcp_close_ok, rst0 = g_tcp_rst_state, give0 = g_tcp_retx_giveup;
+    uint64_t busy0 = g_tcp_busy;
+
+    // A. Tutup pasif, buffer kosong: FIN peer langsung dibalas FIN|ACK
+    // (LAST_ACK), FIN dikirim ulang, FIN peer ulang dibalas ACK, ACK -> CLOSED.
+    tcp_open(5000, 100, 4096);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, (const uint8_t *)"abc", 3, 4096));
+    g_pseq += 3;
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 4, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 0 && g_tcb.buf_count == 0);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 4, F_ACK | F_FIN, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == (F_FIN | F_ACK) && s.seq == g_iss + 4 && s.ack == g_pseq + 1);
+    CHECK(g_tcb.state == TCP_LAST_ACK && ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(run_until_tx(1000) == 100);
+    s = tx_seg(0);
+    CHECK(s.flags == (F_FIN | F_ACK) && s.seq == g_iss + 4 && s.ack == g_pseq + 1);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 4, F_ACK | F_FIN, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == F_ACK && s.seq == g_iss + 5 && s.ack == g_pseq + 1);
+    g_pseq++;
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 5, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 0 && g_tcb.state == TCP_CLOSED && !ktimer_pending(&g_tcp_rtx_timer));
+    CHECK(g_tcp_close_ok == ok0 + 1 && run_until_tx(5000) == 0);
+    // Port 7 langsung bebas.
+    rx(f, mk_tcp(f, 4100, 7, 1, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_SYN | F_ACK) && g_tcp_busy == busy0);
+
+    // B. FIN bersama data: echo dulu (tanpa FIN), FIN kita setelah echo di-ACK.
+    // Lalu data baru di LAST_ACK -> RST.
+    tcp_open(7000, 300, 4096);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK | F_FIN | 0x08, (const uint8_t *)"hello", 5, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == (0x08 | F_ACK) && s.len == 5 && s.ack == g_pseq + 6);
+    CHECK(g_tcb.state == TCP_CLOSE_WAIT);
+    g_pseq += 6;
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 6, F_ACK, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == (F_FIN | F_ACK) && s.seq == g_iss + 6 && g_tcb.state == TCP_LAST_ACK);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 6, F_ACK, (const uint8_t *)"x", 1, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == (F_RST | F_ACK) && s.seq == g_iss + 7);
+    CHECK(g_tcb.state == TCP_CLOSED && g_tcp_rst_state == rst0 + 1 && !ktimer_pending(&g_tcp_rtx_timer));
+
+    // C. FIN kita tidak pernah di-ACK: 5 kirim ulang lalu RST.
+    tcp_open(9000, 500, 4096);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK | F_FIN, 0, 0, 4096));
+    CHECK(tx_seg(0).flags == (F_FIN | F_ACK));
+    int fin_ok = 1;
+    static const uint32_t gaps[5] = { 100, 200, 400, 800, 800 };
+    for (int i = 0; i < 5; i++) {
+        fin_ok &= run_until_tx(2000) == gaps[i] && tx_seg(0).flags == (F_FIN | F_ACK) &&
+                  tx_seg(0).seq == g_iss + 1;
+    }
+    CHECK(fin_ok);
+    CHECK(run_until_tx(2000) == 800 && tx_seg(0).flags == (F_RST | F_ACK));
+    CHECK(g_tcb.state == TCP_CLOSED && g_tcp_retx_giveup == give0 + 1);
+
+    // D. Tutup aktif saat diam: FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT. FIN
+    // peer ulang dibalas ACK, RST diabaikan (RFC 1337), SYN lain = sibuk,
+    // TIME_WAIT berakhir setelah TCP_TIME_WAIT_TICKS tanpa kirim apa pun.
+    tcp_open(0xFFFFFFFEu, 700, 4096);
+    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1);
+    s = tx_seg(0);
+    CHECK(s.flags == (F_FIN | F_ACK) && s.seq == 0xFFFFFFFFu && g_tcb.state == TCP_FIN_WAIT_1);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 0 && g_tcb.state == TCP_FIN_WAIT_2 && !ktimer_pending(&g_tcp_rtx_timer));
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK | F_FIN, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == F_ACK && s.seq == g_iss + 2 && s.ack == g_pseq + 1);
+    CHECK(g_tcb.state == TCP_TIME_WAIT);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK | F_FIN, 0, 0, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == F_ACK && tx_seg(0).ack == g_pseq + 1);
+    rx(f, mk_tcp_w(f, g_pseq + 1, 0, F_RST, 0, 0, 0));
+    CHECK(g_tx_n == 0 && g_tcb.state == TCP_TIME_WAIT);
+    rx(f, mk_tcp(f, 4200, 7, 1, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && (tx_seg(0).flags & F_RST) && g_tcp_busy == busy0 + 1);
+    int tw = 1;
+    for (int i = 0; i < TCP_TIME_WAIT_TICKS - 100; i++) {   // rx terakhir sudah +100
+        tw &= step() == 0 && g_tcb.state == TCP_TIME_WAIT;
+    }
+    CHECK(tw);
+    CHECK(step() == 0 && g_tcb.state == TCP_CLOSED && g_tcp_close_ok == ok0 + 2);
+
+    // E. FIN_WAIT_2 tanpa FIN peer: RST setelah TCP_FIN_WAIT_2_TIMEOUT.
+    tcp_open(100, 900, 4096);
+    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK, 0, 0, 4096));
+    CHECK(g_tcb.state == TCP_FIN_WAIT_2);
+    CHECK(run_until_tx(5000) == TCP_FIN_WAIT_2_TIMEOUT + 1);
+    CHECK(tx_seg(0).flags == (F_RST | F_ACK) && g_tcb.state == TCP_CLOSED);
+
+    // F. Data setelah FIN kita (ACK FIN dan data dalam satu segmen): RST.
+    tcp_open(200, 1100, 4096);
+    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK, (const uint8_t *)"zz", 2, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && g_tcb.state == TCP_CLOSED);
+    CHECK(g_tcp_rst_state == rst0 + 2);
+
+    // G. Tutup bersamaan: FIN peer sebelum FIN kita di-ACK -> CLOSING ->
+    // (ACK) TIME_WAIT. FIN + ACK FIN kita dalam satu segmen -> TIME_WAIT.
+    tcp_open(300, 1300, 4096);
+    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK | F_FIN, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == F_ACK && s.seq == g_iss + 2 && s.ack == g_pseq + 1);
+    CHECK(g_tcb.state == TCP_CLOSING && ktimer_pending(&g_tcp_rtx_timer));
+    g_pseq++;
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 0 && g_tcb.state == TCP_TIME_WAIT && !ktimer_pending(&g_tcp_rtx_timer));
+    tcp_open(400, 1500, 4096);
+    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 2, F_ACK | F_FIN, 0, 0, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == F_ACK && g_tcb.state == TCP_TIME_WAIT);
+
+    // H. Diam dengan data tertahan (jendela peer 0): RST, bukan FIN.
+    tcp_open(500, 1700, 4096);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, (const uint8_t *)"abc", 3, 0));
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 0 && g_tcb.buf_count == 3);
+    CHECK(run_until_tx(5000) == TCP_IDLE_TIMEOUT + 1 && tx_seg(0).flags == (F_RST | F_ACK));
+    CHECK(g_tcb.state == TCP_CLOSED);
+    CHECK(g_tx_bad == 0);
+    memset(&g_tcb, 0, sizeof(g_tcb));
+}
+
 int main(void)
 {
     test_checksum();
@@ -1013,6 +1145,7 @@ int main(void)
     test_tcp_send();
     test_tcp_stream();
     test_tcp_retx();
+    test_tcp_close();
     test_limits();
     build_templates();
     test_truncation();

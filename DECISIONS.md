@@ -55,3 +55,11 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **RTO awal tetap 100 tick (1 s), dilipatduakan sampai 800 tick, maks 5 kirim ulang lalu RST** (jeda 1, 2, 4, 8, 8 s, putus setelah ~31 s). Tanpa pengukuran RTT (Karn/Jacobson) karena satu jaringan lokal dan stop-and-wait; batas 8 s supaya total mendekati timeout menganggur 30 s yang lama. ACK yang memajukan `snd_una` (termasuk sebagian) mengembalikan RTO ke awal.
 - **Timeout menganggur 30 s tidak berlaku selama ada data belum di-ACK**: koneksi seperti itu diputus oleh batas kirim ulang. SYN_RCVD tetap putus 5 s (SYN-ACK dikirim ulang pada 1 s dan 3 s).
 - **Belum**: persist timer (jendela peer 0 dengan data menunggu tetap bergantung pada timeout 30 s), fast retransmit, FIN kita (C3d).
+
+## 2026-10-12 (C3d penutupan TCP)
+- **Echo menutup setelah peer menutup**: FIN peer -> CLOSE_WAIT; begitu echo habis terkirim dan di-ACK, FIN kita dikirim (LAST_ACK), ACK-nya -> CLOSED. Klien biasa (Windows TcpClient, nc) menutup duluan, jadi bmahOS tidak masuk TIME_WAIT dan port 7 langsung bebas.
+- **Pemicu tutup aktif = timeout diam 30 s dengan buffer kosong** (FIN, bukan RST). Belum ada pemakai lain sampai Tahap D (`exit` shell). Data tertahan (jendela peer 0, tanpa persist timer) tetap RST.
+- **FIN memakai timer retransmisi C3c** (5x lalu RST). FIN hanya dikirim saat tidak ada data menunggu, jadi yang menunggu ACK selalu data saja atau FIN saja.
+- **TIME_WAIT 2 s** (C0; bukan 2*MSL) dan dimulai ulang oleh segmen apa pun dari peer; SYN lain selama itu dibalas RST (satu TCB). **FIN_WAIT_2 maks 10 s** lalu RST. Tutup bersamaan didukung (CLOSING), menyimpang dari C0 karena hanya satu keadaan tambahan.
+- **RST untuk keadaan salah**: data baru setelah FIN peer (melanggar protokol) dan data setelah FIN kita (tidak ada pembaca, seperti Linux untuk soket yang sudah ditutup) -> RST dan TCB dibebaskan (`tcp_rst_state`). Segmen di luar urutan/duplikat tetap dibalas ACK.
+- **RST di TIME_WAIT diabaikan** (RFC 1337, mencegah TIME_WAIT dibunuh segmen lama/palsu); keadaan itu berakhir sendiri setelah 2 s.
