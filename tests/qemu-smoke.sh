@@ -148,6 +148,10 @@ ones = bin(int(b, 16)).count(\"1\") if b else 0
 n = len(b) * 4
 print(\"bit 1: %d dari %d\" % (ones, n), file=sys.stderr)
 sys.exit(0 if n and 0.45 <= ones / n <= 0.55 else 1)"'
+# Batas laju 20 datagram/s per IP sumber (B4) berlaku juga untuk uji ini:
+# di QEMU dengan KVM (CI) semua perintah bisa jatuh dalam satu jendela 1 s.
+# Jeda > 1 s memulai jendela baru sebelum rangkaian perintah berikutnya.
+sleep 1.2
 check "metrics entropy_ready=1" '$BM metrics | grep -q "^entropy_ready=1$"'
 
 check "CPUID: vendor dilaporkan"  'grep -aq "CPU: vendor=[^ ]" "$LOG"'
@@ -212,6 +216,7 @@ else
         '[ "${REPLAY%%|*}" = "pong" ] && [ "${REPLAY#*|}" = "ERR: counter replay" ]'
 fi
 
+sleep 1.2   # jendela batas laju baru (lihat di atas)
 check "pping -> ppong"           '[ "$($BM pping)" = "ppong" ]'
 check "reboot diterima"          '[ "$($BM reboot)" = "reboot: dimulai" ]'
 
@@ -220,6 +225,12 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 check "mesin reset (QEMU keluar)" '! kill -0 "$QPID" 2>/dev/null'
+# Kalau reboot gagal, QEMU pertama masih memegang disk.img dan boot kedua
+# akan gagal ikut; matikan supaya tahap berikutnya berdiri sendiri.
+if kill -0 "$QPID" 2>/dev/null; then
+    kill "$QPID" 2>/dev/null
+    wait "$QPID" 2>/dev/null
+fi
 check "reboot lewat reset ACPI"   'grep -q "ACPI-R: reboot via register reset FADT" "$LOG" && ! grep -q "lanjut 8042" "$LOG"'
 
 check "tanpa exception/fault di log" \
