@@ -104,7 +104,7 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   deadline, callback di loop net task (konteks task, bukan IRQ). `sleep` sudah ada sebagai `task_sleep` (sched.c);
   C3a menambah uji ketepatannya. Self-test boot (urutan, batal, pasang ulang, telat <= 10 tick, sleep 20 -> 20..30 tick),
   metrics `ktimer_fired/cancelled/late_max`, uji host 64 cek (200 ribu operasi acak vs model).
-- [ ] **C3b** (2026-10-12, make test 66 -> 69, PROD 65 -> 68) Kirim data dari kernel dengan nomor urut. Bandingkan nomor urut dengan aritmetika bertanda
+- [x] **C3b** (2026-10-12, make test 66 -> 69, PROD 65 -> 68, VMware lulus: TcpClient Windows echo 15 + 1000 byte identik) Kirim data dari kernel dengan nomor urut. Bandingkan nomor urut dengan aritmetika bertanda
   `(int32_t)(a - b)`, bukan `a < b` (nomor berputar kembali ke 0).
   Hasil: buffer 1024 byte (`g_tcp_buf`), sumber data sementara = echo data yang diterima; jendela yang diiklankan =
   ruang kosong buffer; stop-and-wait (1 segmen belum di-ACK, <= MSS 536, <= jendela peer); ACK melewati `snd_nxt`
