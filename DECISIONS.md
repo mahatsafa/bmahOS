@@ -45,3 +45,7 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **`ktimer_t` milik pemanggil + senarai terurut** (sisip O(n)), tanpa heap dan tanpa tabel tetap; batas atas = jumlah `ktimer_t` di kode. Alternatif timer wheel ditolak: jumlah timer kecil.
 - **`ticks = 0` dianggap 1** supaya callback yang memasang ulang dirinya tidak membuat `ktimer_run` berputar selamanya.
 - **`sleep` tidak ditulis ulang**: `task_sleep` (sched.c) sudah membangunkan task lewat `wake_at_tick` di `schedule()`; C3a hanya menambah uji ketepatannya (20 tick -> 20..30; QEMU 20-21). Batas telat self-test 10 tick karena net task bergiliran round-robin dengan task lain (QEMU dev: 2 tick).
+
+## 2026-10-12 (sebelum C3b, disetujui pengguna; mengikuti rencana C0)
+- **Segmen TCP di luar urutan dibuang**, tidak disimpan; balas ACK posisi kita dan peer mengirim ulang. Alasan: tanpa buffer penyusun ulang, lebih sedikit keadaan dan permukaan serangan. Akibat: throughput turun bila ada paket hilang/tertukar.
+- **Jendela yang diiklankan = ruang kosong buffer yang benar-benar ada** (`TCP_BUF_SIZE` 1024 byte dikurangi isi). Data yang melebihi jendela dipotong; jendela 0 diiklankan saat buffer penuh, dan pembaruan jendela dikirim saat ruang kembali >= MSS.

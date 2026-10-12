@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. Berikutnya C3b.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. Berikutnya C3c.
 
 ## 4. Templat tahap
 
@@ -104,8 +104,13 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   deadline, callback di loop net task (konteks task, bukan IRQ). `sleep` sudah ada sebagai `task_sleep` (sched.c);
   C3a menambah uji ketepatannya. Self-test boot (urutan, batal, pasang ulang, telat <= 10 tick, sleep 20 -> 20..30 tick),
   metrics `ktimer_fired/cancelled/late_max`, uji host 64 cek (200 ribu operasi acak vs model).
-- [ ] **C3b** Kirim data dari kernel dengan nomor urut. Bandingkan nomor urut dengan aritmetika bertanda
+- [ ] **C3b** (2026-10-12, make test 66 -> 69, PROD 65 -> 68) Kirim data dari kernel dengan nomor urut. Bandingkan nomor urut dengan aritmetika bertanda
   `(int32_t)(a - b)`, bukan `a < b` (nomor berputar kembali ke 0).
+  Hasil: buffer 1024 byte (`g_tcp_buf`), sumber data sementara = echo data yang diterima; jendela yang diiklankan =
+  ruang kosong buffer; stop-and-wait (1 segmen belum di-ACK, <= MSS 536, <= jendela peer); ACK melewati `snd_nxt`
+  dibalas ACK dan diabaikan, ACK lama diabaikan; `seq_lt`/`seq_le`. Metrics `tcp_tx_bytes`, `tcp_acked_bytes`.
+  Uji host: putaran 2^32 (ISN kita dan peer), jendela 0/penuh/pembaruan, aliran 20 ribu byte utuh; rawnet: 600 byte
+  -> 536 + 64. Belum: retransmisi (data hilang = macet sampai timeout 30 s), persist timer jendela 0, FIN kita.
 - [ ] **C3c** Retransmisi: simpan segmen belum di-ACK, kirim ulang saat timer habis, RTO awal konstan lalu
   eksponensial. Uji dengan membuang paket sengaja.
 - [ ] **C3d** Penutupan: FIN dua arah, TIME_WAIT pendek, RST untuk keadaan salah. Tidak ada koneksi tersangkut.

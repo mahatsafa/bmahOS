@@ -29,6 +29,8 @@ void e1000_log_ip(volatile uint8_t *p)
 // entropy_get: byte tetap 0xA0.. (ISN yang bisa diperiksa), atau tolak
 // bila g_entropy_ok = 0 (kolam belum siap).
 static int g_entropy_ok = 1;
+static int g_isn_set;      // 1: entropy_get memberi g_isn (big-endian), untuk uji putaran 2^32
+static uint32_t g_isn;
 
 int entropy_get(uint8_t *out, uint32_t len)
 {
@@ -37,6 +39,9 @@ int entropy_get(uint8_t *out, uint32_t len)
     }
     for (uint32_t i = 0; i < len; i++) {
         out[i] = (uint8_t)(0xA0 + i);
+        if (g_isn_set && i < 4) {
+            out[i] = (uint8_t)(g_isn >> (24 - 8 * i));
+        }
     }
     return 1;
 }
@@ -657,6 +662,227 @@ static void test_fuzz(void)
     CHECK(g_fuzz_tx > 20000);
 }
 
+// ---- C3b: kirim data TCP ----
+
+// Segmen TCP dari peer dengan data biner dan jendela pilihan.
+static size_t mk_tcp_w(uint8_t *f, uint32_t seq, uint32_t ack, uint8_t flags,
+                       const uint8_t *data, size_t dlen, uint16_t wnd)
+{
+    uint8_t t[1600];
+    memset(t, 0, 20);
+    t[0] = 4500 >> 8;
+    t[1] = 4500 & 0xFF;
+    t[3] = 7;
+    put32(t + 4, seq);
+    put32(t + 8, ack);
+    t[12] = 0x50;
+    t[13] = flags;
+    t[14] = (uint8_t)(wnd >> 8);
+    t[15] = (uint8_t)wnd;
+    if (dlen > 0) {
+        memcpy(t + 20, data, dlen);
+    }
+    size_t len = mk_ip(f, 6, t, 20 + dlen, 0);
+    uint16_t c = ref_l4_csum(f + 14, 6, f + 34, 20 + dlen);
+    f[34 + 16] = (uint8_t)(c >> 8);
+    f[34 + 17] = (uint8_t)c;
+    return len;
+}
+
+// Isi segmen TCP yang kita kirim: seq, ack, flags, jendela, data.
+struct seg {
+    uint32_t seq, ack, len;
+    uint8_t flags;
+    uint16_t wnd;
+    const uint8_t *data;
+};
+
+static struct seg tx_seg(int i)
+{
+    const uint8_t *p = g_tx[i];
+    struct seg s;
+    uint32_t tot = (uint32_t)(p[16] << 8 | p[17]);
+    uint32_t hl = (uint32_t)(p[34 + 12] >> 4) * 4;
+    s.seq = get32(p + 38);
+    s.ack = get32(p + 42);
+    s.flags = p[47];
+    s.wnd = (uint16_t)(p[48] << 8 | p[49]);
+    s.len = tot - 20 - hl;
+    s.data = p + 34 + hl;
+    return s;
+}
+
+static uint32_t g_pseq;   // nomor urut peer berikutnya
+static uint32_t g_iss;
+
+// Handshake dengan ISN kita dan ISN peer pilihan (dekat putaran 2^32).
+static void tcp_open(uint32_t our_isn, uint32_t peer_isn, uint16_t wnd)
+{
+    uint8_t f[200];
+    memset(&g_tcb, 0, sizeof(g_tcb));
+    g_isn_set = 1;
+    g_isn = our_isn;
+    rx(f, mk_tcp_w(f, peer_isn, 0, F_SYN, 0, 0, wnd));
+    g_isn_set = 0;
+    g_iss = our_isn;
+    g_pseq = peer_isn + 1;
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, wnd));
+}
+
+static void test_tcp_send(void)
+{
+    static uint8_t f[1700];
+    uint8_t big[1200];
+    struct seg s;
+
+    for (size_t i = 0; i < sizeof(big); i++) {
+        big[i] = (uint8_t)(i * 13 + 5);
+    }
+
+    // ISN kita dan peer melewati 2^32 di tengah uji.
+    tcp_open(0xFFFFFFFCu, 0xFFFFFFFAu, 4096);
+    CHECK(g_tcb.state == TCP_ESTABLISHED && g_tcb.snd_una == 0xFFFFFFFDu);
+
+    // Data -> dikirim balik dalam satu segmen PSH|ACK yang juga meng-ACK.
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK | 0x08, (const uint8_t *)"hello", 5, 4096));
+    g_pseq += 5;
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.seq == g_iss + 1 && s.ack == g_pseq && s.flags == (0x08 | F_ACK));
+    CHECK(s.len == 5 && memcmp(s.data, "hello", 5) == 0 && s.wnd == TCP_BUF_SIZE - 5);
+    CHECK(g_pseq == 0);   // nomor urut peer sudah berputar (0xFFFFFFFB + 5)
+
+    // Stop-and-wait: data baru selagi "hello" belum di-ACK -> ACK saja.
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, (const uint8_t *)"abc", 3, 4096));
+    g_pseq += 3;
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == 0 && s.ack == g_pseq && s.wnd == TCP_BUF_SIZE - 8);
+
+    // ACK melewati snd_nxt: diabaikan (dibalas ACK), buffer tetap.
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 100, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 0 && g_tcb.snd_una == g_iss + 1 && g_tcb.buf_count == 8);
+
+    // ACK untuk "hello" (snd_una melewati 2^32) -> "abc" dikirim.
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 6, F_ACK, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.seq == g_iss + 6 && s.len == 3 && memcmp(s.data, "abc", 3) == 0);
+    CHECK(g_tcb.snd_una == g_iss + 6 && g_tcb.snd_una < 0x10 && g_tcb.buf_count == 3);
+
+    // ACK lama: tidak mengubah apa pun (juga jendela peer tidak diperbarui).
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 7));
+    CHECK(g_tx_n == 0 && g_tcb.snd_una == g_iss + 6 && g_tcb.snd_wnd == 4096);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 9, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 0 && g_tcb.buf_count == 0 && g_tcb.snd_una == g_tcb.snd_nxt);
+
+    // Segmen pertama dibatasi MSS; sisanya dikirim setelah ACK.
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 9, F_ACK, big, 600, 4096));
+    g_pseq += 600;
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == TCP_MSS && memcmp(s.data, big, TCP_MSS) == 0);
+    uint32_t una = g_iss + 9 + TCP_MSS;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == 64 && memcmp(s.data, big + TCP_MSS, 64) == 0);
+    una += 64;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+
+    // Jendela peer 100: segmen <= 100. Jendela peer 0: tidak ada data,
+    // lalu pembaruan jendela dari peer -> data dikirim.
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, big, 300, 100));
+    g_pseq += 300;
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == 100);
+    una += 100;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 0));
+    CHECK(g_tx_n == 0 && g_tcb.snd_wnd == 0 && g_tcb.buf_count == 200);
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == 200 && memcmp(s.data, big + 100, 200) == 0);
+    una += 200;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+    CHECK(g_tcb.buf_count == 0);
+
+    // Buffer penuh: jendela peer 0 supaya tidak ada yang terkirim, lalu
+    // 1200 byte -> hanya 1024 diterima, ACK dengan jendela 0.
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, big, 1200, 0));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == 0 && s.wnd == 0 && s.ack == g_pseq + TCP_BUF_SIZE);
+    CHECK(g_tcb.buf_count == TCP_BUF_SIZE);
+    g_pseq += TCP_BUF_SIZE;
+    // Segmen saat jendela 0: dipotong habis, tetap di-ACK (jendela 0).
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, big, 10, 0));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == 0 && s.wnd == 0 && s.ack == g_pseq);
+    // Peer membuka jendela: 536 byte terkirim, membawa jendela kita yang masih 0.
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == TCP_MSS && s.wnd == 0);
+    // ACK membebaskan 536 byte: sisa 488 byte dikirim dengan jendela baru 536.
+    una += TCP_MSS;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == TCP_BUF_SIZE - TCP_MSS && s.wnd == TCP_MSS);
+    CHECK(memcmp(s.data, big + TCP_MSS, TCP_BUF_SIZE - TCP_MSS) == 0);
+    una += TCP_BUF_SIZE - TCP_MSS;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 0));
+    CHECK(g_tcb.buf_count == 0);
+
+    // Jendela kita kembali >= MSS tetapi tidak ada yang bisa dikirim (jendela
+    // peer 0): pembaruan jendela tetap dikirim lewat ACK.
+    memset(&g_tcb, 0, sizeof(g_tcb));
+    tcp_open(1000, 2000, 4096);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, big, 1024, 0));
+    g_pseq += 1024;
+    CHECK(g_tcb.buf_count == 1024 && g_tcb.adv_wnd == 0);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 600));   // kirim 536
+    una = g_iss + 1 + TCP_MSS;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 0));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == 0 && s.wnd == TCP_MSS);
+    memset(&g_tcb, 0, sizeof(g_tcb));
+}
+
+// Aliran acak 20000 byte lewat echo: potongan acak sebatas jendela kita,
+// ACK untuk semua data yang diterima. Hasil echo harus sama persis.
+static void test_tcp_stream(void)
+{
+    static uint8_t f[1700], src[20000], got[20000];
+    size_t sent = 0, recvd = 0;
+    uint32_t una;
+    int guard = 0;
+
+    for (size_t i = 0; i < sizeof(src); i++) {
+        src[i] = (uint8_t)rand();
+    }
+    tcp_open(0xFFFFFF00u, 0x7FFFFFF0u, 4096);
+    una = g_iss + 1;
+
+    while (recvd < sizeof(src) && guard++ < 100000) {
+        size_t room = TCP_BUF_SIZE - g_tcb.buf_count;
+        size_t n = (size_t)(rand() % 700);
+        if (n > room) {
+            n = room;
+        }
+        if (n > sizeof(src) - sent) {
+            n = sizeof(src) - sent;
+        }
+        rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, src + sent, n, 4096));
+        sent += n;
+        g_pseq += (uint32_t)n;
+        for (int i = 0; i < g_tx_n && i < TX_MAX; i++) {
+            struct seg s = tx_seg(i);
+            if (s.len > 0 && s.seq == una + (uint32_t)0 && recvd + s.len <= sizeof(got)) {
+                memcpy(got + recvd, s.data, s.len);
+                recvd += s.len;
+                una += s.len;
+            }
+        }
+    }
+    printf("net tcp: aliran %zu byte, kembali %zu byte, %d putaran\n", sent, recvd, guard);
+    CHECK(recvd == sizeof(src) && memcmp(got, src, sizeof(src)) == 0);
+    CHECK(g_tx_bad == 0);
+    memset(&g_tcb, 0, sizeof(g_tcb));
+}
+
 int main(void)
 {
     test_checksum();
@@ -664,6 +890,8 @@ int main(void)
     test_icmp();
     test_udp();
     test_tcp();
+    test_tcp_send();
+    test_tcp_stream();
     test_limits();
     build_templates();
     test_truncation();

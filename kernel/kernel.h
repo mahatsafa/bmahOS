@@ -424,6 +424,8 @@ extern uint64_t g_tcp_busy;
 extern uint64_t g_tcp_rx_bytes;
 extern uint64_t g_tcp_timeouts;
 extern uint64_t g_tcp_noentropy;
+extern uint64_t g_tcp_tx_bytes;
+extern uint64_t g_tcp_acked_bytes;
 extern uint64_t g_e1000_mpc;
 extern uint64_t g_e1000_rnbc;
 extern uint64_t g_net_log_muted;

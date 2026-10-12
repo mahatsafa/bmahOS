@@ -283,6 +283,8 @@ uint64_t g_tcp_busy = 0;
 uint64_t g_tcp_rx_bytes = 0;
 uint64_t g_tcp_timeouts = 0;
 uint64_t g_tcp_noentropy = 0;
+uint64_t g_tcp_tx_bytes = 0;      // C3b: byte data dikirim (pertama kali)
+uint64_t g_tcp_acked_bytes = 0;   // C3b: byte data kita yang di-ACK peer
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -505,6 +507,7 @@ static void net_udp_send_echo(volatile uint8_t *req, uint32_t ihl,
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02
 #define TCP_RST 0x04
+#define TCP_PSH 0x08
 #define TCP_ACK 0x10
 
 // Checksum TCP dengan pseudo-header (proto 6); segmen valid -> hasil 0.
@@ -617,12 +620,16 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
     }
 }
 
-// ---- C2: satu koneksi TCP (port 7), handshake + terima data + ACK ----
-// Data yang diterima untuk sementara dihitung lalu dibuang (konsumen = echo C4).
-// Penutupan (FIN) dan retransmisi menyusul di C3; sementara ada timeout
-// aman supaya satu TCB tidak mengunci port selamanya.
+// ---- C2/C3b: satu koneksi TCP (port 7) ----
+// C3b: data yang diterima masuk ke g_tcp_buf lalu dikirim balik (echo
+// sementara; uji echo penuh 1 MB di C4). Jendela yang diiklankan = ruang
+// kosong g_tcp_buf; segmen di luar urutan dibuang (DECISIONS 2026-10-12).
+// Kirim stop-and-wait: maks satu segmen data belum di-ACK, <= TCP_MSS dan
+// <= jendela peer. Nomor urut dibandingkan bertanda (seq_lt/seq_le) karena
+// berputar di 2^32. Retransmisi (C3c) dan FIN kita (C3d) belum ada; timeout
+// aman tetap supaya satu TCB tidak mengunci port selamanya.
 #define NET_TCP_ECHO_PORT   7
-#define TCP_RCV_WND         1024
+#define TCP_BUF_SIZE        1024
 #define TCP_MSS             536
 #define TCP_SYNRCVD_TIMEOUT 500    // tick (5 detik)
 #define TCP_IDLE_TIMEOUT    3000   // tick (30 detik), sementara sampai C3/C5
@@ -640,9 +647,30 @@ typedef struct {
     uint32_t irs;       // ISN peer
     uint32_t rcv_nxt;
     uint64_t last;      // tick aktivitas terakhir
+    uint32_t snd_una;   // byte tertua yang belum di-ACK peer
+    uint32_t snd_wnd;   // jendela peer terakhir
+    uint32_t adv_wnd;   // jendela terakhir yang kita iklankan
+    uint32_t buf_head;  // indeks g_tcp_buf untuk byte snd_una
+    uint32_t buf_count; // isi g_tcp_buf: belum di-ACK + belum dikirim
 } tcp_tcb_t;
 
 static tcp_tcb_t g_tcb;
+static uint8_t g_tcp_buf[TCP_BUF_SIZE];
+
+static inline int seq_lt(uint32_t a, uint32_t b)
+{
+    return (int32_t)(a - b) < 0;
+}
+
+static inline int seq_le(uint32_t a, uint32_t b)
+{
+    return (int32_t)(a - b) <= 0;
+}
+
+static uint32_t net_tcp_rcv_wnd(void)
+{
+    return TCP_BUF_SIZE - g_tcb.buf_count;
+}
 
 static uint32_t net_rd32(const volatile uint8_t *p)
 {
@@ -650,11 +678,12 @@ static uint32_t net_rd32(const volatile uint8_t *p)
            ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-// Segmen TCP tanpa data dari kita ke peer. mss_opt != 0: sertakan opsi MSS.
+// Segmen TCP dari kita ke peer, dengan data (dlen <= TCP_MSS) atau tanpa.
+// mss_opt != 0: sertakan opsi MSS. Jendela = ruang kosong g_tcp_buf.
 static void net_tcp_send_seg(const uint8_t *mac, const uint8_t *ip,
                              uint16_t sport, uint16_t dport,
                              uint32_t seq, uint32_t ack, uint8_t flags,
-                             int mss_opt)
+                             int mss_opt, const uint8_t *data, uint32_t dlen)
 {
     if (g_net_tx_buf_phys == 0) {
         g_net_tx_buf_phys = pmm_alloc();
@@ -667,8 +696,16 @@ static void net_tcp_send_seg(const uint8_t *mac, const uint8_t *ip,
 
     uint8_t *p = (uint8_t *)(g_net_tx_buf_phys + hhdm_offset);
     uint32_t hl = mss_opt ? 24 : 20;
+    uint32_t wnd = net_tcp_rcv_wnd();
 
-    for (uint32_t i = 0; i < 60; i++) {
+    if (dlen > TCP_MSS) {
+        dlen = TCP_MSS;
+    }
+
+    uint32_t frame_len = 14 + 20 + hl + dlen;
+    uint32_t send_len = frame_len < 60 ? 60 : frame_len;
+
+    for (uint32_t i = 0; i < send_len; i++) {
         p[i] = 0;
     }
 
@@ -680,8 +717,8 @@ static void net_tcp_send_seg(const uint8_t *mac, const uint8_t *ip,
     p[13] = 0x00;
 
     p[14] = 0x45;
-    p[16] = 0;
-    p[17] = (uint8_t)(20 + hl);
+    p[16] = (uint8_t)((20 + hl + dlen) >> 8);
+    p[17] = (uint8_t)((20 + hl + dlen) & 0xFF);
     p[18] = (uint8_t)(g_net_ip_id >> 8);
     p[19] = (uint8_t)(g_net_ip_id & 0xFF);
     g_net_ip_id++;
@@ -712,8 +749,9 @@ static void net_tcp_send_seg(const uint8_t *mac, const uint8_t *ip,
     p[45] = (uint8_t)ack;
     p[46] = (uint8_t)((hl / 4) << 4);
     p[47] = flags;
-    p[48] = (uint8_t)(TCP_RCV_WND >> 8);
-    p[49] = (uint8_t)(TCP_RCV_WND & 0xFF);
+    p[48] = (uint8_t)(wnd >> 8);
+    p[49] = (uint8_t)(wnd & 0xFF);
+    g_tcb.adv_wnd = wnd;
 
     if (mss_opt) {
         p[54] = 2;
@@ -722,11 +760,15 @@ static void net_tcp_send_seg(const uint8_t *mac, const uint8_t *ip,
         p[57] = (uint8_t)(TCP_MSS & 0xFF);
     }
 
-    uint16_t tc = net_tcp_checksum(p + 26, p + 30, p + 34, hl);
+    for (uint32_t i = 0; i < dlen; i++) {
+        p[34 + hl + i] = data[i];
+    }
+
+    uint16_t tc = net_tcp_checksum(p + 26, p + 30, p + 34, hl + dlen);
     p[50] = (uint8_t)(tc >> 8);
     p[51] = (uint8_t)(tc & 0xFF);
 
-    if (e1000_tx_send(g_net_tx_buf_phys, 60)) {
+    if (e1000_tx_send(g_net_tx_buf_phys, send_len)) {
         if (flags & TCP_RST) {
             g_tcp_rst_sent++;
         }
@@ -736,7 +778,44 @@ static void net_tcp_send_seg(const uint8_t *mac, const uint8_t *ip,
 static void net_tcp_tcb_send(uint32_t seq, uint8_t flags, int mss_opt)
 {
     net_tcp_send_seg(g_tcb.mac, g_tcb.ip, g_tcb.lport, g_tcb.rport,
-                     seq, g_tcb.rcv_nxt, flags, mss_opt);
+                     seq, g_tcb.rcv_nxt, flags, mss_opt, 0, 0);
+}
+
+// Kirim data yang menunggu bila tidak ada segmen data yang belum di-ACK
+// (stop-and-wait). Return 1 bila segmen terkirim (segmen data membawa ACK).
+static int net_tcp_output(void)
+{
+    tcp_tcb_t *t = &g_tcb;
+
+    if (t->state != TCP_ESTABLISHED && t->state != TCP_CLOSE_WAIT) {
+        return 0;
+    }
+    if (t->snd_nxt != t->snd_una) {
+        return 0;
+    }
+
+    uint32_t n = t->buf_count;
+
+    if (n > TCP_MSS) {
+        n = TCP_MSS;
+    }
+    if (n > t->snd_wnd) {
+        n = t->snd_wnd;
+    }
+    if (n == 0) {
+        return 0;
+    }
+
+    uint8_t seg[TCP_MSS];
+
+    for (uint32_t i = 0; i < n; i++) {
+        seg[i] = g_tcp_buf[(t->buf_head + i) % TCP_BUF_SIZE];
+    }
+    net_tcp_send_seg(t->mac, t->ip, t->lport, t->rport, t->snd_nxt, t->rcv_nxt,
+                     TCP_PSH | TCP_ACK, 0, seg, n);
+    t->snd_nxt += n;
+    g_tcp_tx_bytes += n;
+    return 1;
 }
 
 static void net_tcp_log(const char *msg)
@@ -813,15 +892,34 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         if (t->state == TCP_SYN_RCVD) {
             if (ack != t->snd_nxt) {
                 net_tcp_send_seg(t->mac, t->ip, t->lport, t->rport,
-                                 ack, 0, TCP_RST, 0);
+                                 ack, 0, TCP_RST, 0, 0, 0);
                 t->state = TCP_CLOSED;
                 net_tcp_log("ACK handshake salah, koneksi dibatalkan");
                 return 1;
             }
 
+            t->snd_una = ack;
             t->state = TCP_ESTABLISHED;
             g_tcp_conn_open++;
             net_tcp_log("ESTABLISHED");
+        }
+
+        // C3b: ACK untuk data kita. ACK melewati snd_nxt (data yang belum
+        // pernah dikirim) diabaikan dan dibalas ACK; ACK lama diabaikan.
+        if (seq_lt(t->snd_nxt, ack)) {
+            net_tcp_tcb_send(t->snd_nxt, TCP_ACK, 0);
+            return 1;
+        }
+        if (seq_lt(t->snd_una, ack)) {
+            uint32_t acked = ack - t->snd_una;
+
+            t->buf_head = (t->buf_head + acked) % TCP_BUF_SIZE;
+            t->buf_count -= acked;
+            t->snd_una = ack;
+            g_tcp_acked_bytes += acked;
+        }
+        if (seq_le(t->snd_una, ack)) {
+            t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
         }
 
         if (seq != t->rcv_nxt) {
@@ -831,9 +929,18 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         }
 
         uint32_t n = 0;
+        int need_ack = dlen > 0;
 
         if (t->state == TCP_ESTABLISHED && dlen > 0) {
-            n = dlen > TCP_RCV_WND ? TCP_RCV_WND : dlen;
+            // Hanya sebanyak ruang buffer (= jendela yang kita iklankan).
+            uint32_t room = TCP_BUF_SIZE - t->buf_count;
+            uint32_t tail = (t->buf_head + t->buf_count) % TCP_BUF_SIZE;
+
+            n = dlen > room ? room : dlen;
+            for (uint32_t i = 0; i < n; i++) {
+                g_tcp_buf[(tail + i) % TCP_BUF_SIZE] = buf[r + doff + i];
+            }
+            t->buf_count += n;
             t->rcv_nxt += n;
             g_tcp_rx_bytes += n;
         }
@@ -842,10 +949,15 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             t->rcv_nxt++;
             t->state = TCP_CLOSE_WAIT;
             net_tcp_log("FIN dari peer (CLOSE_WAIT)");
-            n = 1;
+            need_ack = 1;
         }
 
-        if (n > 0) {
+        // Jendela terbuka lagi (ACK membebaskan buffer): kabari peer.
+        if (t->adv_wnd < TCP_MSS && net_tcp_rcv_wnd() >= TCP_MSS) {
+            need_ack = 1;
+        }
+
+        if (!net_tcp_output() && need_ack) {
             net_tcp_tcb_send(t->snd_nxt, TCP_ACK, 0);
         }
 
@@ -882,6 +994,10 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         t->irs = seq;
         t->rcv_nxt = seq + 1;
         t->last = timer_ticks;
+        t->snd_una = t->iss;
+        t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
+        t->buf_head = 0;
+        t->buf_count = 0;
         t->state = TCP_SYN_RCVD;
         net_tcp_tcb_send(t->iss, TCP_SYN | TCP_ACK, 1);
         net_tcp_log("SYN diterima, SYN-ACK dikirim (SYN_RCVD)");

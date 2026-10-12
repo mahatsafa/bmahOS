@@ -196,7 +196,8 @@ diterima tapi tidak diperlukan lagi. Kode keluar: 0 sukses, 1 balasan `ERR`, 2 t
 - Hanya driver E1000 (device ID `0x100F` 82545EM dan `0x100E` 82540EM yang sudah diuji); belum ada
   driver untuk NIC hardware target
 - Hanya controller AHCI pertama yang dipakai
-- Belum ada TCP, DHCP, atau IPv6
+- TCP masih minimal: satu koneksi di port 7 (echo), kirim stop-and-wait, belum ada retransmisi, FIN dari
+  sisi bmahOS, maupun persist timer; koneksi yang macet diputus timeout 30 detik (RST). Belum ada DHCP atau IPv6
 
 ## Catatan pengembangan
 
