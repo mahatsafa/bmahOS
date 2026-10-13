@@ -16,7 +16,77 @@ static struct {
     uint32_t root_cluster;
     uint64_t fat_start_lba;
     uint64_t data_start_lba;
+    uint64_t total_sectors;    // D6-2
+    uint32_t max_cluster;      // D6-2: cluster sah = 2..max_cluster
 } g_fat32_volume;
+
+// D6-2: nomor cluster dari disk (dir entry, FAT, BPB) tidak dipercaya.
+static int fat32_cluster_ok(uint32_t c)
+{
+    return c >= 2 && c <= g_fat32_volume.max_cluster;
+}
+
+// D6-2: validasi BPB lengkap. Return NULL kalau sah, selain itu alasan
+// penolakan (volume dilewati, tidak pernah halt).
+static const char *fat32_bpb_check(const uint8_t *buf, uint64_t *out_total,
+                                   uint32_t *out_max)
+{
+    uint16_t bps = (uint16_t)buf[0x0B] | ((uint16_t)buf[0x0C] << 8);
+    uint8_t spc = buf[0x0D];
+    uint16_t rsvd = (uint16_t)buf[0x0E] | ((uint16_t)buf[0x0F] << 8);
+    uint8_t nf = buf[0x10];
+    uint16_t rec = (uint16_t)buf[0x11] | ((uint16_t)buf[0x12] << 8);
+    uint16_t tot16 = (uint16_t)buf[0x13] | ((uint16_t)buf[0x14] << 8);
+    uint16_t fsz16 = (uint16_t)buf[0x16] | ((uint16_t)buf[0x17] << 8);
+    uint32_t tot32 = (uint32_t)buf[0x20] | ((uint32_t)buf[0x21] << 8) |
+                     ((uint32_t)buf[0x22] << 16) | ((uint32_t)buf[0x23] << 24);
+    uint32_t fsz32 = (uint32_t)buf[0x24] | ((uint32_t)buf[0x25] << 8) |
+                     ((uint32_t)buf[0x26] << 16) | ((uint32_t)buf[0x27] << 24);
+    uint32_t root = (uint32_t)buf[0x2C] | ((uint32_t)buf[0x2D] << 8) |
+                    ((uint32_t)buf[0x2E] << 16) | ((uint32_t)buf[0x2F] << 24);
+
+    if (rec != 0 || fsz16 != 0) {
+        return "RootEntryCount/FATSz16 tidak nol (FAT12/16)";
+    }
+    if (bps != 512) {
+        return "BytesPerSector bukan 512";
+    }
+    if (spc != 1 && spc != 2 && spc != 4 && spc != 8) {
+        return "SectorsPerCluster bukan 1/2/4/8";
+    }
+    if (rsvd == 0) {
+        return "ReservedSectorCount nol";
+    }
+    if (nf != 1 && nf != 2) {
+        return "NumFATs bukan 1/2";
+    }
+    if (fsz32 == 0) {
+        return "FATSz32 nol";
+    }
+
+    uint64_t total = tot16 != 0 ? tot16 : tot32;
+    uint64_t data_start = (uint64_t)rsvd + (uint64_t)nf * fsz32;
+
+    if (total <= data_start) {
+        return "area data di luar ukuran volume";
+    }
+
+    uint64_t clusters = (total - data_start) / spc;
+
+    if (clusters == 0 || clusters > 0x0FFFFFF5u) {
+        return "jumlah cluster di luar jangkauan";
+    }
+    if ((uint64_t)fsz32 * 128 < clusters + 2) {
+        return "FAT terlalu kecil untuk jumlah cluster";
+    }
+    if (root < 2 || root > clusters + 1) {
+        return "RootCluster di luar jangkauan";
+    }
+
+    *out_total = total;
+    *out_max = (uint32_t)(clusters + 1);
+    return 0;
+}
 
 void ahci_fat32_probe_and_log(void)
 {
@@ -74,24 +144,16 @@ void ahci_fat32_probe_and_log(void)
         serial_write_hex(root_cluster);
         serial_write("\r\n");
 
-        if (root_entry_count != 0 || fat_sz16 != 0) {
-            serial_write("FAT32: port_index ");
-            serial_write_hex((uint64_t)idx);
-            serial_write(" - RootEntryCount/FATSz16 tidak nol (ini FAT12/16, bukan FAT32), skip\r\n");
-            continue;
-        }
+        uint64_t total_sectors = 0;
+        uint32_t max_cluster = 0;
+        const char *why = fat32_bpb_check(buf, &total_sectors, &max_cluster);
 
-        if (bytes_per_sector != 512) {
+        if (why) {
             serial_write("FAT32: port_index ");
             serial_write_hex((uint64_t)idx);
-            serial_write(" - BytesPerSector bukan 512, skip\r\n");
-            continue;
-        }
-
-        if (fat_sz32 == 0) {
-            serial_write("FAT32: port_index ");
-            serial_write_hex((uint64_t)idx);
-            serial_write(" - FATSz32 nol, bukan FAT32 valid, skip\r\n");
+            serial_write(" - BPB ditolak: ");
+            serial_write(why);
+            serial_write(", skip\r\n");
             continue;
         }
 
@@ -106,6 +168,8 @@ void ahci_fat32_probe_and_log(void)
         g_fat32_volume.fat_start_lba = (uint64_t)reserved_sector_count;
         g_fat32_volume.data_start_lba = (uint64_t)reserved_sector_count +
             ((uint64_t)num_fats * (uint64_t)fat_sz32);
+        g_fat32_volume.total_sectors = total_sectors;
+        g_fat32_volume.max_cluster = max_cluster;
 
         serial_write("FAT32: port_index ");
         serial_write_hex((uint64_t)idx);
@@ -230,8 +294,8 @@ uint8_t *fat32_load_file(uint32_t first_cluster, uint32_t file_size)
         return buf_virt;
     }
 
-    if (first_cluster < 2) {
-        serial_write("FAT32-4A: FATAL - first_cluster < 2 padahal file_size > 0\r\n");
+    if (!fat32_cluster_ok(first_cluster)) {
+        serial_write("FAT32-4A: ERROR - first_cluster di luar jangkauan padahal file_size > 0\r\n");
         return 0;
     }
 
@@ -286,6 +350,11 @@ uint8_t *fat32_load_file(uint32_t first_cluster, uint32_t file_size)
         cluster = fat32_read_fat_entry(cluster);
 
         if (cluster == 0xFFFFFFFFu) {
+            return 0;
+        }
+
+        if (cluster < 0x0FFFFFF8u && !fat32_cluster_ok(cluster)) {
+            serial_write("FAT32-4A: ERROR - rantai cluster di luar jangkauan\r\n");
             return 0;
         }
     }
@@ -474,6 +543,10 @@ void fat32_list_root_directory(void)
 // kalau ahci_read gagal.
 static uint32_t fat32_read_fat_entry(uint32_t cluster)
 {
+    if (!fat32_cluster_ok(cluster)) {
+        return 0xFFFFFFFFu;
+    }
+
     uint64_t byte_offset = (uint64_t)cluster * 4;
     uint64_t fat_sector = g_fat32_volume.fat_start_lba +
         (byte_offset / (uint64_t)g_fat32_volume.bytes_per_sector);
@@ -504,8 +577,8 @@ void fat32_read_file(uint32_t first_cluster, uint32_t file_size)
         return;
     }
 
-    if (first_cluster < 2) {
-        serial_write("FAT32-4: first_cluster < 2, tidak valid\r\n");
+    if (!fat32_cluster_ok(first_cluster)) {
+        serial_write("FAT32-4: first_cluster di luar jangkauan, tidak valid\r\n");
         return;
     }
 
@@ -571,6 +644,11 @@ void fat32_read_file(uint32_t first_cluster, uint32_t file_size)
 
         if (cluster == 0xFFFFFFFFu) {
             serial_write("\"\r\nFAT32-4: fat32_read_fat_entry gagal di tengah pembacaan file\r\n");
+            return;
+        }
+
+        if (cluster < 0x0FFFFFF8u && !fat32_cluster_ok(cluster)) {
+            serial_write("\"\r\nFAT32-4: ERROR - rantai cluster di luar jangkauan\r\n");
             return;
         }
     }
