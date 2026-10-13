@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. C5b (2026-10-13): timeout hanya diperpanjang kemajuan. C5c dilewati. D1 (2026-10-13): login TCP port 7779. Berikutnya D2.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. C5b (2026-10-13): timeout hanya diperpanjang kemajuan. C5c dilewati. D1 (2026-10-13): login TCP port 7779. D2 (2026-10-13): shell TCP. Berikutnya D3.
 
 ## 4. Templat tahap
 
@@ -157,7 +157,12 @@ Linux, dan klien Python.
   Hasil: refactor D1-1 (c225ac9, `net_tcp_queue`) lalu fitur D1-2: port 7779, banner + nonce per koneksi, `login <hmac>`
   atas "<nonce> tcp-login", 1 percobaan, timeout 10 s, baris maks 128 byte, metrics `cli_login_*`/`cli_line_long`,
   `PROTOCOL.md`. make test 101 -> 104, PROD 100 -> 103 (`tests/tcp-login.py`), host-test net 234 -> 260, auth 59 -> 67.
-- [ ] **D2** Shell baris perintah lewat TCP.
+- [x] **D2** (2026-10-13, 6d883fb, make test 104 -> 106, PROD 103 -> 105, VMware lulus) Shell baris perintah lewat TCP.
+  Hasil: setelah login tiap baris `<perintah> <hmac>`, hmac atas "<nonce> tcp-cmd <n> <perintah>" (n = nomor urut per
+  koneksi; disetujui pengguna, ganti usulan nonce per balasan). Salah -> ERR lalu FIN. Perintah sama dengan UDP + `exit`;
+  keluaran per TCB (maks 1432 byte) dialirkan bertahap, diakhiri `END <n>`; `reboot` setelah keluaran di-ACK (cadangan
+  2 s). host-test net 260 -> 300, auth 67 -> 86. VMware: bug reboot hilang saat Windows mengirim ACK + FIN satu segmen,
+  diperbaiki sebelum commit. Reboot lewat TCP tidak diuji di QEMU (host-test + VMware).
 - [ ] **D3** Klien `bmctl.py --tcp`.
 - [ ] **D4** Batas sesi (jumlah, idle timeout) dan peran (read-only vs admin).
 - [ ] **D5** Audit log: siapa menjalankan perintah apa, kapan (cap waktu menyusul di P3).
