@@ -68,4 +68,5 @@ server -> END <n>
 - Koneksi tanpa kemajuan 30 detik tetap ditutup (batas sesi: D4).
 - Metrics: `cli_cmd_ok`, `cli_cmd_fail`.
 
-Contoh klien: `tests/tcp-login.py HOST PORT KEYFILE` (klien interaktif: D3).
+Klien: `client/bmctl.py --tcp` (sekali jalan atau interaktif) dan `client/bmtcp.ps1`
+(PowerShell: `bmtcp`, `bmt <perintah>`, `bmtx`); uji: `tests/tcp-login.py HOST PORT KEYFILE`.

@@ -218,6 +218,22 @@ check "D1: tanpa login 10 s -> ERR login timeout + ditutup" \
     'echo "$LOGIN_OUT" | grep -q "^OK login-timeout$"'
 
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
+
+# D3: bmctl.py --tcp (sekali jalan, interaktif lewat pipa, kunci salah). Jeda
+# 2,5 s: sesi yang ditutup server menyisakan TIME_WAIT 2 s (maks 2 per IP).
+BMT="python3 $ROOT/client/bmctl.py --tcp --host 127.0.0.1 --port $CPORT --timeout 15"
+sleep 2.5
+T_OUT="$($BMT --key "$KEY" uptime pping metrics 2>&1)"; T_RC=$?
+check "D3: bmctl --tcp uptime pping metrics (satu sesi, rc 0)" \
+    '[ "$T_RC" -eq 0 ] && echo "$T_OUT" | grep -q "^uptime: " && echo "$T_OUT" | grep -q "^ppong$" && echo "$T_OUT" | grep -q "^ktimer_cancelled=" && echo "$T_OUT" | grep -q "^bye$"'
+sleep 2.5
+T_OUT="$(printf 'ping\n\nhelp\n' | $BMT --key "$KEY" 2>&1)"; T_RC=$?
+check "D3: bmctl --tcp interaktif (stdin pipa, EOF -> exit)" \
+    '[ "$T_RC" -eq 0 ] && echo "$T_OUT" | grep -q "^pong$" && echo "$T_OUT" | grep -q "^perintah: " && echo "$T_OUT" | grep -q "^bye$"'
+sleep 2.5
+T_OUT="$($BMT --key "$WORK/bad.txt" ping 2>&1)"; T_RC=$?
+check "D3: bmctl --tcp kunci salah -> ERR login gagal, rc 1" \
+    '[ "$T_RC" -eq 1 ] && echo "$T_OUT" | grep -q "^ERR: login gagal$"'
 check "kunci salah ditolak" \
     'python3 $ROOT/client/bmctl.py --key $WORK/bad.txt --host 127.0.0.1 --port $PORT --timeout 10 ping | grep -q "^ERR: hmac salah"'
 

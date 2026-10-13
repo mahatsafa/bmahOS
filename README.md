@@ -164,6 +164,22 @@ Alamat default `192.168.50.200:7778` (ubah dengan `--host`/`--port` atau `BMAHOS
 Semua perintah lewat `CHAL`; `--counter` memakai jalur lama (hanya build `LEGACYCTR=1`), `--priv`
 diterima tapi tidak diperlukan lagi. Kode keluar: 0 sukses, 1 balasan `ERR`, 2 tidak ada balasan.
 
+Shell TCP 7779 (D3, `--tcp`): satu sesi login, perintah ditandatangani nomor urut (lihat `PROTOCOL.md`).
+
+    python client/bmctl.py --tcp --key ~/bmahos-key.txt uptime metrics   # berurutan, lalu exit
+    python client/bmctl.py --tcp --key ~/bmahos-key.txt                  # interaktif (bmahOS> )
+
+Port default 7779 (`--port` atau `BMAHOS_TCP_PORT`), timeout 10 s per balasan. Interaktif: `exit` atau
+Ctrl-D/Ctrl-Z menutup; tanpa terminal (pipa) tiap baris stdin = satu perintah. Kode keluar sama; 1 juga
+bila server menutup koneksi (login/perintah ditolak).
+
+PowerShell (Windows): `client/bmtcp.ps1`, kunci `%USERPROFILE%\.bmahos\key.txt`.
+
+    . .\client\bmtcp.ps1
+    bmtcp          # OK login
+    bmt metrics    # keluaran sampai END <n>
+    bmtx           # exit + tutup
+
 ## Hardware target (hasil pemeriksaan dari Linux di HP Stream)
 
 - CPU: Intel Celeron N2840
