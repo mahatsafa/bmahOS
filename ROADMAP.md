@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. C5b (2026-10-13): timeout hanya diperpanjang kemajuan. Berikutnya C5c (opsional).
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. C5b (2026-10-13): timeout hanya diperpanjang kemajuan. C5c dilewati. D1 (2026-10-13): login TCP port 7779. Berikutnya D2.
 
 ## 4. Templat tahap
 
@@ -145,7 +145,7 @@ Format ID: `Fase.Nomor`. Centang `[x]` saat lulus dan sudah di-push.
   (handshake, ACK memajukan snd_una, data baru, FIN peer) yang memperpanjang. make test 99 -> 101, PROD 98 -> 100,
   host-test net 220 -> 234. VMware: keepalive Windows tiap 5 s tidak menahan koneksi (FIN setelah 30 s);
   SYN ulang, RST seq salah, dan ACK jendela 0 hanya terbukti di QEMU/host-test.
-- [ ] **C5c** (opsional) SYN cookie.
+- [ ] **C5c** (opsional) SYN cookie. Dilewati 2026-10-13 (disetujui pengguna; jaringan host-only, risiko kecil), lanjut Tahap D.
 
 Keputusan yang harus tertulis sebelum C3b: segmen di luar urutan dibuang atau disimpan, dan ukuran window
 yang diiklankan harus sama dengan buffer yang benar-benar ada. Uji interoperabilitas dengan Windows, `nc`
@@ -153,7 +153,7 @@ Linux, dan klien Python.
 
 ### Fase 3: Tahap D (login, shell, penyimpanan tulis)
 
-- [ ] **D1** Login challenge-response lewat TCP (memakai HMAC dan nonce yang sudah ada).
+- [x] **D1** (2026-10-13, c225ac9 + e17c168, make test 101 -> 104, PROD 100 -> 103, VMware lulus) Login challenge-response lewat TCP (memakai HMAC dan nonce yang sudah ada).
   Hasil: refactor D1-1 (c225ac9, `net_tcp_queue`) lalu fitur D1-2: port 7779, banner + nonce per koneksi, `login <hmac>`
   atas "<nonce> tcp-login", 1 percobaan, timeout 10 s, baris maks 128 byte, metrics `cli_login_*`/`cli_line_long`,
   `PROTOCOL.md`. make test 101 -> 104, PROD 100 -> 103 (`tests/tcp-login.py`), host-test net 234 -> 260, auth 59 -> 67.
