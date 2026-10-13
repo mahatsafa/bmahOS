@@ -39,7 +39,7 @@ Menjawab empat pertanyaan: apa yang dilindungi, dari siapa, lewat jalur mana, da
 Jaringan (tidak tepercaya)
    │  frame Ethernet
    ▼
-Driver NIC ──► ARP / IPv4 / ICMP / UDP / TCP ──► Protokol perintah (UDP 7778, nanti TCP)
+Driver NIC ──► ARP / IPv4 / ICMP / UDP / TCP ──► Protokol perintah (UDP 7778, login TCP 7779 sejak D1)
                                                        │
                                             ┌──────────┴──────────┐
                                             ▼                     ▼
@@ -56,6 +56,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Parser ARP/IP/ICMP/UDP | Baca di luar batas, panjang palsu | Validasi panjang ketat; fuzzing (R7) |
 | Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda, retransmisi terbatas (5x lalu RST, C3c), setiap keadaan penutupan punya batas waktu (C3d), batas 2000 segmen/s per koneksi dan 10 ACK duplikat/s (C4), tabel 4 TCB, maks 2 per IP, SYN_RCVD tertua digusur saat penuh (C5a), timeout hanya diperpanjang kemajuan, bukan ACK duplikat/keepalive/SYN ulang/RST salah (C5b) |
 | Protokol perintah | Replay, penebakan nonce, banjir CHAL | HMAC-SHA256, nonce sekali pakai, tabel nonce 16 slot, maks 4 per IP, batas laju per IP dan global |
+| Login TCP 7779 (D1) | Replay bukti login, tebak HMAC, sesi menggantung, baris raksasa, sisip segmen setelah login | Nonce per koneksi dari DRBG, pesan "<nonce> tcp-login" berbeda dari UDP, 1 percobaan per koneksi lalu FIN, login maks 10 s, baris maks 128 byte, perbandingan ct_memeq; sisip segmen setelah login masih terbuka sampai D2 (perintah ditandatangani per baris) |
 | Nonce | Nonce dapat ditebak melemahkan challenge-response | Modul entropi + HMAC-DRBG (F1.8); menolak jika entropi belum cukup |
 | Parser FAT32 | Struktur disk rusak | Validasi BPB (RootEntryCount==0 dan FATSz16==0), batas jumlah sektor, kode error bukan halt |
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |

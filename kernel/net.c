@@ -293,6 +293,10 @@ uint64_t g_tcp_conn_dropped = 0;  // C4: segmen koneksi aktif melewati batas per
 uint64_t g_tcp_dupack_limited = 0; // C4: ACK untuk segmen di luar urutan yang tidak dikirim
 uint64_t g_tcp_src_full = 0;       // C5a: SYN ditolak, IP sumber sudah punya TCP_MAX_PER_IP TCB
 uint64_t g_tcp_synrcvd_evicted = 0; // C5a: SYN_RCVD tertua digusur saat tabel penuh
+uint64_t g_cli_login_ok = 0;       // D1: login TCP 7779 berhasil
+uint64_t g_cli_login_fail = 0;     // D1: login gagal (format/hmac/auth nonaktif)
+uint64_t g_cli_login_timeout = 0;  // D1: tidak login dalam TCP_LOGIN_TIMEOUT
+uint64_t g_cli_line_long = 0;      // D1: baris > TCP_LINE_MAX, koneksi ditutup
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -673,6 +677,16 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 // C5a: jumlah slot TCB (tabel statis, tanpa heap) dan batas per IP sumber.
 #define TCP_MAX_CONN        4
 #define TCP_MAX_PER_IP      2
+// D1: CLI port 7779. Setelah handshake server mengirim "bmahOS login\n" dan
+// "nonce: <32 hex>\n" (nonce per koneksi dari DRBG, dibuat saat SYN); klien
+// mengirim "login <hmac-hex64>" (lihat auth_tcp_login, PROTOCOL.md). Satu
+// percobaan per koneksi; gagal/timeout/baris terlalu panjang -> ERR lalu FIN.
+// Baris maks TCP_LINE_MAX byte termasuk LF. Shell setelah login = D2.
+#define NET_TCP_CLI_PORT    7779
+#define TCP_LINE_MAX        128
+#define TCP_LOGIN_TIMEOUT   1000   // tick (10 detik) sejak ESTABLISHED
+#define TCP_CLI_REPLY_MAX   64     // balasan CLI terpanjang (byte)
+enum { TCP_APP_ECHO = 0, TCP_APP_CLI };
 
 // Nilai juga dipakai metrics tcp_state.
 enum { TCP_CLOSED = 0, TCP_SYN_RCVD, TCP_ESTABLISHED, TCP_CLOSE_WAIT,
@@ -700,6 +714,13 @@ typedef struct {
     int fin_sent;       // C3d: FIN kita terkirim (nomor urutnya snd_nxt - 1)
     uint64_t seg_window, dupack_window;   // C4: awal jendela 1 detik
     uint32_t seg_used, dupack_used;
+    int app;            // D1: TCP_APP_ECHO (port 7) / TCP_APP_CLI (7779)
+    int cli_authed;     // D1: login berhasil
+    int close_after;    // D1: FIN setelah antrean kirim habis dan di-ACK
+    uint64_t opened;    // D1: tick ESTABLISHED (batas login)
+    uint8_t nonce[16];  // D1: nonce login koneksi ini
+    uint32_t line_len;
+    uint8_t line[TCP_LINE_MAX];
 } tcp_tcb_t;
 
 static tcp_tcb_t g_tcbs[TCP_MAX_CONN];
@@ -975,6 +996,13 @@ static int net_tcp_output(tcp_tcb_t *t)
             net_tcp_log("FIN dikirim (LAST_ACK)");
             return 1;
         }
+        // D1: CLI memutuskan menutup (login gagal/timeout, baris panjang):
+        // FIN setelah balasan terkirim dan di-ACK.
+        if (t->state == TCP_ESTABLISHED && t->close_after && t->buf_count == 0) {
+            net_tcp_send_fin(t, TCP_FIN_WAIT_1);
+            net_tcp_log("FIN dikirim (FIN_WAIT_1)");
+            return 1;
+        }
         return 0;
     }
 
@@ -1070,9 +1098,113 @@ static void net_tcp_rtx_fire(void *arg)
     net_tcp_rtx_arm(t);
 }
 
+// ---- D1: CLI port 7779 (login) ----
+static void net_tcp_cli_reply(tcp_tcb_t *t, const char *s)
+{
+    uint32_t n = 0;
+
+    while (s[n]) {
+        n++;
+    }
+    net_tcp_queue(t, (const volatile uint8_t *)s, n);
+}
+
+// Dipanggil saat handshake selesai: banner + nonce login.
+static void net_tcp_cli_banner(tcp_tcb_t *t)
+{
+    static const char hx[] = "0123456789abcdef";
+    char m[64];
+    uint32_t k = 0;
+    const char *p = "bmahOS login\nnonce: ";
+
+    while (*p) {
+        m[k++] = *p++;
+    }
+    for (int i = 0; i < 16; i++) {
+        m[k++] = hx[t->nonce[i] >> 4];
+        m[k++] = hx[t->nonce[i] & 0xF];
+    }
+    m[k++] = '\n';
+    t->opened = timer_ticks;
+    net_tcp_queue(t, (const volatile uint8_t *)m, k);
+}
+
+static void net_tcp_cli_line(tcp_tcb_t *t)
+{
+    uint32_t len = t->line_len;
+
+    t->line_len = 0;
+    if (len > 0 && t->line[len - 1] == '\r') {
+        len--;
+    }
+    if (len == 0) {
+        return;
+    }
+    if (t->cli_authed) {
+        net_tcp_cli_reply(t, "ERR: shell belum ada (D2)\n");
+        return;
+    }
+
+    int rc = auth_tcp_login(t->nonce, t->line, len);
+
+    if (rc == 0) {
+        t->cli_authed = 1;
+        g_cli_login_ok++;
+        net_tcp_cli_reply(t, "OK login\n");
+        net_tcp_log("CLI login OK");
+        return;
+    }
+    g_cli_login_fail++;
+    net_tcp_cli_reply(t, rc == 1 ? "ERR: auth nonaktif\n" : "ERR: login gagal\n");
+    t->close_after = 1;
+    net_tcp_log("CLI login gagal, koneksi ditutup");
+}
+
+// Data CLI masuk per baris. Return jumlah byte yang dikonsumsi; sisanya
+// tidak di-ACK (peer mengirim ulang) bila ruang balasan kurang dari
+// TCP_CLI_REPLY_MAX. Setelah memutuskan menutup, sisa data dibuang.
+static uint32_t net_tcp_cli_rx(tcp_tcb_t *t, const volatile uint8_t *d,
+                               uint32_t len)
+{
+    uint32_t i;
+
+    for (i = 0; i < len; i++) {
+        if (t->close_after) {
+            continue;
+        }
+        if (TCP_BUF_SIZE - t->buf_count < TCP_CLI_REPLY_MAX) {
+            break;
+        }
+
+        uint8_t c = d[i];
+
+        if (c == '\n') {
+            net_tcp_cli_line(t);
+        } else if (t->line_len < TCP_LINE_MAX - 1) {
+            t->line[t->line_len++] = c;
+        } else {
+            g_cli_line_long++;
+            net_tcp_cli_reply(t, "ERR: baris terlalu panjang\n");
+            t->close_after = 1;
+            net_tcp_log("CLI baris terlalu panjang, koneksi ditutup");
+        }
+    }
+    return i;
+}
+
 static void net_tcp_tick_one(tcp_tcb_t *t)
 {
     if (t->state == TCP_CLOSED) {
+        return;
+    }
+    // D1: login CLI harus selesai dalam TCP_LOGIN_TIMEOUT sejak ESTABLISHED.
+    if (t->app == TCP_APP_CLI && t->state == TCP_ESTABLISHED && !t->cli_authed &&
+        !t->close_after && timer_ticks - t->opened > TCP_LOGIN_TIMEOUT) {
+        g_cli_login_timeout++;
+        net_tcp_cli_reply(t, "ERR: login timeout\n");
+        t->close_after = 1;
+        net_tcp_log("CLI login timeout, koneksi ditutup");
+        net_tcp_output(t);
         return;
     }
     // C3c: selama ada segmen belum di-ACK, retransmisi (TCP_RTX_MAX) yang
@@ -1169,6 +1301,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             t->last = timer_ticks;   // C5b: kemajuan
             g_tcp_conn_open++;
             net_tcp_log("ESTABLISHED");
+            if (t->app == TCP_APP_CLI) {
+                net_tcp_cli_banner(t);
+            }
         }
 
         // C3b: ACK untuk data kita. ACK melewati snd_nxt (data yang belum
@@ -1230,7 +1365,11 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         if (t->state == TCP_ESTABLISHED && dlen > 0) {
             // Echo: data masuk langsung jadi data kirim, hanya sebanyak ruang
             // buffer (= jendela yang kita iklankan).
-            n = net_tcp_queue(t, buf + r + doff, dlen);
+            if (t->app == TCP_APP_CLI) {
+                n = net_tcp_cli_rx(t, buf + r + doff, dlen);
+            } else {
+                n = net_tcp_queue(t, buf + r + doff, dlen);
+            }
             t->rcv_nxt += n;
             g_tcp_rx_bytes += n;
             if (n > 0) {
@@ -1273,7 +1412,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         return 1;
     }
 
-    if (dport == NET_TCP_ECHO_PORT && (flags & TCP_SYN) &&
+    if ((dport == NET_TCP_ECHO_PORT || dport == NET_TCP_CLI_PORT) && (flags & TCP_SYN) &&
         !(flags & (TCP_ACK | TCP_RST))) {
         uint32_t same_ip = 0;
         tcp_tcb_t *victim = 0;
@@ -1310,7 +1449,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             return 0;
         }
 
-        uint8_t isn[4];
+        uint8_t isn[20];   // D1: 4 byte ISN + 16 byte nonce login
 
         // F1.8: tanpa entropi cukup SYN dibuang (bukan RST); peer mengulang.
         if (!entropy_get(isn, sizeof(isn))) {
@@ -1348,6 +1487,13 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         t->rto = TCP_RTO_INIT;
         t->retries = 0;
         t->fin_sent = 0;
+        t->app = dport == NET_TCP_CLI_PORT ? TCP_APP_CLI : TCP_APP_ECHO;
+        t->cli_authed = 0;
+        t->close_after = 0;
+        t->line_len = 0;
+        for (int i = 0; i < 16; i++) {
+            t->nonce[i] = isn[4 + i];
+        }
         t->state = TCP_SYN_RCVD;
         net_tcp_tcb_send(t, t->iss, TCP_SYN | TCP_ACK, 1);
         net_tcp_rtx_arm(t);

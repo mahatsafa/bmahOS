@@ -38,6 +38,8 @@ Belum pernah diuji di hardware asli.
   di luar koneksi; koneksi TCP aktif dibatasi 2000 segmen/detik), ring log 8 KB, counter di
   perintah `stats` dan `metrics`
 - Echo TCP port 7: 1 MB bolak-balik dengan SHA-256 sama di `make test` (`tests/tcp-echo.py`)
+- Login TCP port 7779 (D1): banner + nonce per koneksi, `login <hmac>`; format di `PROTOCOL.md`,
+  diuji `tests/tcp-login.py`. Shell setelah login belum ada (D2)
 - Diagnosis RX: `metrics` menampilkan `rx_missed` (register MPC), `rx_nobuf` (RNBC), dan
   `rx_overrun_irq` (interrupt RXO) untuk membedakan paket hilang di ring RX bmahOS dari yang hilang di luar
 
@@ -198,7 +200,7 @@ diterima tapi tidak diperlukan lagi. Kode keluar: 0 sukses, 1 balasan `ERR`, 2 t
 - Hanya driver E1000 (device ID `0x100F` 82545EM dan `0x100E` 82540EM yang sudah diuji); belum ada
   driver untuk NIC hardware target
 - Hanya controller AHCI pertama yang dipakai
-- TCP masih minimal: maks 4 koneksi di port 7 (echo), maks 2 per IP sumber, kirim stop-and-wait, retransmisi dengan RTO tetap
+- TCP masih minimal: maks 4 koneksi (port 7 echo + 7779 CLI), maks 2 per IP sumber, kirim stop-and-wait, retransmisi dengan RTO tetap
   1 detik lalu eksponensial (maks 8 detik, 5 kali, lalu RST), tanpa pengukuran RTT. Penutupan FIN dua arah:
   klien menutup -> bmahOS membalas FIN setelah echo habis (port langsung bebas); koneksi diam 30 detik ditutup
   dengan FIN, TIME_WAIT hanya 2 detik (bukan 2*MSL) dan selama itu memakai satu slot. Belum ada persist timer

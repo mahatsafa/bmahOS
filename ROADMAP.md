@@ -154,6 +154,9 @@ Linux, dan klien Python.
 ### Fase 3: Tahap D (login, shell, penyimpanan tulis)
 
 - [ ] **D1** Login challenge-response lewat TCP (memakai HMAC dan nonce yang sudah ada).
+  Hasil: refactor D1-1 (c225ac9, `net_tcp_queue`) lalu fitur D1-2: port 7779, banner + nonce per koneksi, `login <hmac>`
+  atas "<nonce> tcp-login", 1 percobaan, timeout 10 s, baris maks 128 byte, metrics `cli_login_*`/`cli_line_long`,
+  `PROTOCOL.md`. make test 101 -> 104, PROD 100 -> 103 (`tests/tcp-login.py`), host-test net 234 -> 260, auth 59 -> 67.
 - [ ] **D2** Shell baris perintah lewat TCP.
 - [ ] **D3** Klien `bmctl.py --tcp`.
 - [ ] **D4** Batas sesi (jumlah, idle timeout) dan peran (read-only vs admin).
@@ -239,6 +242,6 @@ menjalankan beban kerja IoT, cukup tulis program user-space di atas socket API (
 | `THREAT_MODEL.md` | Ada |
 | `DECISIONS.md` | Buat di F1.2, isi tiap keputusan: "memilih X karena Y, alternatif Z" |
 | `ARCHITECTURE.md` | Ada sejak F1.4 (peta modul, alur boot, peta memori); perbarui bila modul berubah |
-| `PROTOCOL.md` | Buat bersama D1 (format paket perintah) |
+| `PROTOCOL.md` | Ada sejak D1 (UDP 7778, echo, login TCP 7779) |
 | `HARDWARE.md` | Buat di H0 |
 | `CHANGELOG.md` | Mulai saat rilis pertama |

@@ -506,6 +506,57 @@ static int priv_try_handle(volatile uint8_t *cmd, uint32_t len,
     return 1;
 }
 
+// ---- D1: login TCP port 7779 ----
+// Baris "login <hmac-hex64>", hmac = HMAC-SHA256(kunci, "<nonce32hex> tcp-login").
+// Nonce milik satu koneksi (net.c, dibuat saat SYN); pesan berbeda dari
+// perintah UDP dan nonce tidak ada di tabel UDP, jadi bukti login tidak
+// berlaku di jalur lain. Return 0 OK, 1 auth nonaktif, 2 format, 5 hmac salah.
+int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
+{
+    static const char hx[] = "0123456789abcdef";
+    static const char pre[] = "login ";
+    static const char sfx[] = " tcp-login";
+
+    if (g_auth_key_len == 0) {
+        return 1;
+    }
+    if (len != 6 + 64) {
+        return 2;
+    }
+    for (uint32_t i = 0; i < 6; i++) {
+        if (line[i] != (uint8_t)pre[i]) {
+            return 2;
+        }
+    }
+
+    uint8_t rx[32];
+
+    for (uint32_t i = 0; i < 32; i++) {
+        int hi = auth_hexval(line[6 + i * 2]);
+        int lo = auth_hexval(line[6 + i * 2 + 1]);
+
+        if (hi < 0 || lo < 0) {
+            return 2;
+        }
+        rx[i] = (uint8_t)((hi << 4) | lo);
+    }
+
+    uint8_t m[32 + 10];
+
+    for (uint32_t i = 0; i < 16; i++) {
+        m[i * 2] = (uint8_t)hx[nonce[i] >> 4];
+        m[i * 2 + 1] = (uint8_t)hx[nonce[i] & 0xF];
+    }
+    for (uint32_t i = 0; i < 10; i++) {
+        m[32 + i] = (uint8_t)sfx[i];
+    }
+
+    uint8_t mac[32];
+
+    hmac_sha256(g_auth_key, g_auth_key_len, m, sizeof(m), mac);
+    return ct_memeq(mac, rx, 32) ? 0 : 5;
+}
+
 void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len)
 {
     volatile uint8_t *cmd = req + 14 + ihl + 8;

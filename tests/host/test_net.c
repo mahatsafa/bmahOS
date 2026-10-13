@@ -46,6 +46,29 @@ int entropy_get(uint8_t *out, uint32_t len)
     return 1;
 }
 
+// D1: auth_tcp_login ada di auth.c (vektor HMAC diuji di test_auth). Stub:
+// "login " + 64 'a' = OK, 70 byte "login ..." lain = hmac salah (5), lainnya
+// format (2); g_login_off = 1 meniru kunci tidak dimuat. Nonce dicatat.
+static uint8_t g_login_nonce[16];
+static int g_login_off;
+
+int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
+{
+    memcpy(g_login_nonce, nonce, 16);
+    if (g_login_off) {
+        return 1;
+    }
+    if (len != 70 || memcmp(line, "login ", 6) != 0) {
+        return 2;
+    }
+    for (uint32_t i = 6; i < 70; i++) {
+        if (line[i] != 'a') {
+            return 5;
+        }
+    }
+    return 0;
+}
+
 // ktimer.c ikut dikompilasi (C3c); ktimer_selftest memanggil task_sleep.
 void task_sleep(uint64_t ticks)
 {
@@ -683,6 +706,8 @@ static void test_fuzz(void)
 
 // ---- C3b: kirim data TCP ----
 
+static uint16_t g_wport = 7;
+
 // Segmen TCP dari peer dengan data biner dan jendela pilihan.
 static size_t mk_tcp_w(uint8_t *f, uint32_t seq, uint32_t ack, uint8_t flags,
                        const uint8_t *data, size_t dlen, uint16_t wnd)
@@ -691,7 +716,8 @@ static size_t mk_tcp_w(uint8_t *f, uint32_t seq, uint32_t ack, uint8_t flags,
     memset(t, 0, 20);
     t[0] = 4500 >> 8;
     t[1] = 4500 & 0xFF;
-    t[3] = 7;
+    t[2] = (uint8_t)(g_wport >> 8);   // D1: port tujuan pilihan (default 7)
+    t[3] = (uint8_t)g_wport;
     put32(t + 4, seq);
     put32(t + 8, ack);
     t[12] = 0x50;
@@ -1395,6 +1421,125 @@ static void test_tcp_idle(void)
     tcp_reset();
 }
 
+// ---- D1: CLI port 7779 (login) ----
+
+static const char BANNER[] = "bmahOS login\nnonce: a4a5a6a7a8a9aaabacadaeafb0b1b2b3\n";
+#define BLEN (sizeof(BANNER) - 1)
+
+// Koneksi CLI: handshake, banner diperiksa, banner di-ACK. Return 1 bila
+// banner benar. g_iss + 1 + BLEN = snd_nxt setelahnya.
+static int cli_open(uint32_t our_isn, uint32_t peer_isn)
+{
+    uint8_t f[200];
+    g_wport = 7779;
+    tcp_open(our_isn, peer_isn, 4096);
+    struct seg s = tx_seg(0);
+    int ok = g_tx_n == 1 && s.len == BLEN && memcmp(s.data, BANNER, BLEN) == 0 &&
+             s.seq == g_iss + 1 && g_tcbs[0].app == TCP_APP_CLI;
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1 + BLEN, F_ACK, 0, 0, 4096));
+    return ok && g_tx_n == 0;
+}
+
+static int cli_send(const char *line, uint32_t ack)
+{
+    static uint8_t f[700];
+    uint32_t n = (uint32_t)strlen(line);
+    rx(f, mk_tcp_w(f, g_pseq, ack, F_ACK | 0x08, (const uint8_t *)line, n, 4096));
+    g_pseq += n;
+    return g_tx_n;
+}
+
+static int reply_is(const char *want)
+{
+    struct seg s = tx_seg(0);
+    size_t n = strlen(want);
+    return g_tx_n == 1 && s.len == n && memcmp(s.data, want, n) == 0 && s.ack == g_pseq;
+}
+
+static void test_tcp_cli(void)
+{
+    static uint8_t f[300];
+    char line[200];
+    uint64_t ok0 = g_cli_login_ok, fail0 = g_cli_login_fail;
+    uint64_t to0 = g_cli_login_timeout, long0 = g_cli_line_long;
+    uint32_t una;
+
+    // A. Login benar (CRLF diterima), nonce = byte 4..19 dari entropi SYN.
+    CHECK(cli_open(1000, 2000));
+    una = g_iss + 1 + BLEN;
+    memcpy(line, "login ", 6);
+    memset(line + 6, 'a', 64);
+    memcpy(line + 70, "\r\n", 3);
+    cli_send(line, una);
+    CHECK(reply_is("OK login\n") && g_cli_login_ok == ok0 + 1 && g_tcbs[0].cli_authed);
+    CHECK(g_login_nonce[0] == 0xA4 && g_login_nonce[15] == 0xB3);
+    una += 9;
+    // Setelah login: shell belum ada (D2); baris kosong diabaikan.
+    cli_send("\n", una);
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 0);
+    cli_send("help\n", una);
+    CHECK(reply_is("ERR: shell belum ada (D2)\n") && g_tcbs[0].state == TCP_ESTABLISHED);
+
+    // B. HMAC salah: ERR, lalu FIN setelah ERR di-ACK; satu percobaan saja.
+    CHECK(cli_open(3000, 4000));
+    una = g_iss + 1 + BLEN;
+    memset(line + 6, 'b', 64);
+    line[70] = '\n';
+    line[71] = 0;
+    cli_send(line, una);
+    CHECK(reply_is("ERR: login gagal\n") && g_cli_login_fail == fail0 + 1);
+    CHECK(g_tcbs[0].close_after && g_tcbs[0].state == TCP_ESTABLISHED);
+    una += 17;
+    // Data sesudah keputusan tutup dibuang (tetap di-ACK), tidak diproses.
+    memset(line + 6, 'a', 64);
+    cli_send(line, una);
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_FIN | F_ACK) && tx_seg(0).seq == una);
+    CHECK(g_tcbs[0].state == TCP_FIN_WAIT_1 && g_cli_login_ok == ok0 + 1);
+
+    // C. Format salah (tanpa "login ") dan auth nonaktif: juga gagal + tutup.
+    CHECK(cli_open(5000, 6000));
+    cli_send("halo\n", g_iss + 1 + BLEN);
+    CHECK(reply_is("ERR: login gagal\n") && g_cli_login_fail == fail0 + 2);
+    CHECK(cli_open(7000, 8000));
+    g_login_off = 1;
+    cli_send("halo\n", g_iss + 1 + BLEN);
+    g_login_off = 0;
+    CHECK(reply_is("ERR: auth nonaktif\n") && g_cli_login_fail == fail0 + 3);
+
+    // D. Tidak login: ERR tepat TCP_LOGIN_TIMEOUT + 1 tick setelah ESTABLISHED
+    // (cli_open sudah memajukan 100 tick), lalu FIN setelah di-ACK.
+    CHECK(cli_open(9000, 10000));
+    una = g_iss + 1 + BLEN;
+    CHECK(run_until_tx(5000) == TCP_LOGIN_TIMEOUT + 1 - 100);
+    CHECK(reply_is("ERR: login timeout\n") && g_cli_login_timeout == to0 + 1);
+    rx(f, mk_tcp_w(f, g_pseq, una + 19, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_FIN | F_ACK) && g_tcbs[0].state == TCP_FIN_WAIT_1);
+
+    // E. Baris > TCP_LINE_MAX tanpa LF: ERR + tutup, semua byte di-ACK.
+    CHECK(cli_open(11000, 12000));
+    memset(line, 'x', 199);
+    line[199] = 0;
+    cli_send(line, g_iss + 1 + BLEN);
+    CHECK(reply_is("ERR: baris terlalu panjang\n") && g_cli_line_long == long0 + 1);
+    CHECK(g_tcbs[0].close_after && g_cli_login_fail == fail0 + 3);
+    // 127 byte + LF masih satu baris (format salah, bukan terlalu panjang).
+    CHECK(cli_open(13000, 14000));
+    memset(line, 'y', 127);
+    line[127] = '\n';
+    line[128] = 0;
+    cli_send(line, g_iss + 1 + BLEN);
+    CHECK(reply_is("ERR: login gagal\n") && g_cli_line_long == long0 + 1);
+
+    // F. Port 7 tetap echo (bukan CLI).
+    g_wport = 7;
+    tcp_open(15000, 16000, 4096);
+    CHECK(g_tx_n == 0 && g_tcbs[0].app == TCP_APP_ECHO);
+    cli_send("login\n", g_iss + 1);
+    CHECK(reply_is("login\n"));
+    CHECK(g_tx_bad == 0);
+    tcp_reset();
+}
+
 int main(void)
 {
     test_checksum();
@@ -1409,6 +1554,7 @@ int main(void)
     test_tcp_limits();
     test_tcp_table();
     test_tcp_idle();
+    test_tcp_cli();
     test_limits();
     build_templates();
     test_truncation();

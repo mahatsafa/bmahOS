@@ -69,6 +69,17 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **ACK balasan untuk segmen yang tidak diterima** (di luar urutan, duplikat, ACK melewati `snd_nxt`) **maks 10/s** (`tcp_dupack_limited`), mirip batas challenge ACK RFC 5961, supaya segmen palsu dengan 4-tuple tertebak tidak bisa memantulkan banjir balasan. ACK untuk data yang diterima tidak dibatasi.
 - **Uji 1 MB memakai klien TCP Linux sungguhan lewat slirp** (`tests/tcp-echo.py`, kirim dan terima bersamaan, SHA-256), bukan rawnet: rawnet tidak punya tumpukan TCP. QEMU TCG: ~31 s (~33 KB/s, stop-and-wait).
 
+## 2026-10-13 (D1 login TCP port 7779; desain disetujui pengguna)
+- **Nonce per koneksi** (16 byte DRBG, diambil bersama ISN saat SYN; SYN dibuang bila entropi kurang), dikirim
+  server langsung setelah handshake. Alternatif "CHAL" seperti UDP ditolak: satu round trip lebih dan tabel nonce
+  UDP ikut terbebani.
+- **Bukti login** = HMAC(kunci, "<nonce> tcp-login"): primitif dan kunci yang sama dengan UDP 7778, tanpa kripto baru.
+  Akhiran "tcp-login" memisahkan domain dari perintah UDP.
+- **Satu percobaan per koneksi**, gagal -> ERR lalu FIN; login maks 10 s; baris maks 128 byte. Tebak HMAC 256 bit
+  tidak praktis, jadi tidak ada penguncian akun.
+- **Belum**: integritas baris setelah login. Rencana D2: tiap perintah ditandatangani nonce baru dari balasan sebelumnya.
+- Refactor `net_tcp_queue` (D1-1) dipisah dari fitur (D1-2).
+
 ## 2026-10-13 (C5b timeout tanpa kemajuan)
 - **`last` hanya diperbarui oleh kemajuan**: handshake selesai, ACK yang memajukan snd_una, data baru dalam urutan,
   FIN peer pertama. Segmen lain (ACK duplikat, keepalive seq-1, ACK jendela 0 berulang, SYN ulang di SYN_RCVD,

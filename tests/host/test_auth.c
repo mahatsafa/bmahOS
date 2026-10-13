@@ -502,6 +502,39 @@ static void test_fuzz(void)
     CHECK(accepted == 0);
 }
 
+// D1: vektor dihitung dengan Python (hmac/hashlib), bukan dengan kode ini:
+// HMAC-SHA256(KEY, "a4a5...b3 tcp-login").
+static void test_tcp_login(void)
+{
+    uint8_t nonce[16];
+    char line[80];
+    const char *mac = "580a6719d8a5192912eec0c9c44f7a78da1b74ff6b6210401b38f043cd8303d2";
+
+    for (int i = 0; i < 16; i++) {
+        nonce[i] = (uint8_t)(0xA4 + i);
+    }
+    load_key(KEY);
+    snprintf(line, sizeof(line), "login %s", mac);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 0);
+    line[69] ^= 1;                                         // hex lain
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 5);
+    line[69] ^= 1;
+    nonce[0] ^= 1;                                         // nonce lain
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 5);
+    nonce[0] ^= 1;
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 69) == 2);
+    line[10] = 'g';
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 2);
+    snprintf(line, sizeof(line), "LOGIN %s", mac);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 2);
+    snprintf(line, sizeof(line), "login %s", mac);
+    uint32_t kl = g_auth_key_len;
+    g_auth_key_len = 0;
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 1);
+    g_auth_key_len = kl;
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 0);
+}
+
 int main(void)
 {
     test_load_key();
@@ -509,5 +542,6 @@ int main(void)
     test_priv();
     test_handle();
     test_fuzz();
+    test_tcp_login();
     return test_done("auth");
 }
