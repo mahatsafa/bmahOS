@@ -159,3 +159,30 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Hapus/ganti nama umum** (`hapus`, `ganti`) ditambahkan juga (disetujui pengguna). Entri ber-LFN ditolak
   supaya tidak meninggalkan LFN yatim. Hapus: entri 0xE5 dulu, lalu rantai (crash = lost cluster).
 - Variabel runtime ada di net.c (pemakainya), config.c hanya mengisi; uji host net.c tidak butuh config.c.
+
+## 2026-10-13 (D8 kerahasiaan balasan; pilihan A disetujui pengguna)
+- **TLS 1.2 dengan BearSSL**, bukan SSH atau Noise. Alasan: klien bawaan di kedua sisi (Python `ssl`, .NET
+  `SslStream`), tidak ada protokol kripto buatan sendiri, BearSSL tanpa alokasi dinamis, constant-time, MIT, bisa
+  freestanding. Ditolak: SSH (butuh libc/POSIX, praktis menunggu P5), Noise + Monocypher (komposisi protokol oleh
+  kita, klien butuh pustaka non-bawaan), tunda (A2 dalam cakupan).
+- **Implementasi = tahap D9** (sebelum Fase 4; urutan diputuskan Claude atas izin pengguna). D8 hanya keputusan.
+- **Versi dipatok**: sumber BearSSL di-vendor ke `third_party/bearssl` pada commit/rilis tertentu dengan sha256
+  tercatat, lisensi di `3RDPARTY.md`. Tanpa SSE/AES-NI (kernel `-mno-sse`): implementasi `_ct`/`_ct64`/`ctmul`.
+- **Profil TLS sempit**: hanya TLS 1.2; suite ECDHE_ECDSA_WITH_CHACHA20_POLY1305 dan ECDHE_ECDSA_WITH_AES_128_GCM;
+  tanpa RSA key exchange, renegosiasi, resumption (tanpa cache sesi), sertifikat klien. TLS 1.3 tidak ada di BearSSL
+  (dicatat sebagai batasan).
+- **Port baru TCP 7780** = protokol baris yang sama dengan 7779 (banner, nonce, login HMAC, perintah bertanda tangan,
+  `END <n>`) di dalam TLS. Login HMAC tetap (TLS hanya mengautentikasi server). 7779 teks polos tetap ada sampai klien
+  pindah; menonaktifkannya lewat kunci CONFIG.CFG diputuskan di D9.
+- **Identitas server**: kunci ECDSA P-256 dan sertifikat self-signed dibuat di mesin dev (openssl; BearSSL tidak
+  punya penulis X.509), disimpan di disk (`TLSKEY.DER`, `TLSCERT.DER`, nama dilindungi seperti KEY.TXT). Klien
+  mem-pin sha256 sertifikat (bukan CA). Tanpa file -> port 7780 tidak dibuka (gagal tertutup), 7779 tetap.
+- **Keacakan**: DRBG BearSSL di-seed dari `entropy_get` per koneksi; entropi belum siap -> SYN 7780 dibuang (sama
+  dengan perilaku F1.8). Server tidak memvalidasi waktu sertifikat, jadi tidak butuh RTC.
+- **Memori**: konteks + buffer I/O statis per sesi CLI (TCP_CLI_MAX = 2), ukuran pasti ditetapkan di D9 (BearSSL
+  bidi ~33 KB; buffer lebih kecil hanya bila klien menerima max_fragment_length).
+- **UDP 7778 tetap teks polos** (keaslian saja). Pembatasan perintahnya diputuskan di D9.
+- **Kunci HMAC (pertanyaan terbuka D7)**: tetap file teks di disk (KEY.TXT/KEYRO.TXT), ganti dengan menulis disk saat
+  VM mati; `tulis`/`hapus`/`ganti` jarak jauh tetap menolak nama kunci. Ganti kunci jarak jauh baru masuk akal setelah
+  D9 (rahasia tidak pernah lewat jalur teks polos) dan diputuskan nanti.
+- Tanpa uji `make test` baru di D8 (tahap dokumen saja; aturan "jumlah cek naik" berlaku lagi di D9).

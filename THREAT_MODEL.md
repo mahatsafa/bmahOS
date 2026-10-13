@@ -25,7 +25,7 @@ Menjawab empat pertanyaan: apa yang dilindungi, dari siapa, lewat jalur mana, da
 | ID | Penyerang | Kemampuan yang diasumsikan | Dalam cakupan? |
 |---|---|---|---|
 | A1 | Penyerang jaringan tanpa autentikasi | Mengirim paket apa saja ke port terbuka, termasuk paket rusak, banjir, dan IP palsu | **Ya** |
-| A2 | Penyerang di jalur (on-path) | Mengintip, mengulang (replay), dan mengubah paket di LAN | **Ya** (replay dan modifikasi); intip hanya setelah D8 |
+| A2 | Penyerang di jalur (on-path) | Mengintip, mengulang (replay), dan mengubah paket di LAN | **Ya** (replay dan modifikasi); intip: TLS port 7780 di D9 (keputusan D8), UDP 7778 dan TCP 7779 tetap teks polos |
 | A3 | Pengguna sah berperan rendah | Punya sesi login, mencoba melampaui perannya | **Ya** (D4: kunci read-only, daftar putih perintah) |
 | A4 | Program user-space yang salah atau jahat | Memanggil syscall dengan argumen buruk | **Ya** |
 | A5 | Penyedia data tak tepercaya | Image disk berisi FAT32/ELF yang dirancang jahat | **Ya** (parser harus tahan) |
@@ -73,7 +73,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Keaslian perintah (hanya pemegang kunci yang bisa memerintah) | Ada: HMAC-SHA256 + nonce | Pertahankan |
 | Anti-replay | Ada: nonce sekali pakai | Uji adversarial (R7) |
 | Ketahanan terhadap banjir paket | Sebagian: batas laju, batas nonce, boot aman tanpa NIC | C5, firewall (P4) |
-| Kerahasiaan balasan | **Tidak ada** (teks polos) | D8 |
+| Kerahasiaan balasan | **Tidak ada** (teks polos); D8 memutuskan TLS 1.2 BearSSL di port 7780 | D9 |
 | Isolasi user/kernel | Ada: user mode, NX | R6, SMEP/SMAP bila CPU mendukung |
 | Entropi nonce | Ada (F1.8): kolam SHA-256 + HMAC-DRBG, tolak sebelum 256 bit; rdseed/rdrand dipercaya | Nilai ulang jitter di perangkat keras asli (H0) |
 | Otorisasi berbasis peran | Ada (D4): admin/read-only per kunci, hanya TCP 7779 | Kunci per pengguna (D7) |
@@ -135,9 +135,9 @@ Jika mesin ditempatkan di lokasi yang tidak aman secara fisik, putuskan ulang ba
 
 | Pertanyaan | Dikunci di tahap |
 |---|---|
-| Di mana kunci HMAC disimpan dan bagaimana diganti? | D7 |
+| Di mana kunci HMAC disimpan dan bagaimana diganti? | D8: file di disk, ganti saat VM mati; ganti jarak jauh setelah D9 |
 | Perlukah satu kunci per pengguna/peran? | D4: satu kunci per peran (admin, read-only); per pengguna menyusul D5/D7 |
-| Enkripsi lewat SSH atau lapisan sendiri di atas library teruji? | D8 |
+| Enkripsi lewat SSH atau lapisan sendiri di atas library teruji? | D8: TLS 1.2 BearSSL (DECISIONS 2026-10-13) |
 | Perlukah Secure Boot untuk mesin yang dipakai? | H0 |
 | Apakah jaringan tempat mesin berada dianggap tepercaya sebagian? | Sebelum P4 |
 

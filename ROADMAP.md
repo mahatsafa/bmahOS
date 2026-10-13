@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. C5b (2026-10-13): timeout hanya diperpanjang kemajuan. C5c dilewati. D1 (2026-10-13): login TCP port 7779. D2 (2026-10-13): shell TCP. D3 (2026-10-13): klien `bmctl.py --tcp`. D4 (2026-10-13): peran read-only, maks 2 sesi CLI, idle sesi 300 s. D5 (2026-10-13): audit log (ring RAM ok 16 + gagal 8, `audit` khusus admin). D6 (2026-10-13): FAT32 tulis (root dir, file <= 4096 byte, `ls`/`baca`/`tulis`/`tambah` khusus admin, urutan tulis aman saat crash). Berikutnya D7.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. C5b (2026-10-13): timeout hanya diperpanjang kemajuan. C5c dilewati. D1 (2026-10-13): login TCP port 7779. D2 (2026-10-13): shell TCP. D3 (2026-10-13): klien `bmctl.py --tcp`. D4 (2026-10-13): peran read-only, maks 2 sesi CLI, idle sesi 300 s. D5 (2026-10-13): audit log (ring RAM ok 16 + gagal 8, `audit` khusus admin). D6 (2026-10-13): FAT32 tulis (root dir, file <= 4096 byte, `ls`/`baca`/`tulis`/`tambah` khusus admin, urutan tulis aman saat crash). D7 (2026-10-13): konfigurasi persisten `CONFIG.CFG` (ganti isi atomik lewat file sementara, `config`/`set`, `hapus`/`ganti`). Berikutnya D8.
 
 ## 4. Templat tahap
 
@@ -175,9 +175,15 @@ Linux, dan klien Python.
   hanya terbukti di QEMU/host-test (Windows satu IP).
 - [x] **D5** Audit log: siapa menjalankan perintah apa, kapan (cap waktu menyusul di P3). (75634ee, 2026-10-13)
 - [x] **D6** FAT32 tulis dengan aturan aman (validasi BPB, kode error bukan halt, urutan tulis FAT). (824aa4f + f873194 + 682969f, 2026-10-13)
-- [ ] **D7** Konfigurasi persisten dengan penulisan atomik (tulis file sementara lalu rename).
+- [x] **D7** (2026-10-13; KT-2 cb7f132, D7-1 8a55d19, D7-2 ae42e86, D7-3 bdc58cb; `CONFIG.CFG`, `config`/`set`, `hapus`/`ganti`) Konfigurasi persisten dengan penulisan atomik (tulis file sementara lalu rename).
 - [ ] **D8** Keputusan kerahasiaan balasan: lapisan enkripsi dari library teruji, atau SSH. Catat di `DECISIONS.md`
   sebelum implementasi. Jangan merancang protokol kripto sendiri.
+  Keputusan (2026-10-13): TLS 1.2 dengan BearSSL di port TCP 7780, sertifikat self-signed di-pin klien (DECISIONS).
+- [ ] **D9** TLS port 7780 (BearSSL, keputusan D8). Rencana dulu, lalu bertahap: D9a vendor BearSSL + build freestanding
+  + uji host (vektor/handshake di host), D9b TLS server di net task (TCB 7780 membungkus protokol baris 7779,
+  konteks statis per sesi), D9c klien `bmctl.py --tls` (pin sha256) + `bmtcp.ps1` (SslStream), D9d dokumen +
+  keputusan nasib 7779/UDP. Lulus: QEMU sesi TLS dengan pin benar jalan, pin salah gagal, 7779 tetap; VMware
+  Python + PowerShell; Wireshark tidak melihat teks perintah/balasan di 7780.
 
 ### Fase 4: Keandalan dan observabilitas
 
