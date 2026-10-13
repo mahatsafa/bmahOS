@@ -19,6 +19,12 @@ void cmd_puts(const char *s)
     }
 }
 
+// D2: isi balasan (g_cmd_len byte) untuk disalin ke sesi TCP.
+const char *cmd_out(void)
+{
+    return g_cmd_out;
+}
+
 static void cmd_putdec(uint64_t v)
 {
     char tmp[21];
@@ -289,6 +295,8 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_kv("cli_login_fail", g_cli_login_fail);
         cmd_kv("cli_login_timeout", g_cli_login_timeout);
         cmd_kv("cli_line_long", g_cli_line_long);
+        cmd_kv("cli_cmd_ok", g_cli_cmd_ok);
+        cmd_kv("cli_cmd_fail", g_cli_cmd_fail);
         cmd_kv("entropy_ready", (uint64_t)g_entropy_ready);
         cmd_kv("entropy_ready_tick", g_entropy_ready_tick);
         cmd_kv("entropy_events", g_entropy_events);

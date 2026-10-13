@@ -39,7 +39,7 @@ Belum pernah diuji di hardware asli.
   perintah `stats` dan `metrics`
 - Echo TCP port 7: 1 MB bolak-balik dengan SHA-256 sama di `make test` (`tests/tcp-echo.py`)
 - Login TCP port 7779 (D1): banner + nonce per koneksi, `login <hmac>`; format di `PROTOCOL.md`,
-  diuji `tests/tcp-login.py`. Shell setelah login belum ada (D2)
+  diuji `tests/tcp-login.py`. Shell (D2): tiap perintah `<perintah> <hmac>` dengan nomor urut per koneksi
 - Diagnosis RX: `metrics` menampilkan `rx_missed` (register MPC), `rx_nobuf` (RNBC), dan
   `rx_overrun_irq` (interrupt RXO) untuk membedakan paket hilang di ring RX bmahOS dari yang hilang di luar
 

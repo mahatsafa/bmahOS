@@ -52,6 +52,11 @@ int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name)
 
 static char g_exec[256];
 
+const char *cmd_out(void)
+{
+    return g_out;
+}
+
 void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
 {
     g_cmd_len = 0;
@@ -535,6 +540,76 @@ static void test_tcp_login(void)
     CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 0);
 }
 
+// D2: vektor dihitung dengan Python (hmac/hashlib), bukan dengan kode ini:
+// HMAC-SHA256(KEY, "a4a5...b3 tcp-cmd <seq> <perintah>").
+static void test_tcp_cmd(void)
+{
+    uint8_t nonce[16];
+    char line[200];
+    uint32_t cl = 0;
+    const char *m1 = "0adfc0430724a6583fa9e60d47cf6dc963919db6748d2e5821d9b68120104beb";
+    const char *m2 = "d019ab5c8ee372e204ab0b6a7a9f3351ba9d626b3204eb14aa0cc167bc387acf";
+    const char *mbig = "090ba1d9cd31dc8f1cc5616eb30480911dd8ae2159bee25826f14d4a7b608b0c";
+    const char *m64 = "1c8bcdf5ca1d8eb3907135c4e90ae6c8315f6d2bf146587ef6936add04cd1a5f";
+    uint32_t n;
+
+    for (int i = 0; i < 16; i++) {
+        nonce[i] = (uint8_t)(0xA4 + i);
+    }
+    load_key(KEY);
+#define TC(seq, rc) auth_tcp_cmd(nonce, (seq), (const uint8_t *)line, (uint32_t)strlen(line), &cl) == (rc)
+    snprintf(line, sizeof(line), "ping %s", m1);
+    CHECK(TC(1, 0) && cl == 4);
+    CHECK(TC(2, 5));                                       // nomor urut lain (replay)
+    snprintf(line, sizeof(line), "ping %s", m2);
+    CHECK(TC(2, 0) && TC(1, 5));
+    snprintf(line, sizeof(line), "uptime %s", mbig);
+    CHECK(TC(12345678901234567890ULL, 0) && cl == 6);
+    snprintf(line, sizeof(line), "uptimf %s", mbig);       // perintah diubah
+    CHECK(TC(12345678901234567890ULL, 5));
+    n = (uint32_t)snprintf(line, sizeof(line), "%.64s %s",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", m64);
+    CHECK(n == 129 && TC(3, 0) && cl == 64);               // perintah 64 byte = batas
+    snprintf(line, sizeof(line), "x%.64s %s",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", m64);
+    CHECK(TC(3, 2));                                       // 65 byte: format
+    nonce[0] ^= 1;
+    snprintf(line, sizeof(line), "ping %s", m1);
+    CHECK(TC(1, 5));                                       // nonce koneksi lain
+    nonce[0] ^= 1;
+    snprintf(line, sizeof(line), "ping%s", m1);            // tanpa spasi
+    CHECK(TC(1, 2));
+    snprintf(line, sizeof(line), " %s", m1);               // perintah kosong
+    CHECK(TC(1, 2));
+    snprintf(line, sizeof(line), "ping  %s", m1);          // spasi di ujung perintah
+    CHECK(TC(1, 2));
+    snprintf(line, sizeof(line), "ping %s", m1);
+    line[10] = 'g';
+    CHECK(TC(1, 2));
+    snprintf(line, sizeof(line), "ping %s", m1);
+    line[10] = line[10] == '0' ? '1' : '0';                // satu digit hex berbeda
+    CHECK(TC(1, 5));
+    snprintf(line, sizeof(line), "login %s", m1);          // bukti login bukan perintah
+    CHECK(TC(1, 5));
+    snprintf(line, sizeof(line), "ping %s", m1);
+    uint32_t kl = g_auth_key_len;
+    g_auth_key_len = 0;
+    CHECK(TC(1, 1));
+    g_auth_key_len = kl;
+    CHECK(TC(1, 0));
+#undef TC
+
+    // auth_tcp_exec: keluaran disalin (dipotong ke max), reboot dilaporkan.
+    uint8_t out[16];
+    int rb = 7;
+    CHECK(auth_tcp_exec((const uint8_t *)"pping", 5, out, sizeof(out), &rb) == 6 &&
+          memcmp(out, "ppong\n", 6) == 0 && rb == 0);
+    CHECK(auth_tcp_exec((const uint8_t *)"uptime", 6, out, 3, &rb) == 3 &&
+          memcmp(out, "exe", 3) == 0 && strcmp(g_exec, "uptime") == 0 && rb == 0);
+    CHECK(auth_tcp_exec((const uint8_t *)"reboot", 6, out, sizeof(out), &rb) == 16 &&
+          rb == 1 && g_priv_reboot_pending == 0);
+}
+
 int main(void)
 {
     test_load_key();
@@ -543,5 +618,6 @@ int main(void)
     test_handle();
     test_fuzz();
     test_tcp_login();
+    test_tcp_cmd();
     return test_done("auth");
 }

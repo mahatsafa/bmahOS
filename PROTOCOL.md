@@ -19,7 +19,7 @@ Jalur counter lama (`<counter> <perintah> <hmac>`) dimatikan sejak B2 (build `LE
 Tanpa autentikasi. TCP 7: maks 4 koneksi total, 2 per IP (C5a); koneksi tanpa
 kemajuan 30 detik ditutup (C5b).
 
-## TCP 7779: CLI (D1: login; shell = D2)
+## TCP 7779: CLI (D1: login, D2: shell)
 
 Teks baris, diakhiri LF (CR sebelum LF dibuang). Baris maks 128 byte termasuk LF.
 
@@ -35,13 +35,37 @@ server -> OK login                 sesi terautentikasi
 - Satu percobaan login per koneksi. Login harus selesai dalam 10 detik sejak handshake,
   kalau tidak: `ERR: login timeout` lalu FIN.
 - Baris lebih dari 128 byte: `ERR: baris terlalu panjang` lalu FIN.
-- Baris kosong diabaikan. Setelah login (sampai D2) setiap baris dibalas
-  `ERR: shell belum ada (D2)`.
+- Baris kosong diabaikan.
 - Pesan yang ditandatangani ("<nonce> tcp-login") berbeda dari perintah UDP dan nonce-nya
   tidak ada di tabel UDP, jadi bukti login tidak bisa dipakai di jalur UDP atau koneksi lain.
-- Batasan: setelah login, baris berikutnya belum ditandatangani. Penyerang di jalur bisa
-  menyisipkan segmen ke sesi; tidak berarti selama shell belum ada. Rencana D2: tiap perintah
-  ditandatangani dengan nonce baru dari balasan sebelumnya.
 - Metrics: `cli_login_ok`, `cli_login_fail`, `cli_login_timeout`, `cli_line_long`.
 
-Contoh klien: `tests/tcp-login.py HOST PORT KEYFILE`.
+### Shell setelah login (D2)
+
+```
+klien  -> <perintah> <hmac>        hmac atas "<nonce> tcp-cmd <n> <perintah>"
+server -> <keluaran perintah>      nol atau lebih baris
+server -> END <n>
+       |  ERR: hmac salah          hmac/nomor urut salah, lalu FIN
+       |  ERR: format: <perintah> <hmac-hex64>   lalu FIN
+       |  ERR: auth nonaktif       lalu FIN
+```
+
+- `n` = nomor perintah di koneksi ini: 1, 2, 3, ... Tidak dikirim; klien dan server
+  menghitung sendiri. Nonce = nonce banner koneksi ini. Jadi perintah tidak bisa dipakai
+  di koneksi lain, diulang, disisipkan, atau ditukar urutannya; bukti login juga tidak
+  berlaku sebagai perintah (pesannya berbeda).
+- Perintah 1..64 byte tanpa spasi di awal/akhir. Daftarnya sama dengan UDP 7778
+  (`help`, `ping`, `uptime`, `metrics`, `pping`, `reboot`, ...), ditambah `exit`
+  (balasan `bye`, `END <n>`, lalu FIN).
+- `reboot`: balasan dikirim dulu, reboot setelah balasan di-ACK (paling lambat 2 detik).
+- Keluaran maks 1400 byte (lebih panjang terpotong, sama seperti UDP) + baris `END`.
+  Keluaran lebih besar dari buffer kirim 1024 byte dikirim bertahap; selama belum habis
+  baris berikutnya tidak dibaca (tidak di-ACK, klien TCP mengirim ulang). Klien sebaiknya
+  menunggu `END <n>` sebelum mengirim perintah berikutnya.
+- Satu perintah salah = koneksi ditutup (fail closed); login ulang di koneksi baru.
+- Balasan tidak ditandatangani dan teks polos (keaslian balasan dan kerahasiaan: D8).
+- Koneksi tanpa kemajuan 30 detik tetap ditutup (batas sesi: D4).
+- Metrics: `cli_cmd_ok`, `cli_cmd_fail`.
+
+Contoh klien: `tests/tcp-login.py HOST PORT KEYFILE` (klien interaktif: D3).

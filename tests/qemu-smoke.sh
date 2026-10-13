@@ -174,7 +174,7 @@ CT_ASM="$(objdump -d --no-show-raw-insn --disassemble=ct_memeq "$ROOT/build/kern
 check "ct_memeq: 1 lompatan bersyarat, tanpa call" \
     '[ "$(echo "$CT_ASM" | grep -E "\sj[a-z]+\s" | grep -vc "\sjmp\s")" -eq 1 ] &&
      ! echo "$CT_ASM" | grep -qE "\scall"'
-check "auth.o memanggil ct_memeq 4x (D1: + login TCP)" '[ "$(objdump -dr "$ROOT/build/auth.o" | grep -c "R_X86_64_PLT32.*ct_memeq\|R_X86_64_PC32.*ct_memeq")" -eq 4 ]'
+check "auth.o memanggil ct_memeq 5x (D1: + login TCP, D2: + perintah TCP)" '[ "$(objdump -dr "$ROOT/build/auth.o" | grep -c "R_X86_64_PLT32.*ct_memeq\|R_X86_64_PC32.*ct_memeq")" -eq 5 ]'
 check "PCI-1 menemukan AHCI"     'grep -q "PCI-1: AHCI di" "$LOG"'
 check "PCI-1 menemukan E1000"    'grep -q "PCI-1: E1000 di" "$LOG"'
 check "KEY.TXT dimuat"           'grep -q "Net-11: kunci dimuat" "$LOG"'
@@ -206,8 +206,12 @@ check "C4: echo TCP 1 MB identik (sha256)" '[ "$ECHO_RC" -eq 0 ]'
 # D1: login TCP port 7779 (klien socket Linux, kunci uji acak).
 LOGIN_OUT="$(python3 "$ROOT/tests/tcp-login.py" 127.0.0.1 "$CPORT" "$KEY" 2>&1)"
 echo "$LOGIN_OUT" | sed "s/^/info  /"
-check "D1: login TCP benar -> OK login, baris berikut ERR shell (D2)" \
+check "D1: login TCP benar -> OK login" \
     'echo "$LOGIN_OUT" | grep -q "^OK login-benar$"'
+check "D2: shell TCP ping/pping/metrics (> 1024 byte), baris diulang -> ERR + ditutup" \
+    'echo "$LOGIN_OUT" | grep -q "^OK shell-perintah$"'
+check "D2: shell TCP uptime lalu exit -> bye + ditutup" \
+    'echo "$LOGIN_OUT" | grep -q "^OK shell-exit$"'
 check "D1: hmac atas nonce koneksi lain -> ERR login gagal + ditutup" \
     'echo "$LOGIN_OUT" | grep -q "^OK login-nonce-lain$"'
 check "D1: tanpa login 10 s -> ERR login timeout + ditutup" \

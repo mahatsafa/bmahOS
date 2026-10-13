@@ -297,6 +297,8 @@ uint64_t g_cli_login_ok = 0;       // D1: login TCP 7779 berhasil
 uint64_t g_cli_login_fail = 0;     // D1: login gagal (format/hmac/auth nonaktif)
 uint64_t g_cli_login_timeout = 0;  // D1: tidak login dalam TCP_LOGIN_TIMEOUT
 uint64_t g_cli_line_long = 0;      // D1: baris > TCP_LINE_MAX, koneksi ditutup
+uint64_t g_cli_cmd_ok = 0;         // D2: perintah sesi TCP terverifikasi
+uint64_t g_cli_cmd_fail = 0;       // D2: perintah ditolak (format/hmac), koneksi ditutup
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -681,11 +683,17 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 // "nonce: <32 hex>\n" (nonce per koneksi dari DRBG, dibuat saat SYN); klien
 // mengirim "login <hmac-hex64>" (lihat auth_tcp_login, PROTOCOL.md). Satu
 // percobaan per koneksi; gagal/timeout/baris terlalu panjang -> ERR lalu FIN.
-// Baris maks TCP_LINE_MAX byte termasuk LF. Shell setelah login = D2.
+// Baris maks TCP_LINE_MAX byte termasuk LF.
+// D2: setelah login tiap baris "<perintah> <hmac>" (auth_tcp_cmd, nomor urut
+// per koneksi); salah -> ERR lalu FIN. Keluaran (maks TCP_CLI_OUT_MAX, diakhiri
+// "END <n>") disimpan per TCB dan dialirkan ke antrean kirim saat ada ruang;
+// selama belum habis, baris berikutnya tidak dibaca (tidak di-ACK).
 #define NET_TCP_CLI_PORT    7779
 #define TCP_LINE_MAX        128
 #define TCP_LOGIN_TIMEOUT   1000   // tick (10 detik) sejak ESTABLISHED
-#define TCP_CLI_REPLY_MAX   64     // balasan CLI terpanjang (byte)
+#define TCP_CLI_REPLY_MAX   64     // balasan ERR/OK CLI terpanjang (byte)
+#define TCP_CLI_OUT_MAX     1432   // keluaran perintah (g_cmd_out 1400) + END
+#define TCP_REBOOT_WAIT     200    // tick: reboot paling lambat 2 s setelah perintah
 enum { TCP_APP_ECHO = 0, TCP_APP_CLI };
 
 // Nilai juga dipakai metrics tcp_state.
@@ -721,9 +729,17 @@ typedef struct {
     uint8_t nonce[16];  // D1: nonce login koneksi ini
     uint32_t line_len;
     uint8_t line[TCP_LINE_MAX];
+    uint64_t cmd_seq;   // D2: perintah terverifikasi terakhir (berikutnya +1)
+    int reboot_after;   // D2: reboot setelah keluaran di-ACK
+    uint32_t out_len, out_pos;   // D2: keluaran out[out_pos..out_len) belum diantre
+    uint8_t out[TCP_CLI_OUT_MAX];
 } tcp_tcb_t;
 
 static tcp_tcb_t g_tcbs[TCP_MAX_CONN];
+// D2: reboot diminta lewat CLI; batas waktunya global (bukan di TCB) supaya
+// tetap jalan walau koneksi sudah ditutup/RST sebelum keluaran di-ACK.
+static int g_cli_reboot;
+static uint64_t g_cli_reboot_at;
 static uint8_t g_tcp_buf[TCP_MAX_CONN][TCP_BUF_SIZE];
 // C3c: di luar TCB (ada di senarai ktimer), satu per slot.
 static ktimer_t g_tcp_rtx_timer[TCP_MAX_CONN];
@@ -989,6 +1005,16 @@ static int net_tcp_output(tcp_tcb_t *t)
         n = t->snd_wnd;
     }
     if (n == 0) {
+        // D2: reboot setelah keluaran perintah terkirim dan di-ACK. Dicek
+        // sebelum FIN: peer bisa mengirim ACK + FIN dalam satu segmen
+        // (Windows Close()), lalu koneksi CLOSE_WAIT.
+        if (t->reboot_after && t->buf_count == 0 && t->out_pos == t->out_len) {
+            t->reboot_after = 0;
+            g_cli_reboot = 0;
+            net_tcp_log("CLI reboot");
+            auth_reboot();
+            return 0;
+        }
         // C3d: peer sudah FIN dan echo habis terkirim + di-ACK: FIN kita
         // (sekaligus ACK untuk FIN peer).
         if (t->state == TCP_CLOSE_WAIT && t->buf_count == 0) {
@@ -998,7 +1024,8 @@ static int net_tcp_output(tcp_tcb_t *t)
         }
         // D1: CLI memutuskan menutup (login gagal/timeout, baris panjang):
         // FIN setelah balasan terkirim dan di-ACK.
-        if (t->state == TCP_ESTABLISHED && t->close_after && t->buf_count == 0) {
+        if (t->state == TCP_ESTABLISHED && t->close_after && t->buf_count == 0 &&
+            t->out_pos == t->out_len) {
             net_tcp_send_fin(t, TCP_FIN_WAIT_1);
             net_tcp_log("FIN dikirim (FIN_WAIT_1)");
             return 1;
@@ -1129,6 +1156,54 @@ static void net_tcp_cli_banner(tcp_tcb_t *t)
     net_tcp_queue(t, (const volatile uint8_t *)m, k);
 }
 
+// D2: alirkan keluaran yang tersisa ke antrean kirim (sebanyak ruang).
+static void net_tcp_cli_drain(tcp_tcb_t *t)
+{
+    t->out_pos += net_tcp_queue(t, t->out + t->out_pos, t->out_len - t->out_pos);
+}
+
+static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
+{
+    uint32_t clen = 0;
+    int rc = auth_tcp_cmd(t->nonce, t->cmd_seq + 1, t->line, len, &clen);
+
+    if (rc != 0) {
+        g_cli_cmd_fail++;
+        net_tcp_cli_reply(t, rc == 1 ? "ERR: auth nonaktif\n" :
+                          rc == 2 ? "ERR: format: <perintah> <hmac-hex64>\n" :
+                          "ERR: hmac salah\n");
+        t->close_after = 1;
+        net_tcp_log("CLI perintah ditolak, koneksi ditutup");
+        return;
+    }
+    t->cmd_seq++;
+    g_cli_cmd_ok++;
+
+    uint32_t n;
+    int reboot = 0;
+
+    if (net_cmd_is(t->line, clen, "exit")) {
+        static const char bye[] = "bye\n";
+
+        for (n = 0; bye[n]; n++) {
+            t->out[n] = (uint8_t)bye[n];
+        }
+        t->close_after = 1;
+    } else {
+        n = auth_tcp_exec(t->line, clen, t->out, TCP_CLI_OUT_MAX - 32, &reboot);
+    }
+    if (reboot) {
+        t->reboot_after = 1;
+        g_cli_reboot = 1;
+        g_cli_reboot_at = timer_ticks;
+    }
+    n += (uint32_t)ksnprintf((char *)t->out + n, TCP_CLI_OUT_MAX - n, "END %lu\n",
+                             t->cmd_seq);
+    t->out_len = n;
+    t->out_pos = 0;
+    net_tcp_cli_drain(t);
+}
+
 static void net_tcp_cli_line(tcp_tcb_t *t)
 {
     uint32_t len = t->line_len;
@@ -1141,7 +1216,7 @@ static void net_tcp_cli_line(tcp_tcb_t *t)
         return;
     }
     if (t->cli_authed) {
-        net_tcp_cli_reply(t, "ERR: shell belum ada (D2)\n");
+        net_tcp_cli_cmd(t, len);
         return;
     }
 
@@ -1162,7 +1237,8 @@ static void net_tcp_cli_line(tcp_tcb_t *t)
 
 // Data CLI masuk per baris. Return jumlah byte yang dikonsumsi; sisanya
 // tidak di-ACK (peer mengirim ulang) bila ruang balasan kurang dari
-// TCP_CLI_REPLY_MAX. Setelah memutuskan menutup, sisa data dibuang.
+// TCP_CLI_REPLY_MAX atau keluaran perintah sebelumnya belum habis (D2).
+// Setelah memutuskan menutup, sisa data dibuang.
 static uint32_t net_tcp_cli_rx(tcp_tcb_t *t, const volatile uint8_t *d,
                                uint32_t len)
 {
@@ -1172,7 +1248,8 @@ static uint32_t net_tcp_cli_rx(tcp_tcb_t *t, const volatile uint8_t *d,
         if (t->close_after) {
             continue;
         }
-        if (TCP_BUF_SIZE - t->buf_count < TCP_CLI_REPLY_MAX) {
+        if (TCP_BUF_SIZE - t->buf_count < TCP_CLI_REPLY_MAX ||
+            t->out_pos < t->out_len) {
             break;
         }
 
@@ -1249,6 +1326,16 @@ static void net_tcp_tick_one(tcp_tcb_t *t)
 // Dipanggil tiap loop net task (tick-wake ~100 Hz).
 void net_tcp_tick(void)
 {
+    // D2: keluaran reboot tidak di-ACK dalam TCP_REBOOT_WAIT (atau koneksi
+    // sudah tertutup): reboot juga.
+    if (g_cli_reboot && timer_ticks - g_cli_reboot_at > TCP_REBOOT_WAIT) {
+        g_cli_reboot = 0;
+        for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+            g_tcbs[k].reboot_after = 0;
+        }
+        net_tcp_log("CLI reboot (keluaran belum di-ACK)");
+        auth_reboot();
+    }
     for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
         net_tcp_tick_one(&g_tcbs[k]);
     }
@@ -1342,6 +1429,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         }
         if (seq_le(t->snd_una, ack)) {
             t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
+        }
+        if (t->app == TCP_APP_CLI && t->out_pos < t->out_len) {
+            net_tcp_cli_drain(t);
         }
 
         if (seq != t->rcv_nxt) {
@@ -1491,6 +1581,10 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         t->cli_authed = 0;
         t->close_after = 0;
         t->line_len = 0;
+        t->cmd_seq = 0;
+        t->reboot_after = 0;
+        t->out_len = 0;
+        t->out_pos = 0;
         for (int i = 0; i < 16; i++) {
             t->nonce[i] = isn[4 + i];
         }

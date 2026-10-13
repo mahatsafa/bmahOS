@@ -438,7 +438,14 @@ extern uint64_t g_cli_login_ok;
 extern uint64_t g_cli_login_fail;
 extern uint64_t g_cli_login_timeout;
 extern uint64_t g_cli_line_long;
+extern uint64_t g_cli_cmd_ok;
+extern uint64_t g_cli_cmd_fail;
 int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len);
+int auth_tcp_cmd(const uint8_t nonce[16], uint64_t seq, const uint8_t *line,
+                 uint32_t len, uint32_t *cmd_len);
+uint32_t auth_tcp_exec(const uint8_t *cmd, uint32_t len, uint8_t *out,
+                       uint32_t max, int *reboot);
+void auth_reboot(void);
 int net_tcp_state(void);
 int net_tcp_conn_active(void);
 extern uint64_t g_e1000_mpc;
@@ -463,6 +470,7 @@ void cmd_putc(char c);
 void cmd_puts(const char *s);
 int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name);
 void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len);
+const char *cmd_out(void);
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----

@@ -557,6 +557,105 @@ int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
     return ct_memeq(mac, rx, 32) ? 0 : 5;
 }
 
+// D2: baris perintah sesi TCP "<perintah> <hmac-hex64>", hmac atas
+// "<nonce32hex> tcp-cmd <seq> <perintah>" (seq desimal, 1, 2, ... per
+// koneksi, tidak dikirim). Nonce koneksi mencegah pemakaian di koneksi lain,
+// seq mencegah pengulangan di koneksi yang sama; "tcp-cmd" membedakannya dari
+// bukti login. Return 0 OK (*cmd_len = panjang perintah di awal line),
+// 1 auth nonaktif, 2 format, 5 hmac salah.
+int auth_tcp_cmd(const uint8_t nonce[16], uint64_t seq, const uint8_t *line,
+                 uint32_t len, uint32_t *cmd_len)
+{
+    static const char hx[] = "0123456789abcdef";
+    static const char mid[] = " tcp-cmd ";
+
+    if (g_auth_key_len == 0) {
+        return 1;
+    }
+    // minimum: perintah(1) + spasi + hmac(64); perintah maks 64 byte.
+    if (len < 1 + 1 + 64 || len > 64 + 1 + 64 || line[len - 65] != ' ') {
+        return 2;
+    }
+
+    uint32_t clen = len - 65;
+    uint8_t rx[32];
+
+    for (uint32_t i = 0; i < clen; i++) {
+        if (line[i] == ' ' && (i == 0 || i == clen - 1)) {
+            return 2;
+        }
+    }
+    for (uint32_t i = 0; i < 32; i++) {
+        int hi = auth_hexval(line[clen + 1 + i * 2]);
+        int lo = auth_hexval(line[clen + 1 + i * 2 + 1]);
+
+        if (hi < 0 || lo < 0) {
+            return 2;
+        }
+        rx[i] = (uint8_t)((hi << 4) | lo);
+    }
+
+    // "<32 hex>" + " tcp-cmd " + seq (maks 20 digit) + " " + perintah (maks 64)
+    uint8_t m[32 + 9 + 20 + 1 + 64];
+    uint32_t k = 0;
+    char dec[20];
+    uint32_t nd = 0;
+
+    for (uint32_t i = 0; i < 16; i++) {
+        m[k++] = (uint8_t)hx[nonce[i] >> 4];
+        m[k++] = (uint8_t)hx[nonce[i] & 0xF];
+    }
+    for (uint32_t i = 0; i < 9; i++) {
+        m[k++] = (uint8_t)mid[i];
+    }
+    do {
+        dec[nd++] = (char)('0' + seq % 10);
+        seq /= 10;
+    } while (seq);
+    while (nd) {
+        m[k++] = (uint8_t)dec[--nd];
+    }
+    m[k++] = ' ';
+    for (uint32_t i = 0; i < clen; i++) {
+        m[k++] = line[i];
+    }
+
+    uint8_t mac[32];
+
+    hmac_sha256(g_auth_key, g_auth_key_len, m, k, mac);
+    if (!ct_memeq(mac, rx, 32)) {
+        return 5;
+    }
+    *cmd_len = clen;
+    return 0;
+}
+
+// D2: jalankan perintah yang sudah diverifikasi auth_tcp_cmd (daftar sama
+// dengan jalur UDP nonce), salin keluaran ke out (maks max byte). *reboot = 1
+// bila reboot diminta: pemanggil menjalankan auth_reboot() setelah balasan
+// terkirim.
+uint32_t auth_tcp_exec(const uint8_t *cmd, uint32_t len, uint8_t *out,
+                       uint32_t max, int *reboot)
+{
+    const char *o;
+    uint32_t n;
+
+    priv_cmd_execute(cmd, len);
+    *reboot = g_priv_reboot_pending;
+    g_priv_reboot_pending = 0;
+    o = cmd_out();
+    n = g_cmd_len > max ? max : g_cmd_len;
+    for (uint32_t i = 0; i < n; i++) {
+        out[i] = (uint8_t)o[i];
+    }
+    return n;
+}
+
+void auth_reboot(void)
+{
+    priv_do_reboot();
+}
+
 void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len)
 {
     volatile uint8_t *cmd = req + 14 + ihl + 8;

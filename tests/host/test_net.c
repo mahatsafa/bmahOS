@@ -4,6 +4,7 @@
 // (malloc), jadi pembacaan lewat batas frame tertangkap ASan. Frame yang
 // dikirim ditangkap stub e1000_tx_send() dan diperiksa checksum-nya.
 
+#include <ctype.h>
 #include <stdlib.h>
 #include "test.h"
 #include "net.c"
@@ -67,6 +68,75 @@ int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
         }
     }
     return 0;
+}
+
+// D2: auth_tcp_cmd/auth_tcp_exec ada di auth.c (vektor HMAC di test_auth).
+// Stub auth_tcp_cmd: format sama dengan aslinya; "hmac" = 64 kali digit
+// ('0' + seq % 10) = OK, 64 hex lain = salah (5); g_login_off = nonaktif.
+// Stub exec: "big" = 1300 byte pola, "reboot" = minta reboot, lainnya
+// "<perintah>\n". auth_reboot hanya dihitung.
+static uint64_t g_cmd_seq_seen;
+static int g_reboots;
+
+int auth_tcp_cmd(const uint8_t nonce[16], uint64_t seq, const uint8_t *line,
+                 uint32_t len, uint32_t *cmd_len)
+{
+    (void)nonce;
+    g_cmd_seq_seen = seq;
+    if (g_login_off) {
+        return 1;
+    }
+    if (len < 66 || len > 129 || line[len - 65] != ' ') {
+        return 2;
+    }
+    int ok = 1;
+    for (uint32_t i = len - 64; i < len; i++) {
+        if (!isxdigit(line[i])) {
+            return 2;
+        }
+        ok &= line[i] == '0' + seq % 10;
+    }
+    if (!ok) {
+        return 5;
+    }
+    *cmd_len = len - 65;
+    return 0;
+}
+
+uint32_t auth_tcp_exec(const uint8_t *cmd, uint32_t len, uint8_t *out,
+                       uint32_t max, int *reboot)
+{
+    uint32_t n = 0;
+    *reboot = 0;
+    if (len == 3 && memcmp(cmd, "big", 3) == 0) {
+        for (n = 0; n < 1300 && n < max; n++) {
+            out[n] = (uint8_t)('a' + n % 26);
+        }
+        return n;
+    }
+    if (len == 6 && memcmp(cmd, "reboot", 6) == 0) {
+        *reboot = 1;
+    }
+    memcpy(out, cmd, len);
+    out[len] = '\n';
+    return len + 1;
+}
+
+void auth_reboot(void)
+{
+    g_reboots++;
+}
+
+int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name)
+{
+    uint32_t i = 0;
+    while (name[i]) {
+        if (i >= len || cmd[i] != (uint8_t)name[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return i == len;
 }
 
 // ktimer.c ikut dikompilasi (C3c); ktimer_selftest memanggil task_sleep.
@@ -1474,11 +1544,11 @@ static void test_tcp_cli(void)
     CHECK(reply_is("OK login\n") && g_cli_login_ok == ok0 + 1 && g_tcbs[0].cli_authed);
     CHECK(g_login_nonce[0] == 0xA4 && g_login_nonce[15] == 0xB3);
     una += 9;
-    // Setelah login: shell belum ada (D2); baris kosong diabaikan.
+    // Setelah login baris kosong diabaikan; baris tanpa hmac: ERR + tutup (D2).
     cli_send("\n", una);
     CHECK(g_tx_n == 1 && tx_seg(0).len == 0);
     cli_send("help\n", una);
-    CHECK(reply_is("ERR: shell belum ada (D2)\n") && g_tcbs[0].state == TCP_ESTABLISHED);
+    CHECK(reply_is("ERR: format: <perintah> <hmac-hex64>\n") && g_tcbs[0].close_after);
 
     // B. HMAC salah: ERR, lalu FIN setelah ERR di-ACK; satu percobaan saja.
     CHECK(cli_open(3000, 4000));
@@ -1540,6 +1610,152 @@ static void test_tcp_cli(void)
     tcp_reset();
 }
 
+// ---- D2: shell TCP (perintah bertanda tangan nomor urut) ----
+
+// Koneksi CLI yang sudah login; return snd_nxt (semua balasan di-ACK).
+static uint32_t cli_login(uint32_t our_isn, uint32_t peer_isn)
+{
+    char line[80];
+    uint8_t f[200];
+    CHECK(cli_open(our_isn, peer_isn));
+    memcpy(line, "login ", 6);
+    memset(line + 6, 'a', 64);
+    memcpy(line + 70, "\n", 2);
+    cli_send(line, g_iss + 1 + BLEN);
+    CHECK(reply_is("OK login\n"));
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1 + BLEN + 9, F_ACK, 0, 0, 4096));
+    return g_iss + 1 + BLEN + 9;
+}
+
+// "<perintah> <64 x digit seq>\n"
+static const char *cmd_line(const char *cmd, uint64_t seq)
+{
+    static char line[200];
+    size_t n = strlen(cmd);
+    memcpy(line, cmd, n);
+    line[n] = ' ';
+    memset(line + n + 1, '0' + (int)(seq % 10), 64);
+    line[n + 65] = '\n';
+    line[n + 66] = 0;
+    return line;
+}
+
+static void test_tcp_shell(void)
+{
+    static uint8_t f[300];
+    static uint8_t got[2000];
+    uint64_t ok0 = g_cli_cmd_ok, fail0 = g_cli_cmd_fail;
+    uint32_t una, glen;
+    struct seg s;
+
+    // A. Dua perintah berurutan: keluaran + "END <n>", nomor urut 1 lalu 2.
+    una = cli_login(20000, 21000);
+    cli_send(cmd_line("ping", 1), una);
+    CHECK(reply_is("ping\nEND 1\n") && g_cmd_seq_seen == 1);
+    una += 11;
+    cli_send(cmd_line("uptime", 2), una);
+    CHECK(reply_is("uptime\nEND 2\n") && g_cmd_seq_seen == 2);
+    una += 13;
+    CHECK(g_cli_cmd_ok == ok0 + 2 && g_tcbs[0].cmd_seq == 2);
+    // Baris yang sama diulang (replay seq 2 saat yang diharapkan 3): ERR + FIN.
+    cli_send(cmd_line("uptime", 2), una);
+    CHECK(reply_is("ERR: hmac salah\n") && g_cmd_seq_seen == 3);
+    CHECK(g_cli_cmd_fail == fail0 + 1 && g_tcbs[0].close_after);
+    rx(f, mk_tcp_w(f, g_pseq, una + 16, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_FIN | F_ACK) &&
+          g_tcbs[0].state == TCP_FIN_WAIT_1);
+
+    // B. Keluaran 1306 byte (> buffer 1024) dialirkan bertahap; baris yang
+    // datang selama keluaran belum habis tidak dibaca dan tidak di-ACK.
+    una = cli_login(22000, 23000);
+    cli_send(cmd_line("big", 1), una);
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.len == TCP_MSS && g_tcbs[0].out_pos == TCP_BUF_SIZE);
+    memcpy(got, s.data, s.len);
+    glen = s.len;
+    // Baris berikutnya tanpa ACK baru: ditolak masuk (rcv_nxt tetap).
+    uint32_t rn = g_tcbs[0].rcv_nxt;
+    cli_send(cmd_line("ping", 2), una);
+    CHECK(g_tcbs[0].rcv_nxt == rn && g_tcbs[0].cmd_seq == 1);
+    g_pseq = rn;
+    for (int i = 0; i < 5 && glen < 1306; i++) {
+        rx(f, mk_tcp_w(f, g_pseq, una + glen, F_ACK, 0, 0, 4096));
+        s = tx_seg(0);
+        if (g_tx_n != 1 || s.len == 0 || s.seq != una + glen) {
+            break;
+        }
+        memcpy(got + glen, s.data, s.len);
+        glen += s.len;
+    }
+    int pat = glen == 1306 && memcmp(got + 1300, "END 1\n", 6) == 0;
+    for (uint32_t i = 0; pat && i < 1300; i++) {
+        pat = got[i] == 'a' + i % 26;
+    }
+    CHECK(pat);
+    rx(f, mk_tcp_w(f, g_pseq, una + glen, F_ACK, 0, 0, 4096));
+    CHECK(g_tcbs[0].out_pos == g_tcbs[0].out_len && g_tcbs[0].buf_count == 0);
+    una += glen;
+    // Setelah habis, perintah berikutnya diterima.
+    cli_send(cmd_line("ping", 2), una);
+    CHECK(reply_is("ping\nEND 2\n"));
+    una += 11;
+
+    // C. exit: "bye" + END, lalu FIN setelah di-ACK.
+    cli_send(cmd_line("exit", 3), una);
+    CHECK(reply_is("bye\nEND 3\n") && g_tcbs[0].close_after);
+    rx(f, mk_tcp_w(f, g_pseq, una + 10, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_FIN | F_ACK));
+
+    // D. reboot: hanya setelah keluaran di-ACK.
+    int rb0 = g_reboots;
+    una = cli_login(24000, 25000);
+    cli_send(cmd_line("reboot", 1), una);
+    CHECK(reply_is("reboot\nEND 1\n") && g_reboots == rb0 && g_tcbs[0].reboot_after);
+    rx_now(f, mk_tcp_w(f, g_pseq, una + 13, F_ACK, 0, 0, 4096));
+    CHECK(g_reboots == rb0 + 1 && !g_tcbs[0].reboot_after);
+    // Tanpa ACK: paling lambat TCP_REBOOT_WAIT tick setelah perintah.
+    una = cli_login(26000, 27000);
+    cli_send(cmd_line("reboot", 1), una);
+    CHECK(g_reboots == rb0 + 1);
+    uint32_t k = 0;
+    while (g_reboots == rb0 + 1 && k < 1000) {
+        step();
+        k++;
+    }
+    CHECK(g_reboots == rb0 + 2 && k == TCP_REBOOT_WAIT + 1);
+    // ACK keluaran + FIN peer dalam satu segmen (Windows Close()): reboot
+    // tetap jalan (dulu FIN CLOSE_WAIT didahulukan dan reboot hilang).
+    una = cli_login(32000, 33000);
+    cli_send(cmd_line("reboot", 1), una);
+    rx_now(f, mk_tcp_w(f, g_pseq, una + 13, F_ACK | F_FIN, 0, 0, 4096));
+    CHECK(g_reboots == rb0 + 3 && !g_cli_reboot);
+    for (k = 0; k < 300; k++) {
+        step();
+    }
+    CHECK(g_reboots == rb0 + 3);
+    // RST peer sebelum keluaran di-ACK (TCB tertutup): reboot setelah batas.
+    una = cli_login(34000, 35000);
+    cli_send(cmd_line("reboot", 1), una);
+    rx_now(f, mk_tcp_w(f, g_pseq, 0, F_RST, 0, 0, 0));
+    CHECK(g_tcbs[0].state == TCP_CLOSED && g_reboots == rb0 + 3);
+    for (k = 0; k < TCP_REBOOT_WAIT + 1 && g_reboots == rb0 + 3; k++) {
+        step();
+    }
+    CHECK(g_reboots == rb0 + 4 && k == TCP_REBOOT_WAIT + 1);
+
+    // E. Format salah dan auth nonaktif setelah login: ERR + tutup.
+    una = cli_login(28000, 29000);
+    cli_send("ping zz\n", una);
+    CHECK(reply_is("ERR: format: <perintah> <hmac-hex64>\n") && g_tcbs[0].close_after);
+    una = cli_login(30000, 31000);
+    g_login_off = 1;
+    cli_send(cmd_line("ping", 1), una);
+    g_login_off = 0;
+    CHECK(reply_is("ERR: auth nonaktif\n") && g_cli_cmd_fail == fail0 + 3);
+    CHECK(g_tx_bad == 0);
+    tcp_reset();
+}
+
 int main(void)
 {
     test_checksum();
@@ -1555,6 +1771,7 @@ int main(void)
     test_tcp_table();
     test_tcp_idle();
     test_tcp_cli();
+    test_tcp_shell();
     test_limits();
     build_templates();
     test_truncation();
