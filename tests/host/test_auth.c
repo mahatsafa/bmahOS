@@ -96,22 +96,25 @@ int entropy_get(uint8_t *out, uint32_t len)
 // Kunci dari "disk": fat32_find_file/fat32_load_file membaca g_disk_key.
 static const char *g_disk_key;
 
+// D4: KEYRO.TXT membaca g_disk_rokey (cluster 6).
+static const char *g_disk_rokey;
+
 int fat32_find_file(const char *name_83, uint32_t *out_cluster, uint32_t *out_size)
 {
-    (void)name_83;
-    if (g_disk_key == NULL) {
+    int ro = strcmp(name_83, "KEYRO   TXT") == 0;
+    const char *k = ro ? g_disk_rokey : g_disk_key;
+    if (k == NULL) {
         return -1;
     }
-    *out_cluster = 5;
-    *out_size = (uint32_t)strlen(g_disk_key);
+    *out_cluster = ro ? 6 : 5;
+    *out_size = (uint32_t)strlen(k);
     return 0;
 }
 
 uint8_t *fat32_load_file(uint32_t first_cluster, uint32_t file_size)
 {
-    (void)first_cluster;
     static uint8_t buf[600];
-    memcpy(buf, g_disk_key, file_size);
+    memcpy(buf, first_cluster == 6 ? g_disk_rokey : g_disk_key, file_size);
     return buf;
 }
 
@@ -121,6 +124,7 @@ static const char KEY[] = "kunci-uji-bmahOS-0123456789";
 static void load_key(const char *k)
 {
     g_auth_key_len = 0;
+    g_auth_ro_key_len = 0;
     g_disk_key = k;
     auth_load_key();
 }
@@ -518,26 +522,27 @@ static void test_tcp_login(void)
     for (int i = 0; i < 16; i++) {
         nonce[i] = (uint8_t)(0xA4 + i);
     }
+    int role = 0;
     load_key(KEY);
     snprintf(line, sizeof(line), "login %s", mac);
-    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 0);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70, &role) == 0);
     line[69] ^= 1;                                         // hex lain
-    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 5);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70, &role) == 5);
     line[69] ^= 1;
     nonce[0] ^= 1;                                         // nonce lain
-    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 5);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70, &role) == 5);
     nonce[0] ^= 1;
-    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 69) == 2);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 69, &role) == 2);
     line[10] = 'g';
-    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 2);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70, &role) == 2);
     snprintf(line, sizeof(line), "LOGIN %s", mac);
-    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 2);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70, &role) == 2);
     snprintf(line, sizeof(line), "login %s", mac);
     uint32_t kl = g_auth_key_len;
     g_auth_key_len = 0;
-    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 1);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70, &role) == 1);
     g_auth_key_len = kl;
-    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70) == 0);
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70, &role) == 0);
 }
 
 // D2: vektor dihitung dengan Python (hmac/hashlib), bukan dengan kode ini:
@@ -557,7 +562,7 @@ static void test_tcp_cmd(void)
         nonce[i] = (uint8_t)(0xA4 + i);
     }
     load_key(KEY);
-#define TC(seq, rc) auth_tcp_cmd(nonce, (seq), (const uint8_t *)line, (uint32_t)strlen(line), &cl) == (rc)
+#define TC(seq, rc) auth_tcp_cmd(nonce, AUTH_ROLE_ADMIN, (seq), (const uint8_t *)line, (uint32_t)strlen(line), &cl) == (rc)
     snprintf(line, sizeof(line), "ping %s", m1);
     CHECK(TC(1, 0) && cl == 4);
     CHECK(TC(2, 5));                                       // nomor urut lain (replay)
@@ -602,12 +607,95 @@ static void test_tcp_cmd(void)
     // auth_tcp_exec: keluaran disalin (dipotong ke max), reboot dilaporkan.
     uint8_t out[16];
     int rb = 7;
-    CHECK(auth_tcp_exec((const uint8_t *)"pping", 5, out, sizeof(out), &rb) == 6 &&
+    CHECK(auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"pping", 5, out, sizeof(out), &rb) == 6 &&
           memcmp(out, "ppong\n", 6) == 0 && rb == 0);
-    CHECK(auth_tcp_exec((const uint8_t *)"uptime", 6, out, 3, &rb) == 3 &&
+    CHECK(auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"uptime", 6, out, 3, &rb) == 3 &&
           memcmp(out, "exe", 3) == 0 && strcmp(g_exec, "uptime") == 0 && rb == 0);
-    CHECK(auth_tcp_exec((const uint8_t *)"reboot", 6, out, sizeof(out), &rb) == 16 &&
+    CHECK(auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"reboot", 6, out, sizeof(out), &rb) == 16 &&
           rb == 1 && g_priv_reboot_pending == 0);
+}
+
+// D4: peran read-only. Vektor dihitung dengan Python (hmac/hashlib):
+// HMAC-SHA256(ROKEY, "a4a5...b3 tcp-login") dan "... tcp-cmd 1 ping".
+static void test_tcp_role(void)
+{
+    static const char ROKEY[] = "kunci-ro-bmahOS-abcdefghij";
+    const char *adm = "580a6719d8a5192912eec0c9c44f7a78da1b74ff6b6210401b38f043cd8303d2";
+    const char *ro = "cfd3ad7b81ee751000e374dba065a89710e95adc7654f8b169ec236e8814c29f";
+    const char *adm1 = "0adfc0430724a6583fa9e60d47cf6dc963919db6748d2e5821d9b68120104beb";
+    const char *ro1 = "aecdd1469a651efc1d2192af06e2ee288899aad8dff840f4afc07e83f972d057";
+    uint8_t nonce[16];
+    char line[200];
+    uint32_t cl = 0;
+    int role;
+
+    for (int i = 0; i < 16; i++) {
+        nonce[i] = (uint8_t)(0xA4 + i);
+    }
+#define LG(m) (snprintf(line, sizeof(line), "login %s", (m)), role = 0, \
+               auth_tcp_login(nonce, (const uint8_t *)line, 70, &role))
+#define TC(r, m, rc) (snprintf(line, sizeof(line), "ping %s", (m)), \
+                      auth_tcp_cmd(nonce, (r), 1, (const uint8_t *)line, 69, &cl) == (rc))
+    // Tanpa KEYRO.TXT: hanya admin.
+    g_disk_rokey = NULL;
+    load_key(KEY);
+    CHECK(g_auth_ro_key_len == 0);
+    CHECK(LG(adm) == 0 && role == AUTH_ROLE_ADMIN);
+    CHECK(LG(ro) == 5 && role == 0);
+    CHECK(TC(AUTH_ROLE_RO, ro1, 1));                          // peran ro tanpa kunci
+    // KEYRO.TXT dimuat (CRLF di akhir dibuang).
+    g_disk_rokey = "kunci-ro-bmahOS-abcdefghij\r\n";
+    load_key(KEY);
+    CHECK(g_auth_ro_key_len == strlen(ROKEY) &&
+          memcmp(g_auth_ro_key, ROKEY, strlen(ROKEY)) == 0 && g_auth_key_len == strlen(KEY));
+    CHECK(LG(adm) == 0 && role == AUTH_ROLE_ADMIN);
+    CHECK(LG(ro) == 0 && role == AUTH_ROLE_RO);
+    line[69] = line[69] == '0' ? '1' : '0';                // satu digit hex lain
+    role = 0;
+    CHECK(auth_tcp_login(nonce, (const uint8_t *)line, 70, &role) == 5 && role == 0);
+    // Perintah ditandatangani kunci sesuai peran; kunci peran lain ditolak.
+    CHECK(TC(AUTH_ROLE_RO, ro1, 0) && cl == 4);
+    CHECK(TC(AUTH_ROLE_ADMIN, adm1, 0));
+    CHECK(TC(AUTH_ROLE_RO, adm1, 5));
+    CHECK(TC(AUTH_ROLE_ADMIN, ro1, 5));
+    CHECK(TC(AUTH_ROLE_NONE, adm1, 1));
+    // Ditolak: sama dengan kunci admin, terlalu pendek, kunci admin tidak ada.
+    g_disk_rokey = KEY;
+    load_key(KEY);
+    CHECK(g_auth_ro_key_len == 0 && g_auth_key_len == strlen(KEY));
+    g_disk_rokey = "pendek";
+    load_key(KEY);
+    CHECK(g_auth_ro_key_len == 0);
+    g_disk_rokey = ROKEY;
+    load_key(NULL);
+    CHECK(g_auth_ro_key_len == 0);
+    CHECK(LG(ro) == 1);
+#undef LG
+#undef TC
+
+    // Daftar putih read-only: pping/reboot/lainnya ditolak, perintah baca jalan.
+    uint8_t out[64];
+    int rb = 7;
+    uint64_t d0 = g_cli_role_denied;
+    g_exec[0] = 0;
+    CHECK(auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"pping", 5, out, sizeof(out), &rb) == 21 &&
+          memcmp(out, "ERR: peran read-only\n", 21) == 0 && rb == 0);
+    CHECK(auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"reboot", 6, out, sizeof(out), &rb) == 21 &&
+          rb == 0 && g_priv_reboot_pending == 0);
+    CHECK(auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"pingx", 5, out, sizeof(out), &rb) == 21);
+    CHECK(auth_tcp_exec(AUTH_ROLE_NONE, (const uint8_t *)"pping", 5, out, sizeof(out), &rb) == 21);
+    CHECK(g_cli_role_denied == d0 + 4 && g_exec[0] == 0);
+    static const char *const okc[] = { "help", "ping", "uptime", "mem", "log", "irq",
+                                       "stats", "metrics", "mac", "ip", "tasks" };
+    int all = 1;
+    for (size_t i = 0; i < sizeof(okc) / sizeof(okc[0]); i++) {
+        auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)okc[i], (uint32_t)strlen(okc[i]),
+                      out, sizeof(out), &rb);
+        all &= strcmp(g_exec, okc[i]) == 0 && rb == 0;
+    }
+    CHECK(all && g_cli_role_denied == d0 + 4);
+    g_disk_rokey = NULL;
+    load_key(KEY);
 }
 
 int main(void)
@@ -619,5 +707,6 @@ int main(void)
     test_fuzz();
     test_tcp_login();
     test_tcp_cmd();
+    test_tcp_role();
     return test_done("auth");
 }

@@ -105,3 +105,25 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   menggusur handshake klien sah sebelum ACK-nya tiba (klien mengulang SYN); SYN cookie = C5c.
 - **Metrics**: `tcp_conn_active` (slot tidak CLOSED); `tcp_state` kini keadaan slot aktif pertama (0 = semua CLOSED).
 
+
+## 2026-10-13 (D4 peran dan batas sesi CLI; rencana disetujui pengguna)
+- **Peran = kunci**: `KEY.TXT` = admin, `KEYRO.TXT` (opsional) = read-only, hanya shell TCP 7779. Login mencocokkan
+  bukti dengan kedua kunci (keduanya selalu dihitung); `OK login` (admin, sama seperti D1) atau `OK login ro`.
+  Perintah sesi ditandatangani kunci perannya. Alternatif "login admin|ro" dengan satu kunci ditolak: pemegang kunci
+  bisa mengaku admin, jadi tidak ada pemisahan. Kunci ro sama dengan kunci admin -> ditolak saat boot. UDP 7778 tetap
+  kunci admin saja. Belum ada kunci per pengguna (audit siapa = D5).
+- **Read-only = daftar putih** (help ping uptime mem log irq stats metrics mac ip tasks; `exit` ditangani net.c):
+  perintah baru otomatis ditolak untuk ro. Ditolak -> `ERR: peran read-only` + `END <n>`, sesi tetap jalan (perintah
+  sah, hanya tidak diizinkan), `cli_role_denied`.
+- **Maks 2 TCB port 7779** (`TCP_CLI_MAX`, keadaan apa pun termasuk SYN_RCVD/TIME_WAIT): SYN berikutnya menggusur
+  SYN_RCVD CLI tertua, tanpa itu RST (`cli_sess_full`). Echo port 7 selalu masih punya 2 slot. Alternatif "maks 1
+  sesi" ditolak: sesi yang ditinggal (atau TIME_WAIT) mengunci admin sampai idle habis.
+- **Idle sesi 300 s** sejak login/perintah sah terakhir (`TCP_CLI_IDLE`) -> `ERR: sesi idle` lalu FIN
+  (`cli_idle_timeout`). Batas diam TCP 30 s tidak berlaku untuk sesi login dengan antrean kirim kosong (interaktif
+  tidak putus tiap 30 s); data tertahan jendela 0 tetap kena batas TCP. Byte tanpa LF tidak memperpanjang sesi, jadi
+  slowloris di 7779 terbatas: belum login 10 s, sudah login 300 s.
+- **Tidak dibuat**: batas umur/laju minimum untuk echo port 7 (slowloris 1 byte < 30 s masih menahan slot echo).
+  Port 7 hanya uji tanpa auth; slot CLI tidak terpengaruh karena 7779 punya batas sendiri dan per IP maks 2.
+- **Self-test timer C3a** (commit terpisah): R dipasang ulang relatif waktu jalan, jadi urutan tetap "RRARC" salah
+  bila net task telat > ~3 tick (gagal 2x berturut-turut saat D4). Kini yang diuji: 5 kejadian, menyala urut
+  deadline, tidak sebelum deadline, telat maks 10.

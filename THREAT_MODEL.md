@@ -26,7 +26,7 @@ Menjawab empat pertanyaan: apa yang dilindungi, dari siapa, lewat jalur mana, da
 |---|---|---|---|
 | A1 | Penyerang jaringan tanpa autentikasi | Mengirim paket apa saja ke port terbuka, termasuk paket rusak, banjir, dan IP palsu | **Ya** |
 | A2 | Penyerang di jalur (on-path) | Mengintip, mengulang (replay), dan mengubah paket di LAN | **Ya** (replay dan modifikasi); intip hanya setelah D8 |
-| A3 | Pengguna sah berperan rendah | Punya sesi login, mencoba melampaui perannya | **Ya** (setelah D4) |
+| A3 | Pengguna sah berperan rendah | Punya sesi login, mencoba melampaui perannya | **Ya** (D4: kunci read-only, daftar putih perintah) |
 | A4 | Program user-space yang salah atau jahat | Memanggil syscall dengan argumen buruk | **Ya** |
 | A5 | Penyedia data tak tepercaya | Image disk berisi FAT32/ELF yang dirancang jahat | **Ya** (parser harus tahan) |
 | A6 | Penyerang jaringan pada layanan klien (DHCP, DNS, NTP) | Membalas permintaan kernel dengan data palsu | **Ya**, mulai Fase 5 |
@@ -56,7 +56,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Parser ARP/IP/ICMP/UDP | Baca di luar batas, panjang palsu | Validasi panjang ketat; fuzzing (R7) |
 | Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda, retransmisi terbatas (5x lalu RST, C3c), setiap keadaan penutupan punya batas waktu (C3d), batas 2000 segmen/s per koneksi dan 10 ACK duplikat/s (C4), tabel 4 TCB, maks 2 per IP, SYN_RCVD tertua digusur saat penuh (C5a), timeout hanya diperpanjang kemajuan, bukan ACK duplikat/keepalive/SYN ulang/RST salah (C5b) |
 | Protokol perintah | Replay, penebakan nonce, banjir CHAL | HMAC-SHA256, nonce sekali pakai, tabel nonce 16 slot, maks 4 per IP, batas laju per IP dan global |
-| Login + shell TCP 7779 (D1, D2) | Replay bukti login/perintah, tebak HMAC, sesi menggantung, baris raksasa, sisip segmen setelah login, keluaran besar menahan memori | Nonce per koneksi dari DRBG, pesan "<nonce> tcp-login" dan "<nonce> tcp-cmd <n> <perintah>" berbeda dari UDP dan satu sama lain, 1 percobaan login per koneksi lalu FIN, login maks 10 s, baris maks 128 byte, perbandingan ct_memeq; D2: tiap perintah ditandatangani dengan nomor urut per koneksi (perintah sisipan/diulang/diubah -> ERR lalu FIN), keluaran maks 1432 byte per koneksi (statis), baris berikut tidak dibaca sampai keluaran habis. Balasan tidak ditandatangani dan teks polos (D8) |
+| Login + shell TCP 7779 (D1, D2) | Replay bukti login/perintah, tebak HMAC, sesi menggantung, baris raksasa, sisip segmen setelah login, keluaran besar menahan memori | Nonce per koneksi dari DRBG, pesan "<nonce> tcp-login" dan "<nonce> tcp-cmd <n> <perintah>" berbeda dari UDP dan satu sama lain, 1 percobaan login per koneksi lalu FIN, login maks 10 s, baris maks 128 byte, perbandingan ct_memeq; D2: tiap perintah ditandatangani dengan nomor urut per koneksi (perintah sisipan/diulang/diubah -> ERR lalu FIN), keluaran maks 1432 byte per koneksi (statis), baris berikut tidak dibaca sampai keluaran habis; D4: peran dari kunci (KEYRO.TXT = read-only, daftar putih perintah, perintah ditandatangani kunci peran), maks 2 koneksi 7779, sesi login ditutup 300 s tanpa perintah sah. Balasan tidak ditandatangani dan teks polos (D8) |
 | Nonce | Nonce dapat ditebak melemahkan challenge-response | Modul entropi + HMAC-DRBG (F1.8); menolak jika entropi belum cukup |
 | Parser FAT32 | Struktur disk rusak | Validasi BPB (RootEntryCount==0 dan FATSz16==0), batas jumlah sektor, kode error bukan halt |
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |
@@ -74,7 +74,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Kerahasiaan balasan | **Tidak ada** (teks polos) | D8 |
 | Isolasi user/kernel | Ada: user mode, NX | R6, SMEP/SMAP bila CPU mendukung |
 | Entropi nonce | Ada (F1.8): kolam SHA-256 + HMAC-DRBG, tolak sebelum 256 bit; rdseed/rdrand dipercaya | Nilai ulang jitter di perangkat keras asli (H0) |
-| Otorisasi berbasis peran | Belum | D4 |
+| Otorisasi berbasis peran | Ada (D4): admin/read-only per kunci, hanya TCP 7779 | Kunci per pengguna (D5/D7) |
 | Audit | Belum | D5 |
 | Integritas update | Belum ada OTA | P7 |
 
@@ -122,7 +122,7 @@ Jika mesin ditempatkan di lokasi yang tidak aman secara fisik, putuskan ulang ba
 | Pertanyaan | Dikunci di tahap |
 |---|---|
 | Di mana kunci HMAC disimpan dan bagaimana diganti? | D7 |
-| Perlukah satu kunci per pengguna/peran? | D4 |
+| Perlukah satu kunci per pengguna/peran? | D4: satu kunci per peran (admin, read-only); per pengguna menyusul D5/D7 |
 | Enkripsi lewat SSH atau lapisan sendiri di atas library teruji? | D8 |
 | Perlukah Secure Boot untuk mesin yang dipakai? | H0 |
 | Apakah jaringan tempat mesin berada dianggap tepercaya sebagian? | Sebelum P4 |

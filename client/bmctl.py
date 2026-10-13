@@ -138,7 +138,8 @@ def run_tcp(args):
         return 2
     rc = 0
     try:
-        if sess.login_reply != "OK login":
+        # D4: "OK login ro" = kunci peran read-only (pping/reboot ditolak server).
+        if sess.login_reply not in ("OK login", "OK login ro"):
             sys.stdout.write("%s\n" % (sess.login_reply or "bmctl: koneksi ditutup server"))
             return 1
         interactive = not args.command
@@ -174,8 +175,9 @@ def run_tcp(args):
                 rc = 1
                 if out and out[-1] == "bmctl: koneksi ditutup server":
                     break
-            # reboot: server reboot setelah balasan di-ACK, tidak ada exit.
-            if cmd in ("exit", "reboot"):
+            # reboot: server reboot setelah balasan di-ACK, tidak ada exit
+            # (ditolak di sesi read-only: sesi tetap jalan).
+            if cmd == "exit" or (cmd == "reboot" and ok):
                 break
     except socket.timeout:
         sys.stderr.write("bmctl: tidak ada balasan dari %s:%d (%.1f s)\n"

@@ -299,6 +299,9 @@ uint64_t g_cli_login_timeout = 0;  // D1: tidak login dalam TCP_LOGIN_TIMEOUT
 uint64_t g_cli_line_long = 0;      // D1: baris > TCP_LINE_MAX, koneksi ditutup
 uint64_t g_cli_cmd_ok = 0;         // D2: perintah sesi TCP terverifikasi
 uint64_t g_cli_cmd_fail = 0;       // D2: perintah ditolak (format/hmac), koneksi ditutup
+uint64_t g_cli_login_ro = 0;       // D4: login berhasil dengan peran read-only
+uint64_t g_cli_sess_full = 0;      // D4: SYN 7779 ditolak, sudah TCP_CLI_MAX sesi
+uint64_t g_cli_idle_timeout = 0;   // D4: sesi login tanpa perintah TCP_CLI_IDLE
 
 // RXO-1: register statistik E1000 MPC (paket dibuang karena ring RX
 // penuh) dan RNBC (paket datang saat tidak ada buffer) clear-on-read,
@@ -694,6 +697,13 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 #define TCP_CLI_REPLY_MAX   64     // balasan ERR/OK CLI terpanjang (byte)
 #define TCP_CLI_OUT_MAX     1432   // keluaran perintah (g_cmd_out 1400) + END
 #define TCP_REBOOT_WAIT     200    // tick: reboot paling lambat 2 s setelah perintah
+// D4: maks TCP_CLI_MAX TCB port 7779 (keadaan apa pun); SYN berikutnya: SYN_RCVD
+// CLI tertua digusur, tanpa SYN_RCVD CLI -> RST (cli_sess_full). Sesi yang
+// sudah login ditutup (ERR lalu FIN) TCP_CLI_IDLE setelah perintah sah
+// terakhir; batas diam TCP 30 s tidak berlaku untuknya selama antrean kirim
+// kosong. Byte yang menetes tanpa perintah utuh tidak memperpanjang sesi.
+#define TCP_CLI_MAX         2
+#define TCP_CLI_IDLE        30000  // tick (300 detik)
 enum { TCP_APP_ECHO = 0, TCP_APP_CLI };
 
 // Nilai juga dipakai metrics tcp_state.
@@ -724,6 +734,8 @@ typedef struct {
     uint32_t seg_used, dupack_used;
     int app;            // D1: TCP_APP_ECHO (port 7) / TCP_APP_CLI (7779)
     int cli_authed;     // D1: login berhasil
+    int role;           // D4: AUTH_ROLE_* setelah login
+    uint64_t cli_last;  // D4: tick login / perintah sah terakhir
     int close_after;    // D1: FIN setelah antrean kirim habis dan di-ACK
     uint64_t opened;    // D1: tick ESTABLISHED (batas login)
     uint8_t nonce[16];  // D1: nonce login koneksi ini
@@ -1165,7 +1177,7 @@ static void net_tcp_cli_drain(tcp_tcb_t *t)
 static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
 {
     uint32_t clen = 0;
-    int rc = auth_tcp_cmd(t->nonce, t->cmd_seq + 1, t->line, len, &clen);
+    int rc = auth_tcp_cmd(t->nonce, t->role, t->cmd_seq + 1, t->line, len, &clen);
 
     if (rc != 0) {
         g_cli_cmd_fail++;
@@ -1177,6 +1189,7 @@ static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
         return;
     }
     t->cmd_seq++;
+    t->cli_last = timer_ticks;
     g_cli_cmd_ok++;
 
     uint32_t n;
@@ -1190,7 +1203,7 @@ static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
         }
         t->close_after = 1;
     } else {
-        n = auth_tcp_exec(t->line, clen, t->out, TCP_CLI_OUT_MAX - 32, &reboot);
+        n = auth_tcp_exec(t->role, t->line, clen, t->out, TCP_CLI_OUT_MAX - 32, &reboot);
     }
     if (reboot) {
         t->reboot_after = 1;
@@ -1220,13 +1233,22 @@ static void net_tcp_cli_line(tcp_tcb_t *t)
         return;
     }
 
-    int rc = auth_tcp_login(t->nonce, t->line, len);
+    int role = AUTH_ROLE_NONE;
+    int rc = auth_tcp_login(t->nonce, t->line, len, &role);
 
     if (rc == 0) {
         t->cli_authed = 1;
+        t->role = role;
+        t->cli_last = timer_ticks;
         g_cli_login_ok++;
-        net_tcp_cli_reply(t, "OK login\n");
-        net_tcp_log("CLI login OK");
+        if (role == AUTH_ROLE_ADMIN) {
+            net_tcp_cli_reply(t, "OK login\n");
+            net_tcp_log("CLI login OK");
+        } else {
+            g_cli_login_ro++;
+            net_tcp_cli_reply(t, "OK login ro\n");
+            net_tcp_log("CLI login OK (read-only)");
+        }
         return;
     }
     g_cli_login_fail++;
@@ -1282,6 +1304,23 @@ static void net_tcp_tick_one(tcp_tcb_t *t)
         t->close_after = 1;
         net_tcp_log("CLI login timeout, koneksi ditutup");
         net_tcp_output(t);
+        return;
+    }
+    // D4: sesi login tanpa perintah sah TCP_CLI_IDLE -> ERR lalu FIN.
+    if (t->app == TCP_APP_CLI && t->state == TCP_ESTABLISHED && t->cli_authed &&
+        !t->close_after && timer_ticks - t->cli_last > TCP_CLI_IDLE) {
+        g_cli_idle_timeout++;
+        t->out_len = t->out_pos = 0;
+        net_tcp_cli_reply(t, "ERR: sesi idle\n");
+        t->close_after = 1;
+        net_tcp_log("CLI sesi idle, koneksi ditutup");
+        net_tcp_output(t);
+        return;
+    }
+    // D4: sesi login yang diam dengan antrean kirim kosong diatur TCP_CLI_IDLE,
+    // bukan batas diam TCP (data tertahan jendela 0 tetap kena batas TCP).
+    if (t->app == TCP_APP_CLI && t->state == TCP_ESTABLISHED && t->cli_authed &&
+        !t->close_after && t->buf_count == 0) {
         return;
     }
     // C3c: selama ada segmen belum di-ACK, retransmisi (TCP_RTX_MAX) yang
@@ -1504,8 +1543,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
 
     if ((dport == NET_TCP_ECHO_PORT || dport == NET_TCP_CLI_PORT) && (flags & TCP_SYN) &&
         !(flags & (TCP_ACK | TCP_RST))) {
-        uint32_t same_ip = 0;
-        tcp_tcb_t *victim = 0;
+        uint32_t same_ip = 0, cli_n = 0;
+        tcp_tcb_t *victim = 0, *cli_victim = 0;
 
         for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
             tcp_tcb_t *e = &g_tcbs[k];
@@ -1527,12 +1566,28 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
                 (victim == 0 || e->last < victim->last)) {
                 victim = e;
             }
+            if (e->app == TCP_APP_CLI) {
+                cli_n++;
+                if (e->state == TCP_SYN_RCVD &&
+                    (cli_victim == 0 || e->last < cli_victim->last)) {
+                    cli_victim = e;
+                }
+            }
         }
         // C5a: batas per IP dicek sebelum penggusuran, jadi satu IP tidak
         // bisa menggusur koneksi setengah terbuka milik IP lain berulang-ulang.
         if (same_ip >= TCP_MAX_PER_IP) {
             g_tcp_src_full++;
             return 0;
+        }
+        // D4: sesi CLI penuh: hanya SYN_RCVD CLI yang boleh digusur.
+        if (dport == NET_TCP_CLI_PORT && cli_n >= TCP_CLI_MAX) {
+            if (cli_victim == 0) {
+                g_cli_sess_full++;
+                return 0;
+            }
+            t = 0;
+            victim = cli_victim;
         }
         if (t == 0 && victim == 0) {
             g_tcp_busy++;
@@ -1579,6 +1634,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         t->fin_sent = 0;
         t->app = dport == NET_TCP_CLI_PORT ? TCP_APP_CLI : TCP_APP_ECHO;
         t->cli_authed = 0;
+        t->role = AUTH_ROLE_NONE;
+        t->cli_last = 0;
         t->close_after = 0;
         t->line_len = 0;
         t->cmd_seq = 0;

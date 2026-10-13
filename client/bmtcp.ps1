@@ -4,6 +4,7 @@
 # Muat:   . .\bmtcp.ps1
 # Kunci:  $BmKeyFile (default $env:USERPROFILE\.bmahos\key.txt); spasi/CR/LF/NUL
 #         di akhir file dibuang, sama seperti kernel.
+#         Peran read-only (D4): $BmKeyFile = file isi KEYRO.TXT -> "OK login ro".
 # Pakai:  bmtcp              login ke 192.168.50.200:7779 (cetak "OK login")
 #         bmtcp "10.0.0.5"   alamat lain
 #         bmt uptime         perintah bertanda tangan, cetak keluaran sampai END <n>

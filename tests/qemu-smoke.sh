@@ -56,6 +56,10 @@ python3 -c 'import secrets; print(secrets.token_hex(16), end="")' > "$KEY"
 dd if=/dev/zero of="$DISK" bs=1M count=64 status=none
 mkfs.vfat -F 32 "$DISK" >/dev/null
 mcopy -i "$DISK" "$KEY" ::KEY.TXT
+# D4: kunci peran read-only (acak, berbeda dari KEY.TXT).
+ROKEY="$WORK/KEYRO.TXT"
+python3 -c 'import secrets; print(secrets.token_hex(16), end="")' > "$ROKEY"
+mcopy -i "$DISK" "$ROKEY" ::KEYRO.TXT
 cp "$OVMF_VARS" "$WORK/vars.fd"
 
 "$QEMU" -machine q35 -m 512M -cpu max \
@@ -174,10 +178,11 @@ CT_ASM="$(objdump -d --no-show-raw-insn --disassemble=ct_memeq "$ROOT/build/kern
 check "ct_memeq: 1 lompatan bersyarat, tanpa call" \
     '[ "$(echo "$CT_ASM" | grep -E "\sj[a-z]+\s" | grep -vc "\sjmp\s")" -eq 1 ] &&
      ! echo "$CT_ASM" | grep -qE "\scall"'
-check "auth.o memanggil ct_memeq 5x (D1: + login TCP, D2: + perintah TCP)" '[ "$(objdump -dr "$ROOT/build/auth.o" | grep -c "R_X86_64_PLT32.*ct_memeq\|R_X86_64_PC32.*ct_memeq")" -eq 5 ]'
+check "auth.o memanggil ct_memeq 7x (D1: + login TCP, D2: + perintah TCP, D4: + login ro, KEYRO)" '[ "$(objdump -dr "$ROOT/build/auth.o" | grep -c "R_X86_64_PLT32.*ct_memeq\|R_X86_64_PC32.*ct_memeq")" -eq 7 ]'
 check "PCI-1 menemukan AHCI"     'grep -q "PCI-1: AHCI di" "$LOG"'
 check "PCI-1 menemukan E1000"    'grep -q "PCI-1: E1000 di" "$LOG"'
 check "KEY.TXT dimuat"           'grep -q "Net-11: kunci dimuat" "$LOG"'
+check "D4: KEYRO.TXT dimuat"     'grep -q "D4: kunci read-only dimuat" "$LOG"'
 check "reset ACPI terdeteksi"    'grep -q "ACPI-R: reset ACPI siap" "$LOG"'
 check "NX self-test (B3)"        'grep -q "NX: self-test PASS" "$LOG"'
 check "PMM free/realloc PASS"    'grep -aq "PMM free/realloc test: PASS" "$LOG"'
@@ -204,7 +209,7 @@ echo "info  $ECHO_OUT"
 check "C4: echo TCP 1 MB identik (sha256)" '[ "$ECHO_RC" -eq 0 ]'
 
 # D1: login TCP port 7779 (klien socket Linux, kunci uji acak).
-LOGIN_OUT="$(python3 "$ROOT/tests/tcp-login.py" 127.0.0.1 "$CPORT" "$KEY" 2>&1)"
+LOGIN_OUT="$(python3 "$ROOT/tests/tcp-login.py" 127.0.0.1 "$CPORT" "$KEY" "$ROKEY" 2>&1)"
 echo "$LOGIN_OUT" | sed "s/^/info  /"
 check "D1: login TCP benar -> OK login" \
     'echo "$LOGIN_OUT" | grep -q "^OK login-benar$"'
@@ -216,6 +221,8 @@ check "D1: hmac atas nonce koneksi lain -> ERR login gagal + ditutup" \
     'echo "$LOGIN_OUT" | grep -q "^OK login-nonce-lain$"'
 check "D1: tanpa login 10 s -> ERR login timeout + ditutup" \
     'echo "$LOGIN_OUT" | grep -q "^OK login-timeout$"'
+check "D4: sesi read-only: uptime/metrics jalan, pping/reboot ERR peran, kunci admin ditolak" \
+    'echo "$LOGIN_OUT" | grep -q "^OK ro-sesi$"'
 
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
 
@@ -234,6 +241,10 @@ sleep 2.5
 T_OUT="$($BMT --key "$WORK/bad.txt" ping 2>&1)"; T_RC=$?
 check "D3: bmctl --tcp kunci salah -> ERR login gagal, rc 1" \
     '[ "$T_RC" -eq 1 ] && echo "$T_OUT" | grep -q "^ERR: login gagal$"'
+sleep 2.5
+T_OUT="$($BMT --key "$ROKEY" uptime pping 2>&1)"; T_RC=$?
+check "D4: bmctl --tcp kunci read-only: uptime jalan, pping ERR peran, rc 1" \
+    '[ "$T_RC" -eq 1 ] && echo "$T_OUT" | grep -q "^uptime: " && echo "$T_OUT" | grep -q "^ERR: peran read-only$" && echo "$T_OUT" | grep -q "^bye$"'
 check "kunci salah ditolak" \
     'python3 $ROOT/client/bmctl.py --key $WORK/bad.txt --host 127.0.0.1 --port $PORT --timeout 10 ping | grep -q "^ERR: hmac salah"'
 

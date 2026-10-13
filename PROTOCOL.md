@@ -3,6 +3,8 @@
 Dokumen ini mencatat format paket/baris yang diterima bmahOS (IP 192.168.50.200).
 Kunci bersama: isi KEY.TXT di disk (16..64 byte, spasi/CR/LF di akhir dibuang).
 Semua HMAC = HMAC-SHA256 dengan kunci itu, ditulis 64 hex huruf kecil.
+D4: KEYRO.TXT (opsional, aturan sama, harus beda dari KEY.TXT) = kunci peran read-only,
+hanya untuk TCP 7779.
 
 ## UDP 7778: perintah (Net-18A, B2)
 
@@ -27,7 +29,8 @@ Teks baris, diakhiri LF (CR sebelum LF dibuang). Baris maks 128 byte termasuk LF
 server -> bmahOS login
 server -> nonce: <32 hex>          nonce khusus koneksi ini (DRBG, dibuat saat SYN)
 klien  -> login <hmac>             hmac atas "<nonce> tcp-login"
-server -> OK login                 sesi terautentikasi
+server -> OK login                 sesi terautentikasi, peran admin (KEY.TXT)
+       |  OK login ro              peran read-only (hmac dengan kunci KEYRO.TXT, D4)
        |  ERR: login gagal         format/hmac salah, lalu server menutup (FIN)
        |  ERR: auth nonaktif       kunci tidak dimuat, lalu FIN
 ```
@@ -49,6 +52,9 @@ server -> END <n>
        |  ERR: hmac salah          hmac/nomor urut salah, lalu FIN
        |  ERR: format: <perintah> <hmac-hex64>   lalu FIN
        |  ERR: auth nonaktif       lalu FIN
+       |  ERR: peran read-only     perintah tidak diizinkan untuk peran ini, lalu END <n>
+                                   (sesi tetap jalan)
+       |  ERR: sesi idle           300 detik tanpa perintah sah, lalu FIN
 ```
 
 - `n` = nomor perintah di koneksi ini: 1, 2, 3, ... Tidak dikirim; klien dan server
@@ -65,8 +71,15 @@ server -> END <n>
   menunggu `END <n>` sebelum mengirim perintah berikutnya.
 - Satu perintah salah = koneksi ditutup (fail closed); login ulang di koneksi baru.
 - Balasan tidak ditandatangani dan teks polos (keaslian balasan dan kerahasiaan: D8).
-- Koneksi tanpa kemajuan 30 detik tetap ditutup (batas sesi: D4).
-- Metrics: `cli_cmd_ok`, `cli_cmd_fail`.
+- hmac perintah memakai kunci peran sesi (admin: KEY.TXT, ro: KEYRO.TXT).
+- Peran read-only hanya boleh: `help ping uptime mem log irq stats metrics mac ip tasks exit`.
+- D4: sesi yang sudah login ditutup 300 detik setelah login/perintah sah terakhir
+  (`ERR: sesi idle`, lalu FIN); byte tanpa LF tidak memperpanjang. Batas diam TCP 30 detik
+  tidak berlaku untuk sesi login.
+- D4: maks 2 koneksi ke port 7779 sekaligus (termasuk handshake dan TIME_WAIT 2 s); SYN
+  berikutnya dibalas RST bila tidak ada handshake setengah jadi yang bisa digusur.
+- Metrics: `cli_cmd_ok`, `cli_cmd_fail`, `cli_login_ro`, `cli_role_denied`, `cli_sess_full`,
+  `cli_idle_timeout`.
 
 Klien: `client/bmctl.py --tcp` (sekali jalan atau interaktif) dan `client/bmtcp.ps1`
-(PowerShell: `bmtcp`, `bmt <perintah>`, `bmtx`); uji: `tests/tcp-login.py HOST PORT KEYFILE`.
+(PowerShell: `bmtcp`, `bmt <perintah>`, `bmtx`); uji: `tests/tcp-login.py HOST PORT KEYFILE [ROKEYFILE]`.

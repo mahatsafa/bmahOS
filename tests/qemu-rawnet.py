@@ -667,6 +667,63 @@ def test_tcp_table(net, cli):
           repr((ev, m2.get("tcp_conn_active"), m2.get("tcp_state"))))
 
 
+def test_cli_limit(net, cli):
+    """D4: maks 2 TCB port 7779 (IP berbeda, di bawah batas per IP): SYN_RCVD
+    CLI tertua digusur, dua sesi aktif -> SYN 7779 berikutnya RST|ACK
+    (cli_sess_full), port 7 tetap diterima."""
+    m0 = cli.metrics()
+    if m0 is None:
+        check("D4: metrics awal", False)
+        return
+
+    def syn(ip, sport, dport, pseq):
+        net.send(tcp_frame(ip, sport, dport, pseq, 0, 0x02))
+        r = net.tcp_replies(ip, sport, 2, limit=1)
+        if len(r) == 1 and r[0][2] == 0x12 and r[0][1] == pseq + 1:
+            return r[0][0]
+        return None
+
+    a, b, c, d, e = (bytes([192, 168, 50, x]) for x in (60, 61, 62, 63, 64))
+    ia = syn(a, 47600, 7779, 1000)
+    time.sleep(0.2)
+    ib = syn(b, 47610, 7779, 2000)
+    time.sleep(0.2)
+    ic = syn(c, 47620, 7779, 3000)
+    check("D4: SYN 7779 ke-3 tetap SYN-ACK (SYN_RCVD CLI tertua digusur)",
+          None not in (ia, ib, ic))
+    if None in (ia, ib, ic):
+        return
+    net.send(tcp_frame(b, 47610, 7779, 2001, ib + 1, 0x10))
+    net.send(tcp_frame(c, 47620, 7779, 3001, ic + 1, 0x10))
+    rb = net.tcp_replies(b, 47610, 1, limit=1)
+    rc = net.tcp_replies(c, 47620, 1, limit=1)
+    blen = rb[0][3] if rb else 0
+    if rb and rc:   # banner di-ACK supaya tidak dikirim ulang
+        net.send(tcp_frame(b, 47610, 7779, 2001, ib + 1 + rb[0][3], 0x10))
+        net.send(tcp_frame(c, 47620, 7779, 3001, ic + 1 + rc[0][3], 0x10))
+    check("D4: dua sesi CLI dari dua IP terbuka (banner)", blen == 53 and rc and rc[0][3] == 53,
+          repr((rb, rc)))
+    net.send(tcp_frame(d, 47630, 7779, 4000, 0, 0x02))
+    r = net.tcp_replies(d, 47630, 2)
+    check("D4: SYN 7779 saat 2 sesi CLI aktif -> RST|ACK", r == [(0, 4001, 0x14, 0)], repr(r))
+    ie = syn(e, 47640, 7, 5000)
+    check("D4: port 7 tetap diterima saat sesi CLI penuh", ie is not None)
+    time.sleep(1.2)
+    m1 = cli.metrics()
+    if m1 is None:
+        check("D4: metrics akhir", False)
+        return
+    dd = {k: m1[k] - m0[k] for k in ("cli_sess_full", "tcp_synrcvd_evicted", "tcp_src_full")}
+    check("D4: metrics cli_sess_full +1, evicted +1, src_full 0",
+          dd == {"cli_sess_full": 1, "tcp_synrcvd_evicted": 1, "tcp_src_full": 0}, repr(dd))
+    net.send(tcp_frame(b, 47610, 7779, 2001, 0, 0x04))
+    net.send(tcp_frame(c, 47620, 7779, 3001, 0, 0x04))
+    if ie is not None:
+        net.send(tcp_frame(e, 47640, 7, 5001, 0, 0x04))
+    time.sleep(0.5)
+    net.drain()
+
+
 def main():
     p = argparse.ArgumentParser()
     for a in ("qemu", "ovmf-code", "ovmf-vars", "iso", "disk", "key", "work"):
@@ -742,6 +799,8 @@ def main():
         test_tcp_close(net, cli)
         time.sleep(1.2)
         test_tcp_table(net, cli)
+        time.sleep(1.2)
+        test_cli_limit(net, cli)
 
         text = open(log, "rb").read().decode(errors="replace")
         check("rawnet: tanpa exception di log",

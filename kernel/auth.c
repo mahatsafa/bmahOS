@@ -3,7 +3,54 @@
 // ---- Net-11b: kunci autentikasi dari disk FAT32 (KEY.TXT) ----
 static uint8_t g_auth_key[64];
 static uint32_t g_auth_key_len = 0;
+// D4: kunci peran read-only (KEYRO.TXT, opsional, hanya shell TCP 7779).
+static uint8_t g_auth_ro_key[64];
+static uint32_t g_auth_ro_key_len = 0;
+uint64_t g_cli_role_denied = 0;   // D4: perintah di luar daftar read-only ditolak
 static uint64_t g_auth_last_counter = 0;
+
+// D4: KEYRO.TXT = kunci peran read-only shell TCP. Hanya dimuat bila kunci
+// admin sudah ada; aturan panjang sama (16..64 byte, spasi/CR/LF/NUL di
+// akhir dibuang). Isi sama dengan kunci admin ditolak (peran tidak bisa
+// dibedakan). Tidak ada/tidak valid -> peran read-only nonaktif.
+static void auth_load_ro_key(void)
+{
+    uint32_t cluster = 0;
+    uint32_t size = 0;
+
+    (void)fat32_find_file("KEYRO   TXT", &cluster, &size);
+    if (cluster < 2 || size == 0 || size > 512) {
+        serial_write("D4: KEYRO.TXT tidak ada, peran read-only nonaktif\r\n");
+        return;
+    }
+
+    uint8_t *k = fat32_load_file(cluster, size);
+    uint32_t n = size;
+
+    if (k == 0) {
+        serial_write("D4: gagal memuat KEYRO.TXT, peran read-only nonaktif\r\n");
+        return;
+    }
+    while (n > 0 && (k[n - 1] == '\n' || k[n - 1] == '\r' ||
+                     k[n - 1] == ' '  || k[n - 1] == 0)) {
+        n--;
+    }
+    if (n < 16 || n > sizeof(g_auth_ro_key)) {
+        serial_write("D4: panjang KEYRO.TXT harus 16..64 byte, peran read-only nonaktif\r\n");
+        return;
+    }
+    if (n == g_auth_key_len && ct_memeq(k, g_auth_key, n)) {
+        serial_write("D4: KEYRO.TXT sama dengan kunci admin, peran read-only nonaktif\r\n");
+        return;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        g_auth_ro_key[i] = k[i];
+    }
+    g_auth_ro_key_len = n;
+    serial_write("D4: kunci read-only dimuat, panjang=");
+    serial_write_hex((uint64_t)n);
+    serial_write("\r\n");
+}
 
 void auth_load_key(void)
 {
@@ -60,6 +107,7 @@ void auth_load_key(void)
     serial_write("Net-11: kunci dimuat, panjang=");
     serial_write_hex((uint64_t)n);
     serial_write("\r\n");
+    auth_load_ro_key();
 }
 
 static int auth_hexval(uint8_t c)
@@ -511,7 +559,10 @@ static int priv_try_handle(volatile uint8_t *cmd, uint32_t len,
 // Nonce milik satu koneksi (net.c, dibuat saat SYN); pesan berbeda dari
 // perintah UDP dan nonce tidak ada di tabel UDP, jadi bukti login tidak
 // berlaku di jalur lain. Return 0 OK, 1 auth nonaktif, 2 format, 5 hmac salah.
-int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
+// D4: bukti dicocokkan dengan kunci admin dan (bila dimuat) kunci read-only;
+// keduanya selalu dihitung. *role = AUTH_ROLE_ADMIN/AUTH_ROLE_RO bila OK.
+int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len,
+                   int *role)
 {
     static const char hx[] = "0123456789abcdef";
     static const char pre[] = "login ";
@@ -552,9 +603,22 @@ int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
     }
 
     uint8_t mac[32];
+    int admin, ro = 0;
 
     hmac_sha256(g_auth_key, g_auth_key_len, m, sizeof(m), mac);
-    return ct_memeq(mac, rx, 32) ? 0 : 5;
+    admin = ct_memeq(mac, rx, 32);
+    if (g_auth_ro_key_len != 0) {
+        hmac_sha256(g_auth_ro_key, g_auth_ro_key_len, m, sizeof(m), mac);
+        ro = ct_memeq(mac, rx, 32);
+    }
+    if (admin) {
+        *role = AUTH_ROLE_ADMIN;
+    } else if (ro) {
+        *role = AUTH_ROLE_RO;
+    } else {
+        return 5;
+    }
+    return 0;
 }
 
 // D2: baris perintah sesi TCP "<perintah> <hmac-hex64>", hmac atas
@@ -562,14 +626,18 @@ int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
 // koneksi, tidak dikirim). Nonce koneksi mencegah pemakaian di koneksi lain,
 // seq mencegah pengulangan di koneksi yang sama; "tcp-cmd" membedakannya dari
 // bukti login. Return 0 OK (*cmd_len = panjang perintah di awal line),
-// 1 auth nonaktif, 2 format, 5 hmac salah.
-int auth_tcp_cmd(const uint8_t nonce[16], uint64_t seq, const uint8_t *line,
-                 uint32_t len, uint32_t *cmd_len)
+// 1 auth nonaktif, 2 format, 5 hmac salah. D4: kunci sesuai peran sesi.
+int auth_tcp_cmd(const uint8_t nonce[16], int role, uint64_t seq,
+                 const uint8_t *line, uint32_t len, uint32_t *cmd_len)
 {
     static const char hx[] = "0123456789abcdef";
     static const char mid[] = " tcp-cmd ";
+    const uint8_t *key = role == AUTH_ROLE_ADMIN ? g_auth_key :
+                         role == AUTH_ROLE_RO ? g_auth_ro_key : 0;
+    uint32_t key_len = role == AUTH_ROLE_ADMIN ? g_auth_key_len :
+                       role == AUTH_ROLE_RO ? g_auth_ro_key_len : 0;
 
-    if (g_auth_key_len == 0) {
+    if (key_len == 0) {
         return 1;
     }
     // minimum: perintah(1) + spasi + hmac(64); perintah maks 64 byte.
@@ -622,7 +690,7 @@ int auth_tcp_cmd(const uint8_t nonce[16], uint64_t seq, const uint8_t *line,
 
     uint8_t mac[32];
 
-    hmac_sha256(g_auth_key, g_auth_key_len, m, k, mac);
+    hmac_sha256(key, key_len, m, k, mac);
     if (!ct_memeq(mac, rx, 32)) {
         return 5;
     }
@@ -633,14 +701,30 @@ int auth_tcp_cmd(const uint8_t nonce[16], uint64_t seq, const uint8_t *line,
 // D2: jalankan perintah yang sudah diverifikasi auth_tcp_cmd (daftar sama
 // dengan jalur UDP nonce), salin keluaran ke out (maks max byte). *reboot = 1
 // bila reboot diminta: pemanggil menjalankan auth_reboot() setelah balasan
-// terkirim.
-uint32_t auth_tcp_exec(const uint8_t *cmd, uint32_t len, uint8_t *out,
+// terkirim. D4: peran selain admin hanya boleh perintah di daftar putih
+// g_ro_cmds (perintah baru otomatis ditolak); lainnya "ERR: peran read-only".
+static const char *const g_ro_cmds[] = {
+    "help", "ping", "uptime", "mem", "log", "irq", "stats", "metrics", "mac",
+    "ip", "tasks",
+};
+
+uint32_t auth_tcp_exec(int role, const uint8_t *cmd, uint32_t len, uint8_t *out,
                        uint32_t max, int *reboot)
 {
     const char *o;
     uint32_t n;
+    int allowed = role == AUTH_ROLE_ADMIN;
 
-    priv_cmd_execute(cmd, len);
+    for (uint32_t i = 0; i < sizeof(g_ro_cmds) / sizeof(g_ro_cmds[0]); i++) {
+        allowed |= net_cmd_is(cmd, len, g_ro_cmds[i]);
+    }
+    if (!allowed) {
+        g_cli_role_denied++;
+        g_cmd_len = 0;
+        cmd_puts("ERR: peran read-only\n");
+    } else {
+        priv_cmd_execute(cmd, len);
+    }
     *reboot = g_priv_reboot_pending;
     g_priv_reboot_pending = 0;
     o = cmd_out();

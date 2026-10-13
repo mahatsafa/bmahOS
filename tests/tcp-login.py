@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """D1/D2: uji login dan shell TCP port 7779 dengan klien socket sungguhan.
 
-    tcp-login.py HOST PORT KEYFILE
+    tcp-login.py HOST PORT KEYFILE [ROKEYFILE]
 
 Mencetak satu baris "OK <nama>" atau "GAGAL <nama>: <detail>" per uji;
 keluar 0 bila semua OK. Uji: login benar, hmac salah (ERR lalu koneksi
 ditutup), tanpa login (ERR timeout ~10 s lalu ditutup); D2: perintah
 bertanda tangan nomor urut (ping, pping, metrics > 1024 byte), baris yang
-diulang ditolak + ditutup, exit menutup koneksi.
+diulang ditolak + ditutup, exit menutup koneksi. D4 (bila ROKEYFILE): login
+dengan kunci read-only -> "OK login ro", perintah baca jalan, pping/reboot
+-> "ERR: peran read-only" dan sesi tetap jalan.
 """
 
 import hashlib
@@ -48,10 +50,13 @@ def closed(s, buf):
 def main():
     host, port, keyfile = sys.argv[1], int(sys.argv[2]), sys.argv[3]
     key = open(keyfile, "rb").read().rstrip(b"\r\n \x00")
+    rokey = None
+    if len(sys.argv) > 4:
+        rokey = open(sys.argv[4], "rb").read().rstrip(b"\r\n \x00")
     res = []
 
-    def mac(nonce):
-        return hmac.new(key, (nonce + " tcp-login").encode(), hashlib.sha256).hexdigest()
+    def mac(nonce, k=None):
+        return hmac.new(k or key, (nonce + " tcp-login").encode(), hashlib.sha256).hexdigest()
 
     def run(name, fn):
         try:
@@ -62,8 +67,8 @@ def main():
             res.append(False)
             print("GAGAL %s: %r" % (name, e))
 
-    def cmd(nonce, n, c):
-        m = hmac.new(key, ("%s tcp-cmd %d %s" % (nonce, n, c)).encode(),
+    def cmd(nonce, n, c, k=None):
+        m = hmac.new(k or key, ("%s tcp-cmd %d %s" % (nonce, n, c)).encode(),
                      hashlib.sha256).hexdigest()
         return ("%s %s\n" % (c, m)).encode()
 
@@ -156,7 +161,33 @@ def main():
     run("login-nonce-lain", t_bad)
     run("shell-perintah", t_shell)
     run("shell-exit", t_exit)
+    def t_ro():
+        time.sleep(2.5)   # TIME_WAIT (2 s) uji sebelumnya habis dulu
+        s, buf, nonce = open_cli(host, port)
+        s.sendall(("login %s\n" % mac(nonce, rokey)).encode())
+        r0 = read_line(s, buf)
+        if r0 != "OK login ro":
+            s.close()
+            return repr(r0)
+        out = []
+        for n, c in enumerate(("uptime", "pping", "reboot", "metrics"), 1):
+            s.sendall(cmd(nonce, n, c, rokey))
+            out.append(reply(s, buf, n))
+        # Perintah bertanda tangan kunci admin di sesi read-only: ERR + tutup.
+        s.sendall(cmd(nonce, 5, "ping"))
+        r5 = read_line(s, buf)
+        eof = closed(s, buf)
+        s.close()
+        if (len(out[0]) != 1 or not out[0][0].startswith("uptime: ")
+                or out[1] != ["ERR: peran read-only"] or out[2] != ["ERR: peran read-only"]
+                or "cli_login_ro=1" not in out[3] or "cli_role_denied=2" not in out[3]
+                or (r5, eof) != ("ERR: hmac salah", True)):
+            return repr((out[:3], [x for x in out[3] if x.startswith("cli_")], r5, eof))
+        return None
+
     run("login-timeout", t_timeout)
+    if rokey is not None:
+        run("ro-sesi", t_ro)
     sys.exit(0 if all(res) else 1)
 
 

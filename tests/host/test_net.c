@@ -48,12 +48,14 @@ int entropy_get(uint8_t *out, uint32_t len)
 }
 
 // D1: auth_tcp_login ada di auth.c (vektor HMAC diuji di test_auth). Stub:
-// "login " + 64 'a' = OK, 70 byte "login ..." lain = hmac salah (5), lainnya
-// format (2); g_login_off = 1 meniru kunci tidak dimuat. Nonce dicatat.
+// "login " + 64 'a' = OK admin, 64 'r' = OK read-only (D4), 70 byte "login ..."
+// lain = hmac salah (5), lainnya format (2); g_login_off = 1 meniru kunci
+// tidak dimuat. Nonce dicatat.
 static uint8_t g_login_nonce[16];
 static int g_login_off;
 
-int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
+int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len,
+                   int *role)
 {
     memcpy(g_login_nonce, nonce, 16);
     if (g_login_off) {
@@ -62,11 +64,15 @@ int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
     if (len != 70 || memcmp(line, "login ", 6) != 0) {
         return 2;
     }
+    int a = 1, r = 1;
     for (uint32_t i = 6; i < 70; i++) {
-        if (line[i] != 'a') {
-            return 5;
-        }
+        a &= line[i] == 'a';
+        r &= line[i] == 'r';
     }
+    if (!a && !r) {
+        return 5;
+    }
+    *role = a ? AUTH_ROLE_ADMIN : AUTH_ROLE_RO;
     return 0;
 }
 
@@ -77,12 +83,14 @@ int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len)
 // "<perintah>\n". auth_reboot hanya dihitung.
 static uint64_t g_cmd_seq_seen;
 static int g_reboots;
+static int g_cmd_role_seen, g_exec_role_seen;   // D4: peran yang diteruskan net.c
 
-int auth_tcp_cmd(const uint8_t nonce[16], uint64_t seq, const uint8_t *line,
-                 uint32_t len, uint32_t *cmd_len)
+int auth_tcp_cmd(const uint8_t nonce[16], int role, uint64_t seq,
+                 const uint8_t *line, uint32_t len, uint32_t *cmd_len)
 {
     (void)nonce;
     g_cmd_seq_seen = seq;
+    g_cmd_role_seen = role;
     if (g_login_off) {
         return 1;
     }
@@ -103,11 +111,12 @@ int auth_tcp_cmd(const uint8_t nonce[16], uint64_t seq, const uint8_t *line,
     return 0;
 }
 
-uint32_t auth_tcp_exec(const uint8_t *cmd, uint32_t len, uint8_t *out,
+uint32_t auth_tcp_exec(int role, const uint8_t *cmd, uint32_t len, uint8_t *out,
                        uint32_t max, int *reboot)
 {
     uint32_t n = 0;
     *reboot = 0;
+    g_exec_role_seen = role;
     if (len == 3 && memcmp(cmd, "big", 3) == 0) {
         for (n = 0; n < 1300 && n < max; n++) {
             out[n] = (uint8_t)('a' + n % 26);
@@ -1320,10 +1329,12 @@ static void test_tcp_limits(void)
 
 // SYN/ACK/RST dari IP 192.168.50.<ip3> (mk_tcp memakai PEER_IP, lalu IP
 // sumber diganti dan checksum dihitung ulang).
+static uint16_t g_from_port = 7;   // D4: port tujuan mk_tcp_from/syn_from
+
 static size_t mk_tcp_from(uint8_t *f, uint8_t ip3, uint16_t sport, uint32_t seq,
                           uint32_t ack, uint8_t flags, const char *data)
 {
-    size_t n = mk_tcp(f, sport, 7, seq, ack, flags, data);
+    size_t n = mk_tcp(f, sport, g_from_port, seq, ack, flags, data);
     f[29] = ip3;
     fix_csums(f, n);
     return n;
@@ -1756,6 +1767,86 @@ static void test_tcp_shell(void)
     tcp_reset();
 }
 
+// ---- D4: peran, jumlah sesi, idle sesi ----
+
+static void test_tcp_session(void)
+{
+    static uint8_t f[300];
+    char line[80];
+    uint64_t ro0 = g_cli_login_ro, ok0 = g_cli_login_ok, full0 = g_cli_sess_full;
+    uint64_t idle0 = g_cli_idle_timeout, ev0 = g_tcp_synrcvd_evicted;
+    uint32_t una;
+
+    // A. Login read-only: "OK login ro", peran diteruskan ke cmd dan exec.
+    CHECK(cli_open(40000, 41000));
+    una = g_iss + 1 + BLEN;
+    memcpy(line, "login ", 6);
+    memset(line + 6, 'r', 64);
+    memcpy(line + 70, "\n", 2);
+    cli_send(line, una);
+    CHECK(reply_is("OK login ro\n") && g_cli_login_ro == ro0 + 1 &&
+          g_cli_login_ok == ok0 + 1 && g_tcbs[0].role == AUTH_ROLE_RO);
+    una += 12;
+    cli_send(cmd_line("ping", 1), una);
+    CHECK(reply_is("ping\nEND 1\n") && g_cmd_role_seen == AUTH_ROLE_RO &&
+          g_exec_role_seen == AUTH_ROLE_RO);
+    una = cli_login(42000, 43000);
+    cli_send(cmd_line("ping", 1), una);
+    CHECK(g_tcbs[0].role == AUTH_ROLE_ADMIN && g_cmd_role_seen == AUTH_ROLE_ADMIN &&
+          g_exec_role_seen == AUTH_ROLE_ADMIN && g_cli_login_ro == ro0 + 1);
+    una += 11;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+
+    // B. Idle sesi: batas diam TCP 30 s tidak berlaku; perintah sah
+    // memperpanjang; byte tanpa LF tidak; ERR tepat TCP_CLI_IDLE + 1 tick
+    // setelah perintah terakhir, lalu FIN setelah di-ACK.
+    CHECK(quiet(TCP_IDLE_TIMEOUT + 500) && g_tcbs[0].state == TCP_ESTABLISHED);
+    cli_send(cmd_line("uptime", 2), una);
+    CHECK(reply_is("uptime\nEND 2\n"));
+    una += 13;
+    rx(f, mk_tcp_w(f, g_pseq, una, F_ACK, 0, 0, 4096));
+    uint64_t t0 = timer_ticks;
+    CHECK(quiet(TCP_CLI_IDLE - 1000));
+    cli_send("pi", una);   // tanpa LF: di-ACK, tidak memperpanjang sesi
+    CHECK(g_tx_n == 1 && tx_seg(0).len == 0);
+    uint32_t k = run_until_tx(5000);
+    // t0 = tick ACK; perintah uptime diproses 100 tick sebelumnya (rx).
+    CHECK(k > 0 && timer_ticks - (t0 - 100) == TCP_CLI_IDLE + 1);
+    CHECK(reply_is("ERR: sesi idle\n") && g_cli_idle_timeout == idle0 + 1 &&
+          g_tcbs[0].close_after);
+    rx(f, mk_tcp_w(f, g_pseq, una + 15, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_FIN | F_ACK) &&
+          g_tcbs[0].state == TCP_FIN_WAIT_1);
+    // Belum login tetap kena batas login 10 s (bukan TCP_CLI_IDLE).
+    CHECK(cli_open(44000, 45000));
+    CHECK(run_until_tx(5000) == TCP_LOGIN_TIMEOUT + 1 - 100);
+    CHECK(reply_is("ERR: login timeout\n"));
+
+    // C. Maks TCP_CLI_MAX TCB port 7779 dari IP berbeda: SYN_RCVD CLI
+    // tertua digusur; dua sesi ESTABLISHED -> SYN 7779 berikutnya RST
+    // (cli_sess_full); port 7 tetap diterima.
+    tcp_reset();
+    g_from_port = 7779;
+    CHECK(syn_from(f, 40, 50000, 100, 1000));
+    CHECK(syn_from(f, 41, 50001, 200, 2000));
+    CHECK(syn_from(f, 42, 50002, 300, 3000));
+    CHECK(g_tcp_synrcvd_evicted == ev0 + 1 && net_tcp_conn_active() == 2);
+    rx(f, mk_tcp_from(f, 41, 50001, 201, 2001, F_ACK, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).len == BLEN);   // banner
+    rx(f, mk_tcp_from(f, 42, 50002, 301, 3001, F_ACK, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).len == BLEN);
+    rx(f, mk_tcp_from(f, 40, 50000, 101, 1001, F_ACK, ""));   // digusur
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == F_RST);
+    rx(f, mk_tcp_from(f, 43, 50003, 400, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && tx_seg(0).ack == 401);
+    CHECK(g_cli_sess_full == full0 + 1 && net_tcp_conn_active() == 2);
+    g_from_port = 7;
+    CHECK(syn_from(f, 44, 50004, 500, 5000) && net_tcp_conn_active() == 3);
+    CHECK(g_cli_sess_full == full0 + 1);
+    CHECK(g_tx_bad == 0);
+    tcp_reset();
+}
+
 int main(void)
 {
     test_checksum();
@@ -1772,6 +1863,7 @@ int main(void)
     test_tcp_idle();
     test_tcp_cli();
     test_tcp_shell();
+    test_tcp_session();
     test_limits();
     build_templates();
     test_truncation();

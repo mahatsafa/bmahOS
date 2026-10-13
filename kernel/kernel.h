@@ -440,10 +440,17 @@ extern uint64_t g_cli_login_timeout;
 extern uint64_t g_cli_line_long;
 extern uint64_t g_cli_cmd_ok;
 extern uint64_t g_cli_cmd_fail;
-int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len);
-int auth_tcp_cmd(const uint8_t nonce[16], uint64_t seq, const uint8_t *line,
-                 uint32_t len, uint32_t *cmd_len);
-uint32_t auth_tcp_exec(const uint8_t *cmd, uint32_t len, uint8_t *out,
+extern uint64_t g_cli_login_ro;
+extern uint64_t g_cli_sess_full;
+extern uint64_t g_cli_idle_timeout;
+extern uint64_t g_cli_role_denied;
+// D4: peran sesi TCP. Admin = kunci KEY.TXT, read-only = kunci KEYRO.TXT.
+enum { AUTH_ROLE_NONE = 0, AUTH_ROLE_ADMIN, AUTH_ROLE_RO };
+int auth_tcp_login(const uint8_t nonce[16], const uint8_t *line, uint32_t len,
+                   int *role);
+int auth_tcp_cmd(const uint8_t nonce[16], int role, uint64_t seq,
+                 const uint8_t *line, uint32_t len, uint32_t *cmd_len);
+uint32_t auth_tcp_exec(int role, const uint8_t *cmd, uint32_t len, uint8_t *out,
                        uint32_t max, int *reboot);
 void auth_reboot(void);
 int net_tcp_state(void);
