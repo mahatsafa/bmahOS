@@ -40,7 +40,7 @@ E1000 (ARP, IPv4, ICMP, UDP echo 7777, interrupt RX, task idle), perintah jarak 
 PMM-0, RXO-1, M1 (tabel nonce 16 slot, maks 4 per IP), M2 (README), C0 (desain TCP), C1 (parsing TCP, RST),
 C2 (listen port 7, handshake, terima data + ACK).
 
-F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. C5b (2026-10-13): timeout hanya diperpanjang kemajuan. C5c dilewati. D1 (2026-10-13): login TCP port 7779. D2 (2026-10-13): shell TCP. D3 (2026-10-13): klien `bmctl.py --tcp`. Berikutnya D4.
+F1.4 selesai (2026-10-11): kernel.c dipecah jadi 17 modul, peta di `ARCHITECTURE.md`. F1.5 selesai (2026-10-11): laporan fitur CPU (`kernel/cpufeat.c`, `g_cpu`). F1.6 selesai (2026-10-11): `kprintf`/`ksnprintf`/`ASSERT` (`kernel/kprintf.c`). `make test` = 55 cek. F1.7 selesai (2026-10-12): `make host-test` (4 uji host, ASan + UBSan, juga di CI). F1.8 selesai (2026-10-12): `kernel/entropy.c`, kolam entropi + HMAC-DRBG. F1.9 selesai (2026-10-12): `ct_memeq`. **Fase 1 selesai.** C3a (2026-10-12): `kernel/ktimer.c`. C3b (2026-10-12): kirim data TCP. PIT-1 + C3c (2026-10-12): tick 100 Hz benar, retransmisi TCP. C3d (2026-10-12): penutupan TCP. C4 (2026-10-13): echo TCP 1 MB. C5a (2026-10-13): tabel 4 TCB. C5b (2026-10-13): timeout hanya diperpanjang kemajuan. C5c dilewati. D1 (2026-10-13): login TCP port 7779. D2 (2026-10-13): shell TCP. D3 (2026-10-13): klien `bmctl.py --tcp`. D4 (2026-10-13): peran read-only, maks 2 sesi CLI, idle sesi 300 s. Berikutnya D5.
 
 ## 4. Templat tahap
 
@@ -167,7 +167,12 @@ Linux, dan klien Python.
   Hasil: sekali jalan (beberapa perintah dalam satu sesi lalu `exit`) dan interaktif (prompt bila tty, pipa = satu
   perintah per baris, EOF -> `exit`), kode keluar 0/1/2; `client/bmtcp.ps1` (PowerShell `bmtcp`/`bmt`/`bmtx`, HMAC .NET).
   Kernel tidak berubah. VMware: Python 3.13 di Windows + bmtcp.ps1 lulus; prompt tty belum diuji.
-- [ ] **D4** Batas sesi (jumlah, idle timeout) dan peran (read-only vs admin).
+- [x] **D4** (2026-10-13, fb17f0c + 13b4025, make test 109 -> 117, PROD 108 -> 116, VMware lulus) Batas sesi (jumlah, idle timeout) dan peran (read-only vs admin).
+  Hasil: peran = kunci (KEY.TXT admin, KEYRO.TXT read-only, hanya TCP 7779; `OK login ro`), read-only = daftar putih
+  perintah (`ERR: peran read-only`, sesi tetap jalan); maks 2 TCB port 7779 (SYN_RCVD CLI tertua digusur, lainnya RST);
+  sesi login ditutup 300 s setelah perintah sah terakhir, batas diam TCP 30 s tidak berlaku untuknya. host-test net
+  300 -> 328, auth 86 -> 109. 13b4025 = perbaikan self-test timer C3a (commit terpisah). Batas 2 sesi dari IP berbeda
+  hanya terbukti di QEMU/host-test (Windows satu IP).
 - [ ] **D5** Audit log: siapa menjalankan perintah apa, kapan (cap waktu menyusul di P3).
 - [ ] **D6** FAT32 tulis dengan aturan aman (validasi BPB, kode error bukan halt, urutan tulis FAT).
 - [ ] **D7** Konfigurasi persisten dengan penulisan atomik (tulis file sementara lalu rename).
