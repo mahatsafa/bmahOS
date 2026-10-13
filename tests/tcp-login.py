@@ -9,7 +9,9 @@ ditutup), tanpa login (ERR timeout ~10 s lalu ditutup); D2: perintah
 bertanda tangan nomor urut (ping, pping, metrics > 1024 byte), baris yang
 diulang ditolak + ditutup, exit menutup koneksi. D4 (bila ROKEYFILE): login
 dengan kunci read-only -> "OK login ro", perintah baca jalan, pping/reboot
--> "ERR: peran read-only" dan sesi tetap jalan.
+-> "ERR: peran read-only" dan sesi tetap jalan. D5 (bila ROKEYFILE, sesudah
+uji lain): `audit` admin memuat kejadian uji sebelumnya, `audit gagal` memuat
+login gagal/timeout dan perintah hmac salah; `audit` di sesi ro ditolak.
 """
 
 import hashlib
@@ -185,9 +187,56 @@ def main():
             return repr((out[:3], [x for x in out[3] if x.startswith("cli_")], r5, eof))
         return None
 
+    def t_audit():
+        time.sleep(2.5)   # TIME_WAIT (2 s) uji sebelumnya habis dulu
+        s, buf, nonce = open_cli(host, port)
+        if login(s, buf, nonce) != "OK login":
+            return "login gagal"
+        s.sendall(cmd(nonce, 1, "audit"))
+        ok = reply(s, buf, 1)
+        s.sendall(cmd(nonce, 2, "audit gagal"))
+        bad = reply(s, buf, 2)
+        s.sendall(cmd(nonce, 3, "exit"))
+        reply(s, buf, 3)
+        s.close()
+        okt, badt = "\n".join(ok) + "\n", "\n".join(bad) + "\n"
+        want_ok = (" tcp admin login\n", " tcp admin cmd metrics\n", " tcp ro login\n",
+                   " tcp ro tolak-peran pping\n", " tcp ro tolak-peran reboot\n")
+        want_bad = (" tcp none login-gagal kode=5\n", " tcp none login-timeout\n",
+                    " tcp admin cmd-gagal kode=5\n", " tcp ro cmd-gagal kode=5\n")
+        if (not ok or not ok[0].startswith("audit ok: total=")
+                or not ok[-1].endswith(" tcp admin cmd audit")
+                or not all(w in okt for w in want_ok)
+                or not bad or not bad[0].startswith("audit gagal: total=")
+                or not all(w in badt for w in want_bad)
+                or "terpotong" in okt + badt):
+            return repr((ok, bad))
+        print("info audit ok: %s | gagal: %s" % (ok[0], bad[0]))
+        return None
+
+    def t_audit_ro():
+        time.sleep(2.5)
+        s, buf, nonce = open_cli(host, port)
+        s.sendall(("login %s\n" % mac(nonce, rokey)).encode())
+        if read_line(s, buf) != "OK login ro":
+            s.close()
+            return "login ro gagal"
+        s.sendall(cmd(nonce, 1, "audit", rokey))
+        r1 = reply(s, buf, 1)
+        s.sendall(cmd(nonce, 2, "audit gagal", rokey))
+        r2 = reply(s, buf, 2)
+        s.sendall(cmd(nonce, 3, "exit", rokey))
+        r3 = reply(s, buf, 3)
+        s.close()
+        if (r1, r2, r3) != (["ERR: peran read-only"], ["ERR: peran read-only"], ["bye"]):
+            return repr((r1, r2, r3))
+        return None
+
     run("login-timeout", t_timeout)
     if rokey is not None:
         run("ro-sesi", t_ro)
+        run("audit", t_audit)
+        run("audit-ro", t_audit_ro)
     sys.exit(0 if all(res) else 1)
 
 

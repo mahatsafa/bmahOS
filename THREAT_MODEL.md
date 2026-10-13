@@ -74,8 +74,8 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Kerahasiaan balasan | **Tidak ada** (teks polos) | D8 |
 | Isolasi user/kernel | Ada: user mode, NX | R6, SMEP/SMAP bila CPU mendukung |
 | Entropi nonce | Ada (F1.8): kolam SHA-256 + HMAC-DRBG, tolak sebelum 256 bit; rdseed/rdrand dipercaya | Nilai ulang jitter di perangkat keras asli (H0) |
-| Otorisasi berbasis peran | Ada (D4): admin/read-only per kunci, hanya TCP 7779 | Kunci per pengguna (D5/D7) |
-| Audit | Belum | D5 |
+| Otorisasi berbasis peran | Ada (D4): admin/read-only per kunci, hanya TCP 7779 | Kunci per pengguna (D7) |
+| Audit | Ada (D5): ring RAM (ok 16, gagal 8; banjir gagal tidak menimpa ring ok), IP:port + peran + perintah + tick, juga ke serial; baca `audit` hanya admin | Waktu nyata (P3), persisten (R4) |
 | Integritas update | Belum ada OTA | P7 |
 
 ## 6. Keterbatasan yang diketahui (diterima sementara)
@@ -93,6 +93,9 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 5. Kunci HMAC tersimpan di mesin dan di klien. Penyerang yang mendapat salah satunya mendapat kendali.
 6. Entropi (F1.8): rdseed/rdrand dipercaya penuh (CPU atau hypervisor jahat bisa mengatur nonce). Tanpa
    itu, kredit jitter adalah perkiraan kasar; di VM jitter bisa diatur hypervisor.
+7. Audit (D5) hanya di RAM (hilang saat reboot; salinan di serial) dan memakai tick, bukan waktu nyata.
+   "Siapa" = IP:port + peran (kunci per peran, bukan per pengguna); IP UDP bisa dipalsukan, tetapi entri
+   ring ok selalu butuh HMAC sah. Pemegang kunci sah (juga read-only) bisa mendorong entri lama keluar ring ok.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

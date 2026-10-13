@@ -457,6 +457,10 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     } else if (net_cmd_is(cmd, len, "reboot")) {
         cmd_puts("reboot: dimulai\n");
         g_priv_reboot_pending = 1;
+    } else if (net_cmd_is(cmd, len, "audit")) {
+        audit_dump(0);   // D5: hanya admin (tidak di g_ro_cmds)
+    } else if (net_cmd_is(cmd, len, "audit gagal")) {
+        audit_dump(1);
     } else {
         // B2: perintah baca juga boleh lewat jalur nonce.
         net_cmd_execute(cmd, len);
@@ -465,8 +469,9 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
 
 // Return 1 jika datagram adalah CHAL atau berformat nonce (balasan sudah
 // diisi di g_cmd_out), 0 jika harus lewat jalur counter lama.
+// D5: perintah sah dan yang ditolak (kecuali CHAL) dicatat di audit log.
 static int priv_try_handle(volatile uint8_t *cmd, uint32_t len,
-                           const volatile uint8_t *src_ip)
+                           const volatile uint8_t *src_ip, uint16_t src_port)
 {
     if (net_cmd_is(cmd, len, "CHAL")) {
         g_cmd_len = 0;
@@ -532,11 +537,15 @@ static int priv_try_handle(volatile uint8_t *cmd, uint32_t len,
 
     if (prc == 0) {
         g_priv_ok++;
+        audit_record(AUDIT_CMD, AUDIT_UDP, src_ip, src_port, AUTH_ROLE_ADMIN, 0,
+                     pc, pcl);
         priv_cmd_execute(pc, pcl);
         return 1;
     }
 
     g_priv_denied[prc]++;
+    audit_record(AUDIT_CMD_FAIL, AUDIT_UDP, src_ip, src_port, AUTH_ROLE_NONE, prc,
+                 0, 0);
     g_cmd_len = 0;
 
     if (prc == 1) {
@@ -708,17 +717,24 @@ static const char *const g_ro_cmds[] = {
     "ip", "tasks",
 };
 
-uint32_t auth_tcp_exec(int role, const uint8_t *cmd, uint32_t len, uint8_t *out,
-                       uint32_t max, int *reboot)
+// D5: juga dipakai net.c untuk menentukan jenis entri audit sebelum exec.
+int auth_cmd_allowed(int role, const uint8_t *cmd, uint32_t len)
 {
-    const char *o;
-    uint32_t n;
     int allowed = role == AUTH_ROLE_ADMIN;
 
     for (uint32_t i = 0; i < sizeof(g_ro_cmds) / sizeof(g_ro_cmds[0]); i++) {
         allowed |= net_cmd_is(cmd, len, g_ro_cmds[i]);
     }
-    if (!allowed) {
+    return allowed;
+}
+
+uint32_t auth_tcp_exec(int role, const uint8_t *cmd, uint32_t len, uint8_t *out,
+                       uint32_t max, int *reboot)
+{
+    const char *o;
+    uint32_t n;
+
+    if (!auth_cmd_allowed(role, cmd, len)) {
         g_cli_role_denied++;
         g_cmd_len = 0;
         cmd_puts("ERR: peran read-only\n");
@@ -751,7 +767,9 @@ void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len)
         len--;
     }
 
-    if (priv_try_handle(cmd, len, req + 14 + 12)) {
+    uint16_t sport = (uint16_t)(((uint32_t)req[14 + ihl] << 8) | req[14 + ihl + 1]);
+
+    if (priv_try_handle(cmd, len, req + 14 + 12, sport)) {
         net_udp_send_cmd_reply(req, ihl);
 
         if (g_priv_reboot_pending) {

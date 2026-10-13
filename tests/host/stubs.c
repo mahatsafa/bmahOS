@@ -38,6 +38,13 @@ WEAK void serial_write(const char *s)
     }
 }
 
+WEAK void serial_write_nolog(const char *s)
+{
+    if (!g_serial_mute) {
+        serial_write(s);
+    }
+}
+
 WEAK void serial_write_hex(uint64_t value)
 {
     static const char hx[] = "0123456789ABCDEF";

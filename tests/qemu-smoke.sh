@@ -223,6 +223,10 @@ check "D1: tanpa login 10 s -> ERR login timeout + ditutup" \
     'echo "$LOGIN_OUT" | grep -q "^OK login-timeout$"'
 check "D4: sesi read-only: uptime/metrics jalan, pping/reboot ERR peran, kunci admin ditolak" \
     'echo "$LOGIN_OUT" | grep -q "^OK ro-sesi$"'
+check "D5: audit admin: login/cmd/tolak-peran; audit gagal: login gagal/timeout/hmac" \
+    'echo "$LOGIN_OUT" | grep -q "^OK audit$"'
+check "D5: audit dan audit gagal di sesi read-only -> ERR peran read-only" \
+    'echo "$LOGIN_OUT" | grep -q "^OK audit-ro$"'
 
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
 
@@ -247,6 +251,19 @@ check "D4: bmctl --tcp kunci read-only: uptime jalan, pping ERR peran, rc 1" \
     '[ "$T_RC" -eq 1 ] && echo "$T_OUT" | grep -q "^uptime: " && echo "$T_OUT" | grep -q "^ERR: peran read-only$" && echo "$T_OUT" | grep -q "^bye$"'
 check "kunci salah ditolak" \
     'python3 $ROOT/client/bmctl.py --key $WORK/bad.txt --host 127.0.0.1 --port $PORT --timeout 10 ping | grep -q "^ERR: hmac salah"'
+
+# D5: audit lewat UDP (jalur nonce, admin), baris AUDIT di serial tetapi
+# tidak di ring log (perintah `log` boleh untuk peran read-only).
+sleep 1.2
+$BM ping >/dev/null 2>&1
+AU_OUT="$($BM audit 2>&1)"
+AUF_OUT="$($BM "audit gagal" 2>&1)"
+check "D5: UDP audit: perintah udp admin tercatat, terakhir = audit itu sendiri" \
+    'echo "$AU_OUT" | head -1 | grep -q "^audit ok: total=" && echo "$AU_OUT" | grep -q " udp admin cmd ping$" && echo "$AU_OUT" | tail -1 | grep -q " udp admin cmd audit$"'
+check "D5: UDP audit gagal: hmac salah dari jalur UDP tercatat (kode 5)" \
+    'echo "$AUF_OUT" | grep -q " udp none cmd-gagal kode=5$"'
+check "D5: baris AUDIT di serial (login, cmd, gagal), tidak di perintah log" \
+    'grep -aq "AUDIT #[0-9]* t=[0-9]* .* tcp admin login" "$LOG" && grep -aq "AUDIT #.* udp admin cmd audit" "$LOG" && grep -aq "AUDIT #.* login-gagal kode=5" "$LOG" && ! $BM log | grep -q AUDIT'
 
 # Replay: datagram yang sama dikirim dua kali, yang kedua harus ditolak.
 # Argumen: mode (nonce|counter) dan perintah. Keluaran: "<balasan1>|<balasan2>".

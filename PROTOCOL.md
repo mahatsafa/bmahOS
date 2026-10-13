@@ -81,5 +81,25 @@ server -> END <n>
 - Metrics: `cli_cmd_ok`, `cli_cmd_fail`, `cli_login_ro`, `cli_role_denied`, `cli_sess_full`,
   `cli_idle_timeout`.
 
+## Audit log (D5)
+
+Perintah `audit` dan `audit gagal` (hanya admin: UDP 7778 jalur nonce atau sesi TCP admin;
+peran read-only -> `ERR: peran read-only`). Keluaran: header lalu entri tertua -> terbaru:
+
+```
+audit ok: total=<n> tampil=<k> ditimpa=<n-k>
+#<urut> t=<tick> <ip>:<port> <tcp|udp> <none|admin|ro> <kejadian>[ kode=<c>][ <perintah>]
+```
+
+- `#<urut>` naik terus untuk kedua ring sejak boot; `t` = tick (100/s) sejak boot.
+- Ring ok (16 entri): `login`, `cmd` (perintah sah, termasuk `exit` dan `audit`),
+  `tolak-peran` (perintah sah tetapi tidak diizinkan untuk peran ini), `idle` (sesi idle 300 s).
+- Ring gagal (8 entri): `login-gagal kode=1|2|5`, `login-timeout`, `baris-panjang`,
+  `cmd-gagal kode=<c>` (TCP: 1/2/5; UDP: 1..5 seperti kode tolak 7778).
+- Teks perintah (maks 16 byte, selain ASCII cetak jadi `?`) hanya dicatat bila sudah lolos HMAC.
+- Tidak dicatat: `CHAL`, SYN yang ditolak, jalur counter yang dimatikan (ada di metrics).
+- Ring penuh: entri tertua ditimpa. Bila keluaran tidak muat 1400 byte: `...(terpotong)`.
+- Tiap entri juga ke serial sebagai `AUDIT <baris>` (tidak masuk ring `log`). Isi ring hilang saat reboot.
+
 Klien: `client/bmctl.py --tcp` (sekali jalan atau interaktif) dan `client/bmtcp.ps1`
 (PowerShell: `bmtcp`, `bmt <perintah>`, `bmtx`); uji: `tests/tcp-login.py HOST PORT KEYFILE [ROKEYFILE]`.

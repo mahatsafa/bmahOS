@@ -114,6 +114,7 @@ void serial_init(void);
 void serial_putc(char c);
 void serial_write(const char *s);
 void serial_write_hex(uint64_t value);
+void serial_write_nolog(const char *s);
 extern volatile int g_serial_mute;
 
 // ---- kernel.c (ring log; dipakai serial_putc) ----
@@ -453,6 +454,7 @@ int auth_tcp_cmd(const uint8_t nonce[16], int role, uint64_t seq,
 uint32_t auth_tcp_exec(int role, const uint8_t *cmd, uint32_t len, uint8_t *out,
                        uint32_t max, int *reboot);
 void auth_reboot(void);
+int auth_cmd_allowed(int role, const uint8_t *cmd, uint32_t len);
 int net_tcp_state(void);
 int net_tcp_conn_active(void);
 extern uint64_t g_e1000_mpc;
@@ -471,7 +473,17 @@ void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len);
 
 // ---- auth.c (kunci, HMAC, nonce, perintah berprivilege): tanpa simbol baru ----
 
+// ---- audit.c (D5: audit log di RAM, dua ring) ----
+// Urutan enum = indeks nama di audit.c; mulai AUDIT_LOGIN_FAIL = ring gagal.
+enum { AUDIT_TCP = 0, AUDIT_UDP };
+enum { AUDIT_LOGIN = 0, AUDIT_CMD, AUDIT_CMD_ROLE, AUDIT_IDLE,
+       AUDIT_LOGIN_FAIL, AUDIT_LOGIN_TIMEOUT, AUDIT_LINE_LONG, AUDIT_CMD_FAIL };
+void audit_record(int ev, int chan, const volatile uint8_t *ip, uint16_t port,
+                  int role, int code, const volatile uint8_t *cmd, uint32_t cmd_len);
+void audit_dump(int fail);
+
 // ---- kernel.c: perintah (cmd), dipakai auth.c ----
+#define CMD_OUT_MAX 1400
 extern uint32_t g_cmd_len;
 void cmd_putc(char c);
 void cmd_puts(const char *s);

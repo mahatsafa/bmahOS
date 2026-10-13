@@ -127,3 +127,20 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Self-test timer C3a** (commit terpisah): R dipasang ulang relatif waktu jalan, jadi urutan tetap "RRARC" salah
   bila net task telat > ~3 tick (gagal 2x berturut-turut saat D4). Kini yang diuji: 5 kejadian, menyala urut
   deadline, tidak sebelum deadline, telat maks 10.
+
+## 2026-10-13 (D5 audit log; rencana disetujui pengguna)
+- **Dua ring statis**: ok 16 entri (pihak lolos HMAC: login, perintah, tolak-peran, idle) dan gagal 8 entri
+  (login gagal/timeout, baris panjang, perintah format/hmac salah). Alasan: penyerang tanpa kunci hanya bisa
+  menimpa ring gagal. Penuh -> entri tertua ditimpa (bukan menolak perintah, itu DoS); nomor urut global
+  memperlihatkan celah, header menampilkan `ditimpa`.
+- **Teks perintah hanya bila terverifikasi** (maks 16 byte, disanitasi); baris yang gagal HMAC hanya kodenya,
+  supaya penyerang tidak bisa menulis teks palsu ke audit.
+- **Tidak dicatat**: CHAL, SYN ditolak, jalur counter mati (murah dibanjiri; sudah di metrics).
+- **Baca: `audit` / `audit gagal` hanya admin** (bukan daftar putih ro; memperlihatkan IP dan perintah semua
+  pengguna), lewat TCP admin atau UDP nonce. Ditambahkan di `priv_cmd_execute`, jadi jalur counter LEGACYCTR
+  tidak bisa membacanya.
+- **Serial**: tiap entri juga `AUDIT ...` ke UART lewat `serial_write_nolog` (tidak masuk ring `log`, yang boleh
+  dibaca ro). Entri ok selalu ke UART; entri gagal ikut pembatas B4b.
+- **Tanpa kunci metrics baru** (metrics ~1,25 KB dari batas 1400); jumlah ada di header `audit`.
+- Refactor kecil (`auth_cmd_allowed` dipisah dari `auth_tcp_exec`, port sumber ke `priv_try_handle`) ikut commit
+  fitur karena hanya dipakai audit (tanpa audit tidak ada gunanya).

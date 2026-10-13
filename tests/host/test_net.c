@@ -136,6 +136,41 @@ void auth_reboot(void)
     g_reboots++;
 }
 
+// D5: auth_cmd_allowed ada di auth.c (diuji di test_auth). Stub: ro tidak
+// boleh pping/reboot/audit. audit_record dicatat (kejadian terakhir + jumlah).
+int auth_cmd_allowed(int role, const uint8_t *cmd, uint32_t len)
+{
+    return role == AUTH_ROLE_ADMIN ||
+           !((len == 5 && memcmp(cmd, "pping", 5) == 0) ||
+             (len == 6 && memcmp(cmd, "reboot", 6) == 0) ||
+             (len == 5 && memcmp(cmd, "audit", 5) == 0));
+}
+
+static struct {
+    int n, ev, chan, role, code;
+    uint8_t ip[4];
+    uint16_t port;
+    char cmd[200];
+} g_au;
+
+void audit_record(int ev, int chan, const volatile uint8_t *ip, uint16_t port,
+                  int role, int code, const volatile uint8_t *cmd, uint32_t cmd_len)
+{
+    g_au.n++;
+    g_au.ev = ev;
+    g_au.chan = chan;
+    g_au.role = role;
+    g_au.code = code;
+    for (int i = 0; i < 4; i++) {
+        g_au.ip[i] = ip[i];
+    }
+    g_au.port = port;
+    for (uint32_t i = 0; i < cmd_len && i < sizeof(g_au.cmd) - 1; i++) {
+        g_au.cmd[i] = (char)cmd[i];
+    }
+    g_au.cmd[cmd_len < sizeof(g_au.cmd) - 1 ? cmd_len : sizeof(g_au.cmd) - 1] = 0;
+}
+
 int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name)
 {
     uint32_t i = 0;
@@ -1814,6 +1849,7 @@ static void test_tcp_session(void)
     CHECK(k > 0 && timer_ticks - (t0 - 100) == TCP_CLI_IDLE + 1);
     CHECK(reply_is("ERR: sesi idle\n") && g_cli_idle_timeout == idle0 + 1 &&
           g_tcbs[0].close_after);
+    CHECK(g_au.ev == AUDIT_IDLE && g_au.role == AUTH_ROLE_ADMIN && g_au.cmd[0] == 0);
     rx(f, mk_tcp_w(f, g_pseq, una + 15, F_ACK, 0, 0, 4096));
     CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_FIN | F_ACK) &&
           g_tcbs[0].state == TCP_FIN_WAIT_1);
@@ -1847,6 +1883,97 @@ static void test_tcp_session(void)
     tcp_reset();
 }
 
+// ---- D5: kejadian audit dari CLI TCP ----
+
+// 1 bila kejadian audit terakhir = (ev, role, code, cmd) dan tepat satu baru
+// sejak n0; IP/port = peer uji (192.168.50.1:4500), jalur TCP.
+static int au_is(int n0, int ev, int role, int code, const char *cmd)
+{
+    return g_au.n == n0 + 1 && g_au.ev == ev && g_au.role == role &&
+           g_au.code == code && strcmp(g_au.cmd, cmd) == 0 &&
+           g_au.chan == AUDIT_TCP && memcmp(g_au.ip, PEER_IP, 4) == 0 &&
+           g_au.port == 4500;
+}
+
+static void test_tcp_audit(void)
+{
+    char line[200];
+    uint32_t una;
+    int n0;
+
+    // Login admin, perintah sah, exit (ro juga boleh exit).
+    n0 = g_au.n;
+    una = cli_login(50000, 51000);
+    CHECK(au_is(n0, AUDIT_LOGIN, AUTH_ROLE_ADMIN, 0, ""));
+    n0 = g_au.n;
+    cli_send(cmd_line("ping", 1), una);
+    CHECK(au_is(n0, AUDIT_CMD, AUTH_ROLE_ADMIN, 0, "ping"));
+    una += 11;
+    // HMAC salah: kode 5, teks perintah (belum terverifikasi) tidak dicatat.
+    n0 = g_au.n;
+    cli_send(cmd_line("uptime", 1), una);
+    CHECK(reply_is("ERR: hmac salah\n"));
+    CHECK(au_is(n0, AUDIT_CMD_FAIL, AUTH_ROLE_ADMIN, 5, ""));
+    tcp_reset();
+
+    // Login ro: perintah terlarang dicatat sebagai tolak-peran, exit sebagai cmd.
+    CHECK(cli_open(52000, 53000));
+    una = g_iss + 1 + BLEN;
+    memcpy(line, "login ", 6);
+    memset(line + 6, 'r', 64);
+    memcpy(line + 70, "\n", 2);
+    n0 = g_au.n;
+    cli_send(line, una);
+    CHECK(au_is(n0, AUDIT_LOGIN, AUTH_ROLE_RO, 0, ""));
+    una += 12;
+    n0 = g_au.n;
+    cli_send(cmd_line("pping", 1), una);
+    CHECK(au_is(n0, AUDIT_CMD_ROLE, AUTH_ROLE_RO, 0, "pping"));
+    una += 12;
+    n0 = g_au.n;
+    cli_send(cmd_line("audit", 2), una);
+    CHECK(au_is(n0, AUDIT_CMD_ROLE, AUTH_ROLE_RO, 0, "audit"));
+    una += 12;
+    n0 = g_au.n;
+    cli_send(cmd_line("exit", 3), una);
+    CHECK(au_is(n0, AUDIT_CMD, AUTH_ROLE_RO, 0, "exit"));
+    tcp_reset();
+
+    // Login gagal (hmac 5, format 2), baris terlalu panjang, login timeout.
+    CHECK(cli_open(54000, 55000));
+    memset(line + 6, 'b', 64);
+    n0 = g_au.n;
+    cli_send(line, g_iss + 1 + BLEN);
+    CHECK(au_is(n0, AUDIT_LOGIN_FAIL, AUTH_ROLE_NONE, 5, ""));
+    tcp_reset();
+    CHECK(cli_open(56000, 57000));
+    n0 = g_au.n;
+    cli_send("halo\n", g_iss + 1 + BLEN);
+    CHECK(au_is(n0, AUDIT_LOGIN_FAIL, AUTH_ROLE_NONE, 2, ""));
+    tcp_reset();
+    CHECK(cli_open(58000, 59000));
+    memset(line, 'x', 199);
+    line[199] = 0;
+    n0 = g_au.n;
+    cli_send(line, g_iss + 1 + BLEN);
+    CHECK(au_is(n0, AUDIT_LINE_LONG, AUTH_ROLE_NONE, 0, ""));
+    tcp_reset();
+    CHECK(cli_open(60000, 61000));
+    n0 = g_au.n;
+    CHECK(run_until_tx(5000) > 0 && reply_is("ERR: login timeout\n"));
+    CHECK(au_is(n0, AUDIT_LOGIN_TIMEOUT, AUTH_ROLE_NONE, 0, ""));
+    tcp_reset();
+
+    // Port 7 (echo) tidak menghasilkan kejadian audit.
+    g_wport = 7;
+    n0 = g_au.n;
+    tcp_open(62000, 63000, 4096);
+    cli_send("login\n", g_iss + 1);
+    CHECK(reply_is("login\n") && g_au.n == n0);
+    CHECK(g_tx_bad == 0);
+    tcp_reset();
+}
+
 int main(void)
 {
     test_checksum();
@@ -1864,6 +1991,7 @@ int main(void)
     test_tcp_cli();
     test_tcp_shell();
     test_tcp_session();
+    test_tcp_audit();
     test_limits();
     build_templates();
     test_truncation();

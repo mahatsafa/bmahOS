@@ -1181,6 +1181,7 @@ static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
 
     if (rc != 0) {
         g_cli_cmd_fail++;
+        audit_record(AUDIT_CMD_FAIL, AUDIT_TCP, t->ip, t->rport, t->role, rc, 0, 0);
         net_tcp_cli_reply(t, rc == 1 ? "ERR: auth nonaktif\n" :
                           rc == 2 ? "ERR: format: <perintah> <hmac-hex64>\n" :
                           "ERR: hmac salah\n");
@@ -1191,6 +1192,9 @@ static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
     t->cmd_seq++;
     t->cli_last = timer_ticks;
     g_cli_cmd_ok++;
+    audit_record(net_cmd_is(t->line, clen, "exit") ||
+                 auth_cmd_allowed(t->role, t->line, clen) ? AUDIT_CMD : AUDIT_CMD_ROLE,
+                 AUDIT_TCP, t->ip, t->rport, t->role, 0, t->line, clen);
 
     uint32_t n;
     int reboot = 0;
@@ -1241,6 +1245,7 @@ static void net_tcp_cli_line(tcp_tcb_t *t)
         t->role = role;
         t->cli_last = timer_ticks;
         g_cli_login_ok++;
+        audit_record(AUDIT_LOGIN, AUDIT_TCP, t->ip, t->rport, role, 0, 0, 0);
         if (role == AUTH_ROLE_ADMIN) {
             net_tcp_cli_reply(t, "OK login\n");
             net_tcp_log("CLI login OK");
@@ -1252,6 +1257,7 @@ static void net_tcp_cli_line(tcp_tcb_t *t)
         return;
     }
     g_cli_login_fail++;
+    audit_record(AUDIT_LOGIN_FAIL, AUDIT_TCP, t->ip, t->rport, AUTH_ROLE_NONE, rc, 0, 0);
     net_tcp_cli_reply(t, rc == 1 ? "ERR: auth nonaktif\n" : "ERR: login gagal\n");
     t->close_after = 1;
     net_tcp_log("CLI login gagal, koneksi ditutup");
@@ -1283,6 +1289,7 @@ static uint32_t net_tcp_cli_rx(tcp_tcb_t *t, const volatile uint8_t *d,
             t->line[t->line_len++] = c;
         } else {
             g_cli_line_long++;
+            audit_record(AUDIT_LINE_LONG, AUDIT_TCP, t->ip, t->rport, t->role, 0, 0, 0);
             net_tcp_cli_reply(t, "ERR: baris terlalu panjang\n");
             t->close_after = 1;
             net_tcp_log("CLI baris terlalu panjang, koneksi ditutup");
@@ -1300,6 +1307,8 @@ static void net_tcp_tick_one(tcp_tcb_t *t)
     if (t->app == TCP_APP_CLI && t->state == TCP_ESTABLISHED && !t->cli_authed &&
         !t->close_after && timer_ticks - t->opened > TCP_LOGIN_TIMEOUT) {
         g_cli_login_timeout++;
+        audit_record(AUDIT_LOGIN_TIMEOUT, AUDIT_TCP, t->ip, t->rport, AUTH_ROLE_NONE, 0,
+                     0, 0);
         net_tcp_cli_reply(t, "ERR: login timeout\n");
         t->close_after = 1;
         net_tcp_log("CLI login timeout, koneksi ditutup");
@@ -1310,6 +1319,7 @@ static void net_tcp_tick_one(tcp_tcb_t *t)
     if (t->app == TCP_APP_CLI && t->state == TCP_ESTABLISHED && t->cli_authed &&
         !t->close_after && timer_ticks - t->cli_last > TCP_CLI_IDLE) {
         g_cli_idle_timeout++;
+        audit_record(AUDIT_IDLE, AUDIT_TCP, t->ip, t->rport, t->role, 0, 0, 0);
         t->out_len = t->out_pos = 0;
         net_tcp_cli_reply(t, "ERR: sesi idle\n");
         t->close_after = 1;

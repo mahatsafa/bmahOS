@@ -31,6 +31,25 @@ void serial_putc(char c)
     irq_restore(lf);
 }
 
+// D5: hanya ke UART (tidak masuk ring log), untuk baris AUDIT. Ikut g_serial_mute.
+void serial_write_nolog(const char *s)
+{
+    if (g_serial_mute) {
+        return;
+    }
+
+    uint64_t flags = irq_save();
+
+    while (*s) {
+        while (!(inb(COM1 + 5) & 0x20))
+            ;
+
+        outb(COM1, (uint8_t)*s++);
+    }
+
+    irq_restore(flags);
+}
+
 // Versi TANPA lock -- dipakai internal oleh fungsi lain yang SUDAH
 // pegang lock sendiri (mis. serial_write_hex()), supaya tidak nested
 // lock diri sendiri (nested cli aman secara hardware, tapi nested

@@ -2,7 +2,7 @@
 
 // ---- Net-9: remote command lewat UDP (port 7778), HANYA perintah baca ----
 
-static char g_cmd_out[1400];
+static char g_cmd_out[CMD_OUT_MAX];
 uint32_t g_cmd_len = 0;
 
 void cmd_putc(char c)
@@ -93,7 +93,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
         cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks\n");
-        cmd_puts("berprivilege: pping reboot\n");
+        cmd_puts("berprivilege: pping reboot audit (audit gagal)\n");
         cmd_puts("kirim CHAL, lalu <nonce> <perintah> <hmac>\n");
 #ifdef BMAHOS_LEGACYCTR
         cmd_puts("jalur counter (LEGACYCTR): <counter> <perintah> <hmac>, tanpa pping/reboot\n");

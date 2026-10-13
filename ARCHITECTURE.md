@@ -40,6 +40,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `crypto.c` | SHA-256, HMAC-SHA256, `ct_memeq` (perbandingan waktu-konstan), self-test vektor resmi | — |
 | `entropy.c` | kolam entropi (jitter TSC dari IRQ timer/E1000 dan RX, rdseed/rdrand), HMAC-DRBG SP 800-90A, `entropy_get` (0 = belum cukup, pemanggil menolak), self-test CAVP | crypto, cpufeat |
 | `auth.c` | kunci dari `KEY.TXT`, nonce (tabel 16 slot, isi dari `entropy_get`), verifikasi HMAC, perintah berprivilege, reboot, pintu UDP 7778 | crypto, entropy, fat32, cmd |
+| `audit.c` | D5: audit log di RAM (ring ok 16 + ring gagal 8, entri IP:port, peran, kejadian, kode, perintah, tick), baris `AUDIT` ke UART tanpa ring log, `audit_dump` untuk perintah `audit` | kprintf, serial, cmd |
 | `cmd.c` | isi perintah baca (`help uptime mem log irq stats metrics mac ip tasks`) dan pengirim balasan | net, sched, log |
 | `gdt.S`, `interrupt.S`, `task.S` | muat GDT/TSS, stub ISR/IRQ, `context_switch`, `enter_usermode` | — |
 
@@ -100,7 +101,8 @@ dengan no-op (instruksi itu fault di user mode); build kernel tidak berubah.
 | `test_net` | checksum (RFC 1071, acak 0..1500 byte), ARP, ICMP, UDP echo/7778, TCP RST + handshake port 7, kirim data TCP (putaran 2^32, jendela 0/penuh, stop-and-wait, aliran 20 ribu byte utuh), retransmisi (jeda 100/200/400/800/800 tick, RST setelah 5x, ACK sebagian mengembalikan RTO), penutupan (pasif, aktif saat diam, bersamaan, TIME_WAIT, FIN_WAIT_2 habis, data setelah FIN -> RST), batas 2000 segmen/s per koneksi dan 10 ACK duplikat/s, batas ukuran, frame dipotong di semua panjang, 200 ribu frame acak (checksum dibetulkan); tiap frame keluar dicek checksum-nya |
 | `test_ktimer` | urutan deadline (sama = urutan pasang), batal, pasang ulang (juga dari callback, `ticks = 0` = 1), batal dari callback, 200 ribu operasi acak dibandingkan model |
 | `test_entropy` | HMAC-DRBG vs 32 vektor CAVP, estimator (teratur = 0 bit), tolak sebelum siap, siap tepat setelah 256 tick berjitter, batas kolam cepat, jeda reseed, 100 ribu nonce unik, FIPS 140-2 (monobit, poker, runs) atas keluaran |
-| `test_auth` | `auth_load_key`, jalur counter, jalur nonce (TTL, sekali pakai, slot tidak dibebaskan saat HMAC salah), `net_cmd_handle` (CHAL, batas 4 nonce per IP), potongan + 100 ribu pesan acak |
+| `test_auth` | `auth_load_key`, jalur counter, jalur nonce (TTL, sekali pakai, slot tidak dibebaskan saat HMAC salah), `net_cmd_handle` (CHAL, batas 4 nonce per IP), potongan + 100 ribu pesan acak; D5: audit jalur UDP, `audit` hanya admin |
+| `test_audit` | D5: format baris, semua jenis kejadian, sanitasi/potong teks perintah, ring memutar, banjir gagal tidak menyentuh ring ok, UART saat dibungkam, keluaran maksimum `...(terpotong)` |
 
 Frame dan pesan dimasukkan dalam buffer `malloc` seukuran persis, jadi pembacaan lewat batas tertangkap ASan.
 Uji juga dicek dengan mutasi (pemeriksaan batas di kode kernel dihapus satu per satu): tiap mutasi

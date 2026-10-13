@@ -362,6 +362,8 @@ static size_t mk_cmd_frame(uint8_t *f, const char *payload)
     f[14] = 0x45;
     static const uint8_t src[4] = { 192, 168, 50, 1 };
     memcpy(f + 26, src, 4);
+    f[34] = 50000 >> 8;   // D5: port sumber UDP (dicatat audit)
+    f[35] = 50000 & 0xFF;
     size_t n = strlen(payload);
     memcpy(f + 42, payload, n);
     return 42 + n;
@@ -698,6 +700,54 @@ static void test_tcp_role(void)
     load_key(KEY);
 }
 
+// D5: jalur UDP mencatat perintah sah (admin + teks) dan yang ditolak (kode,
+// tanpa teks); `audit`/`audit gagal` hanya untuk admin (bukan daftar putih ro).
+static void test_audit(void)
+{
+    char m[400], nh[33];
+    const char *r;
+
+    memset(g_priv_nonces, 0, sizeof(g_priv_nonces));
+    r = handle("CHAL");
+    memcpy(nh, r + 7, 32);
+    nh[32] = 0;
+    sign(m, nh, "uptime");
+    serial_capture_reset();
+    CHECK_STR(handle(m), "exec\n");
+    CHECK(strstr(g_serial_cap, " 192.168.50.1:50000 udp admin cmd uptime\r\n") != NULL);
+    serial_capture_reset();
+    CHECK_STR(handle(m), "ERR: nonce tidak dikenal atau sudah dipakai\n");
+    CHECK(strstr(g_serial_cap, " 192.168.50.1:50000 udp none cmd-gagal kode=3\r\n") != NULL);
+    // CHAL tidak dicatat.
+    serial_capture_reset();
+    r = handle("CHAL");
+    CHECK(strstr(g_serial_cap, "AUDIT") == NULL);
+    memcpy(nh, r + 7, 32);
+    sign(m, nh, "audit");
+    r = handle(m);
+    CHECK(strncmp(r, "audit ok: total=", 16) == 0 &&
+          strstr(r, " udp admin cmd uptime\n") != NULL &&
+          strcmp(r + strlen(r) - 21, " udp admin cmd audit\n") == 0);
+    r = handle("CHAL");
+    memcpy(nh, r + 7, 32);
+    sign(m, nh, "audit gagal");
+    r = handle(m);
+    CHECK(strncmp(r, "audit gagal: total=", 19) == 0 &&
+          strstr(r, " udp none cmd-gagal kode=3\n") != NULL);
+
+    // Peran: audit hanya admin.
+    uint8_t out[64];
+    int rb = 0;
+    CHECK(auth_cmd_allowed(AUTH_ROLE_ADMIN, (const uint8_t *)"audit", 5));
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"audit", 5));
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"audit gagal", 11));
+    CHECK(auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"uptime", 6));
+    CHECK(auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"audit", 5, out, sizeof(out), &rb) == 21 &&
+          memcmp(out, "ERR: peran read-only\n", 21) == 0);
+    CHECK(auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"audit", 5, out, sizeof(out), &rb) ==
+          sizeof(out) && memcmp(out, "audit ok: total=", 16) == 0);
+}
+
 int main(void)
 {
     test_load_key();
@@ -708,5 +758,6 @@ int main(void)
     test_tcp_login();
     test_tcp_cmd();
     test_tcp_role();
+    test_audit();
     return test_done("auth");
 }
