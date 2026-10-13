@@ -32,8 +32,8 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `apic.c` | Local APIC (EOI), IOAPIC (redirection table) | acpi, vmm |
 | `pci.c` | config space mekanisme #1, pencarian AHCI dan E1000 | — |
 | `ahci.c` | inisialisasi port, `ahci_read` (polling, satu frame) | pci, vmm, pmm |
-| `fat32.c` | validasi BPB, root directory, cluster chain, `fat32_find_file`/`fat32_load_file`; D6: tulis root dir (`fat32_write_name`, `fat32_read_name`, `fat32_root_read`) dengan urutan tulis aman | ahci |
-| `fscmd.c` | D6: perintah `ls`/`baca`/`tulis`/`tambah` (nama 8.3, nama dilindungi, teks), dipanggil dari `priv_cmd_execute` | fat32, cmd, kprintf |
+| `fat32.c` | validasi BPB, root directory, cluster chain, `fat32_find_file`/`fat32_load_file`; D6: tulis root dir (`fat32_write_name`, `fat32_read_name`, `fat32_root_read`) dengan urutan tulis aman; D7: `fat32_delete_name`, `fat32_rename_name`, `fat32_replace_name` (ganti isi atomik lewat file sementara) | ahci |
+| `fscmd.c` | D6: perintah `ls`/`baca`/`tulis`/`tambah` (D7: + `hapus`/`ganti`; nama 8.3, nama dilindungi, teks), dipanggil dari `priv_cmd_execute` | fat32, cmd, kprintf |
 | `sched.c` | `task_t`, scheduler round-robin preemptive, sleep/wait/exit, semaphore, task user, `spawn` | vmm, pmm, `task.S` |
 | `ktimer.c` | timer dengan callback (`ktimer_start/cancel/run`), senarai terurut deadline, callback dijalankan loop net task; self-test boot | sched (`task_sleep` di self-test) |
 | `e1000.c` | driver Intel 8254x: ring TX/RX (64 slot), kirim, eksperimen GSI INTx, statistik | pci, vmm, apic |

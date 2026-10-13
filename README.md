@@ -28,8 +28,8 @@ Belum pernah diuji di hardware asli.
   sebagai tanda gagal); ada self-test free/realloc saat boot
 - PCI: AHCI dan E1000 dicari otomatis (kelas/vendor/device ID), bukan alamat bus tetap
 - Storage: AHCI (baca/tulis blok, flush, poll ber-timeout), FAT32 (baca file; D6: tulis file teks
-  <= 4096 byte di root directory lewat perintah admin `ls`/`baca`/`tulis`/`tambah`, urutan tulis aman
-  saat crash, lihat `PROTOCOL.md`), `spawn()` program dari disk
+  <= 4096 byte di root directory lewat perintah admin `ls`/`baca`/`tulis`/`tambah`, D7: `hapus`/`ganti`,
+  urutan tulis aman saat crash, lihat `PROTOCOL.md`), `spawn()` program dari disk
 - Jaringan (NIC Intel 82545EM / E1000 emulasi VMware): TX/RX ring, ARP, IPv4, ICMP echo, UDP
 - Interrupt RX E1000 via IOAPIC (GSI INTx ditemukan lewat eksperimen), net task tidur sampai ada paket
 - Task idle (`hlt`), build produksi tanpa task uji

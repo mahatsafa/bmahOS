@@ -520,6 +520,227 @@ static void test_crash(void)
     img_close();
 }
 
+// D7: hapus, ganti nama, perlindungan, LFN.
+static void test_delete_rename(void)
+{
+    img_open("fat32_del", 65536, 1);
+    sh("printf x > build/host/x.txt && mcopy -i %s build/host/x.txt ::nama_panjang_sekali.txt%s",
+       g_img_path, "");
+    probe();
+    uint32_t fc0 = fat32_free_hint();
+
+    CHECK_STR(run("tulis DUA.TXT dua"), "OK DUA.TXT ukuran=4\n");
+    CHECK_STR(run("hapus dua.txt"), "OK hapus DUA.TXT\n");
+    CHECK(read_rc("DUA     TXT") == FAT32_ERR_NOENT);
+    CHECK(fat32_free_hint() == fc0);
+    CHECK_STR(run("hapus HELLO.TXT"), "OK hapus HELLO.TXT\n");
+    CHECK(fat32_free_hint() == fc0 + 1);
+    CHECK(img_fsck() == 0);
+    CHECK(strstr(run("ls"), "HELLO.TXT") == 0);
+
+    // file kosong (tanpa cluster)
+    CHECK_STR(run("tulis KOSONG.TXT"), "OK KOSONG.TXT ukuran=0\n");
+    CHECK_STR(run("hapus KOSONG.TXT"), "OK hapus KOSONG.TXT\n");
+
+    CHECK_STR(run("hapus NADA.TXT"), "ERR: fs: file tidak ada\n");
+    CHECK_STR(run("hapus TEST"), "ERR: fs: bukan file biasa\n");
+    CHECK_STR(run("hapus KEY.TXT"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("hapus CONFIG.CFG"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("hapus config.tmp"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("hapus BIG.TXT"), "ERR: fs: file melebihi 4096 byte\n");
+    CHECK_STR(run("hapus A.TXT x"), "ERR: fs: format: hapus NAMA\n");
+    CHECK_STR(run("hapus"), "ERR: fs: format: hapus NAMA | ganti LAMA BARU\n");
+    CHECK_STR(run("hapusx"), "(tidak dikenali)");
+
+    CHECK_STR(run("tulis SATU.TXT isi satu"), "OK SATU.TXT ukuran=9\n");
+    CHECK_STR(run("tulis LAIN.TXT"), "OK LAIN.TXT ukuran=0\n");
+    CHECK_STR(run("ganti satu.txt baru.dat"), "OK ganti SATU.TXT -> BARU.DAT\n");
+    CHECK(read_rc("SATU    TXT") == FAT32_ERR_NOENT);
+    CHECK(img_mtype_eq("BARU.DAT", "isi satu\n"));
+    CHECK_STR(run("ganti BARU.DAT LAIN.TXT"), "ERR: fs: nama tujuan sudah ada\n");
+    CHECK_STR(run("ganti BARU.DAT BARU.DAT"), "ERR: fs: nama tujuan sudah ada\n");
+    CHECK_STR(run("ganti NADA.TXT X.TXT"), "ERR: fs: file tidak ada\n");
+    CHECK_STR(run("ganti TEST T2"), "ERR: fs: bukan file biasa\n");
+    CHECK_STR(run("ganti BARU.DAT KEY.TXT"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("ganti BARU.DAT CONFIG.CFG"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("ganti KEY.TXT K.TXT"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("ganti BARU.DAT A.B.C"), "ERR: fs: nama bukan 8.3 (A-Z 0-9 _ -)\n");
+    CHECK_STR(run("ganti BARU.DAT"), "ERR: fs: format: ganti LAMA BARU\n");
+    CHECK_STR(run("ganti BARU.DAT X Y"), "ERR: fs: nama bukan 8.3 (A-Z 0-9 _ -)\n");
+    CHECK(img_fsck() == 0);
+
+    // nama panjang dari mtools (LFN) -> ditolak, tidak diubah
+    CHECK(fat32_delete_name("NAMA_P~1TXT") == FAT32_ERR_LFN);
+    CHECK(fat32_rename_name("NAMA_P~1TXT", "X       TXT") == FAT32_ERR_LFN);
+    CHECK(img_mtype_eq("nama_panjang_sekali.txt", "x"));
+
+    // CONFIG.CFG boleh dibaca, tidak boleh ditulis lewat fscmd
+    CHECK(fat32_replace_name("CONFIG  CFG", "CONFIG  TMP", (const uint8_t *)"a=1\n", 4) ==
+          FAT32_OK);
+    CHECK_STR(run("baca CONFIG.CFG"), "isi CONFIG.CFG ukuran=4:\na=1\n");
+    CHECK_STR(run("tulis CONFIG.CFG x"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("tambah CONFIG.TMP x"), "ERR: fs: nama dilindungi\n");
+
+    CHECK(strstr(run("ls"), "fs: mode=tulis") != 0 && fat32_writable());
+    CHECK(img_fsck() == 0);
+    CHECK(img_consistent());
+    img_close();
+}
+
+// D7: ganti isi atomik lewat file sementara.
+static void test_replace(void)
+{
+    img_open("fat32_repl", 65536, 1);
+    probe();
+    static char big[1300];
+    memset(big, 'r', 1199);
+    big[1199] = '\n';
+    uint32_t fc0 = fat32_free_hint();
+
+    // belum ada -> TMP diganti nama
+    CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)"v1\n", 3) == FAT32_OK);
+    CHECK(read_eq("CFG     TXT", "v1\n") && read_rc("CFG     TMP") == FAT32_ERR_NOENT);
+    CHECK(img_fsck() == 0);
+    // sudah ada -> isi baru 3 cluster, lalu kembali 1 cluster
+    CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)big, 1200) == FAT32_OK);
+    CHECK(read_eq("CFG     TXT", big) && read_rc("CFG     TMP") == FAT32_ERR_NOENT);
+    CHECK(fat32_free_hint() == fc0 - 3);
+    CHECK(img_fsck() == 0);
+    CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)"v3\n", 3) == FAT32_OK);
+    CHECK(read_eq("CFG     TXT", "v3\n") && fat32_free_hint() == fc0 - 1);
+    // isi kosong
+    CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)"", 0) == FAT32_OK);
+    CHECK(read_eq("CFG     TXT", "") && fat32_free_hint() == fc0);
+    CHECK(img_fsck() == 0);
+
+    // TMP sisa crash (isi lain) dibersihkan dulu
+    CHECK(wr("CFG     TMP", big, 0) == FAT32_OK);
+    CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)"v4\n", 3) == FAT32_OK);
+    CHECK(read_eq("CFG     TXT", "v4\n") && read_rc("CFG     TMP") == FAT32_ERR_NOENT);
+    CHECK(fat32_free_hint() == fc0 - 1);
+    CHECK(img_fsck() == 0);
+
+    // tujuan bukan file biasa / terlalu besar
+    CHECK(fat32_replace_name("TEST       ", "T       TMP", (const uint8_t *)"x", 1) ==
+          FAT32_ERR_NOTFILE);
+    CHECK(fat32_replace_name("BIG     TXT", "BIG     TMP", (const uint8_t *)"x", 1) ==
+          FAT32_ERR_TOOBIG);
+    CHECK(read_rc("BIG     TMP") == FAT32_OK);   // TMP tertinggal; BIG utuh
+    CHECK(fat32_delete_name("BIG     TMP") == FAT32_OK);
+    CHECK(img_consistent() && img_fsck() == 0);
+    img_close();
+
+    // sektor entri tujuan penuh -> DIRFULL, tujuan utuh
+    img_open("fat32_repl2", 65536, 1);
+    probe();
+    char line[64];
+    CHECK(wr("CFG     TXT", "lama\n", 0) == FAT32_OK);
+    int i;
+    for (i = 0; i < 20; i++) {
+        snprintf(line, sizeof(line), "tulis P%02d.TXT x", i);
+        if (run(line)[0] != 'O') {
+            break;
+        }
+    }
+    CHECK(i == 11);   // 16 - HELLO, KEY, BIG, TEST, CFG
+    CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)"baru\n", 5) ==
+          FAT32_ERR_DIRFULL);
+    CHECK(read_eq("CFG     TXT", "lama\n") && read_rc("CFG     TMP") == FAT32_ERR_NOENT);
+    CHECK(fat32_writable() && img_fsck() == 0);
+    img_close();
+}
+
+// D7: crash di setiap titik tulis replace / hapus / ganti. Setelah crash:
+// file = lama atau baru, image konsisten; replace ulang (pemulihan) berhasil.
+static void test_crash_d7(void)
+{
+    img_open("fat32_crash7", 65536, 1);
+    probe();
+    static char old[700], neu[1300];
+    memset(old, 'o', 599);
+    old[599] = '\n';
+    memset(neu, 'n', 1199);
+    neu[1199] = '\n';
+    int points = 0, bad = 0, done;
+
+    for (int pass = 0; pass < 2; pass++) {
+        // pass 0: CFG belum ada (rename TMP); pass 1: CFG ada (ganti isi)
+        if (pass == 1) {
+            CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)old,
+                                     600) == FAT32_OK);
+        }
+        done = 0;
+        for (int k = 1; k < 200 && !done; k++) {
+            probe();
+            g_writes = 0;
+            g_fail_at = k;
+            g_undo_on = 1;
+            g_undo_n = 0;
+            int rc = fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)neu, 1200);
+            g_fail_at = 0;
+            int fsi_crash = rc == FAT32_OK && !fat32_writable();
+            done = rc == FAT32_OK && !fsi_crash;
+            if (rc != FAT32_OK && (rc != FAT32_ERR_IO || fat32_writable())) {
+                bad++;
+            }
+            probe();
+            int is_old = pass ? read_eq("CFG     TXT", old) : read_rc("CFG     TXT") == FAT32_ERR_NOENT;
+            int is_new = read_eq("CFG     TXT", neu);
+            if (!(done || fsi_crash ? is_new : (is_old || is_new)) || !img_consistent()) {
+                bad++;
+                fprintf(stderr, "crash replace pass=%d k=%d rc=%d old=%d new=%d\n", pass, k, rc,
+                        is_old, is_new);
+            }
+            // pemulihan: replace lagi dari keadaan crash
+            rc = fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)"pulih\n", 6);
+            if (rc != FAT32_OK || !read_eq("CFG     TXT", "pulih\n") ||
+                read_rc("CFG     TMP") != FAT32_ERR_NOENT || !img_consistent()) {
+                bad++;
+                fprintf(stderr, "pulih replace pass=%d k=%d rc=%d\n", pass, k, rc);
+            }
+            g_undo_on = 0;
+            points++;
+            undo_all();
+        }
+        CHECK(done);
+    }
+
+    // hapus dan ganti nama: file utuh atau tidak ada / nama lama atau baru
+    for (int op = 0; op < 2; op++) {
+        done = 0;
+        for (int k = 1; k < 50 && !done; k++) {
+            probe();
+            g_writes = 0;
+            g_fail_at = k;
+            g_undo_on = 1;
+            g_undo_n = 0;
+            int rc = op == 0 ? fat32_delete_name("CFG     TXT")
+                             : fat32_rename_name("CFG     TXT", "LAIN    TXT");
+            g_fail_at = 0;
+            g_undo_on = 0;
+            int fsi_crash = rc == FAT32_OK && !fat32_writable();
+            done = rc == FAT32_OK && !fsi_crash;
+            probe();
+            int a = read_eq("CFG     TXT", old);
+            int b = op == 0 ? read_rc("CFG     TXT") == FAT32_ERR_NOENT
+                            : read_eq("LAIN    TXT", old) && read_rc("CFG     TXT") == FAT32_ERR_NOENT;
+            if (!(done || fsi_crash ? b : (a || b)) || !img_consistent()) {
+                bad++;
+                fprintf(stderr, "crash op=%d k=%d rc=%d\n", op, k, rc);
+            }
+            points++;
+            undo_all();
+        }
+        CHECK(done);
+    }
+
+    printf("fat32 crash D7: %d titik crash diperiksa\n", points);
+    CHECK(bad == 0 && points >= 20);
+    probe();
+    CHECK(read_eq("CFG     TXT", old) && img_fsck() == 0);
+    img_close();
+}
+
 // BPB/FSInfo/rantai rusak: tidak pernah crash, kode error / volume ditolak.
 static void test_corrupt(void)
 {
@@ -623,6 +844,9 @@ int main(void)
     test_dir_limits();
     test_full();
     test_crash();
+    test_delete_rename();
+    test_replace();
+    test_crash_d7();
     test_corrupt();
     return test_done("fat32");
 }

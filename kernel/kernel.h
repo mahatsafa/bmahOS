@@ -360,14 +360,20 @@ void fat32_read_file(uint32_t first_cluster, uint32_t file_size);
 #define FAT32_ERR_NOTFILE -8
 #define FAT32_ERR_NOENT   -9
 #define FAT32_ERR_UNSUP   -10
+#define FAT32_ERR_EXIST   -11
+#define FAT32_ERR_LFN     -12
 extern uint64_t g_fat_wr_ok, g_fat_wr_fail;
 int fat32_root_read(const uint8_t **dir, uint32_t *entries);
 int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *out_size);
 int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
                      int append, uint32_t *out_size);
 int fat32_writable(void);
+int fat32_delete_name(const char *name83);
+int fat32_rename_name(const char *old83, const char *new83);
+int fat32_replace_name(const char *dst83, const char *tmp83, const uint8_t *data,
+                       uint32_t len);
 uint32_t fat32_free_hint(void);
-// fscmd.c: perintah ls/baca/tulis/tambah (admin). Return 1 bila dikenali.
+// fscmd.c: perintah ls/baca/tulis/tambah/hapus/ganti (admin). Return 1 bila dikenali.
 int fscmd_execute(const volatile uint8_t *cmd, uint32_t len);
 
 // ---- e1000.c (driver NIC Intel 8254x) ----

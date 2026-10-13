@@ -93,7 +93,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
         cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks\n");
-        cmd_puts("admin: pping reboot audit ls baca tulis tambah\n");
+        cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti\n");
         cmd_puts("berprivilege: pping reboot audit (audit gagal)\n");
         cmd_puts("kirim CHAL, lalu <nonce> <perintah> <hmac>\n");
 #ifdef BMAHOS_LEGACYCTR

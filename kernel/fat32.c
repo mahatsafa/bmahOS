@@ -1017,6 +1017,25 @@ static int fw_dir_find(const uint8_t *dir, uint32_t n, const char *name83, int *
     return -1;
 }
 
+// D7: slot kosong (0xE5/0x00) di sektor root ke-sec, atau -1.
+static int fw_free_in_sec(const uint8_t *dir, uint32_t n, uint32_t sec)
+{
+    for (uint32_t i = sec * 16; i < sec * 16 + 16 && i < n; i++) {
+        if (dir[i * 32] == 0xE5 || dir[i * 32] == 0x00) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+// D7: entri didahului entri LFN (nama panjang)? Hapus/rename entri seperti
+// itu akan meninggalkan LFN yatim, jadi ditolak.
+static int fw_has_lfn(const uint8_t *dir, int idx)
+{
+    return idx > 0 && dir[(idx - 1) * 32] != 0xE5 && dir[(idx - 1) * 32 + 0x0B] == 0x0F;
+}
+
 // Baca file (<= max byte) ke out. Return FAT32_OK / FAT32_ERR_*.
 int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *out_size)
 {
@@ -1089,8 +1108,10 @@ static int fw_fail(int rc, int started)
 
 // Tulis (append = 0: buat/timpa) atau tambah (append = 1: buat bila belum ada)
 // len byte ke file name83 (11 byte 8.3) di root. *out_size = ukuran baru.
-int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
-                     int append, uint32_t *out_size)
+// want_sec >= 0 (D7): file baru wajib di sektor root itu (DIRFULL bila tidak
+// ada slot di sana).
+static int fw_write_file(const char *name83, const uint8_t *data, uint32_t len,
+                         int append, int want_sec, uint32_t *out_size)
 {
     if (!g_fat32_volume.valid) {
         return fw_fail(FAT32_ERR_NOVOL, 0);
@@ -1139,9 +1160,15 @@ int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
         if (rc != FAT32_OK) {
             return fw_fail(rc, 0);
         }
-    } else if (free_slot < 0) {
-        return fw_fail(FAT32_ERR_DIRFULL, 0);
     } else {
+        if (want_sec >= 0) {
+            free_slot = fw_free_in_sec(dir, n, (uint32_t)want_sec);
+        }
+
+        if (free_slot < 0) {
+            return fw_fail(FAT32_ERR_DIRFULL, 0);
+        }
+
         idx = free_slot;
     }
 
@@ -1277,6 +1304,253 @@ int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
 
     g_fat_wr_ok++;
     *out_size = new_size;
+    return FAT32_OK;
+}
+
+int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
+                     int append, uint32_t *out_size)
+{
+    return fw_write_file(name83, data, len, append, -1, out_size);
+}
+
+// Pemeriksaan bersama hapus/rename/ganti: entri idx file biasa tanpa LFN.
+static int fw_entry_plain(const uint8_t *dir, int idx)
+{
+    if (dir[idx * 32 + 0x0B] & 0x1F) {
+        return FAT32_ERR_NOTFILE;   // RO/hidden/system/label/dir
+    }
+
+    return fw_has_lfn(dir, idx) ? FAT32_ERR_LFN : FAT32_OK;
+}
+
+// D7: hapus file biasa (<= FAT32_WRITE_MAX). Urutan: entri 0xE5 + flush ->
+// bebaskan rantai -> FSInfo. Crash di tengah = cluster hilang saja.
+int fat32_delete_name(const char *name83)
+{
+    if (!g_fat32_volume.valid) {
+        return fw_fail(FAT32_ERR_NOVOL, 0);
+    }
+
+    if (!g_fat32_volume.writable) {
+        return fw_fail(FAT32_ERR_RO, 0);
+    }
+
+    const uint8_t *dir;
+    uint32_t n;
+    int rc = fat32_root_read(&dir, &n);
+
+    if (rc != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    int free_slot;
+    int idx = fw_dir_find(dir, n, name83, &free_slot);
+
+    if (idx < 0) {
+        return fw_fail(FAT32_ERR_NOENT, 0);
+    }
+
+    rc = fw_entry_plain(dir, idx);
+
+    if (rc != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    uint32_t size = fat32_le32(dir + idx * 32 + 0x1C);
+    uint32_t chain[FAT32_CHAIN_MAX];
+    uint32_t cnt;
+
+    if (size > FAT32_WRITE_MAX) {
+        return fw_fail(FAT32_ERR_TOOBIG, 0);
+    }
+
+    rc = fw_walk(fw_entry_first(dir + idx * 32), size, chain, &cnt);
+
+    if (rc != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    if (fw_read(g_fat32_volume.fsinfo_sector, 1, g_fw_fsi) != FAT32_OK) {
+        return fw_fail(FAT32_ERR_IO, 0);
+    }
+
+    int fsi_ok = fat32_fsinfo_ok(g_fw_fsi);
+
+    g_fw_dir[idx * 32] = 0xE5;
+
+    if (fw_dir_commit(idx) != FAT32_OK || fw_free_chain(chain, cnt) != FAT32_OK) {
+        return fw_fail(FAT32_ERR_IO, 1);
+    }
+
+    fw_fsinfo_commit(fsi_ok, 0, cnt, 0);
+    g_fat_wr_ok++;
+    return FAT32_OK;
+}
+
+// D7: ganti nama file biasa; nama baru tidak boleh sudah ada. Satu tulis
+// sektor (11 byte nama).
+int fat32_rename_name(const char *old83, const char *new83)
+{
+    if (!g_fat32_volume.valid) {
+        return fw_fail(FAT32_ERR_NOVOL, 0);
+    }
+
+    if (!g_fat32_volume.writable) {
+        return fw_fail(FAT32_ERR_RO, 0);
+    }
+
+    const uint8_t *dir;
+    uint32_t n;
+    int rc = fat32_root_read(&dir, &n);
+
+    if (rc != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    int free_slot;
+    int idx = fw_dir_find(dir, n, old83, &free_slot);
+
+    if (idx < 0) {
+        return fw_fail(FAT32_ERR_NOENT, 0);
+    }
+
+    rc = fw_entry_plain(dir, idx);
+
+    if (rc != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    if (fw_dir_find(dir, n, new83, &free_slot) >= 0) {
+        return fw_fail(FAT32_ERR_EXIST, 0);
+    }
+
+    for (int j = 0; j < 11; j++) {
+        g_fw_dir[idx * 32 + j] = (uint8_t)new83[j];
+    }
+
+    if (fw_dir_commit(idx) != FAT32_OK) {
+        return fw_fail(FAT32_ERR_IO, 1);
+    }
+
+    g_fat_wr_ok++;
+    return FAT32_OK;
+}
+
+// D7: ganti isi dst secara atomik lewat file sementara tmp:
+//   1. tmp sisa (crash sebelumnya) dihapus;
+//   2. data ditulis ke tmp (jalur fw_write_file), entri tmp di sektor root
+//      yang sama dengan dst;
+//   3. SATU tulis sektor: dst menunjuk rantai tmp + ukuran tmp, tmp = 0xE5
+//      (dst belum ada: entri tmp cukup diganti namanya);
+//   4. rantai dst lama dibebaskan, FSInfo.
+// Crash sebelum 3: dst lama utuh (tmp mungkin tertinggal); sesudah 3: dst
+// baru, paling buruk cluster hilang. Anggapan: tulis satu sektor atomik.
+int fat32_replace_name(const char *dst83, const char *tmp83, const uint8_t *data,
+                       uint32_t len)
+{
+    if (!g_fat32_volume.valid) {
+        return fw_fail(FAT32_ERR_NOVOL, 0);
+    }
+
+    if (!g_fat32_volume.writable) {
+        return fw_fail(FAT32_ERR_RO, 0);
+    }
+
+    const uint8_t *dir;
+    uint32_t n;
+    int free_slot;
+    int rc = fat32_root_read(&dir, &n);
+
+    if (rc != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    int d = fw_dir_find(dir, n, dst83, &free_slot);
+
+    if (d >= 0 && (rc = fw_entry_plain(dir, d)) != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    if (fw_dir_find(dir, n, tmp83, &free_slot) >= 0) {
+        rc = fat32_delete_name(tmp83);
+
+        if (rc != FAT32_OK) {
+            return rc;
+        }
+    }
+
+    uint32_t size;
+
+    rc = fw_write_file(tmp83, data, len, 0, d >= 0 ? d * 32 / 512 : -1, &size);
+
+    if (rc != FAT32_OK) {
+        return rc;
+    }
+
+    rc = fat32_root_read(&dir, &n);
+
+    if (rc != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    int t = fw_dir_find(dir, n, tmp83, &free_slot);
+
+    d = fw_dir_find(dir, n, dst83, &free_slot);
+
+    if (t < 0 || (d >= 0 && d * 32 / 512 != t * 32 / 512)) {
+        return fw_fail(FAT32_ERR_CORRUPT, 0);
+    }
+
+    if (d < 0) {
+        for (int j = 0; j < 11; j++) {
+            g_fw_dir[t * 32 + j] = (uint8_t)dst83[j];
+        }
+
+        if (fw_dir_commit(t) != FAT32_OK) {
+            return fw_fail(FAT32_ERR_IO, 1);
+        }
+
+        g_fat_wr_ok++;
+        return FAT32_OK;
+    }
+
+    uint8_t *de = g_fw_dir + d * 32;
+    uint8_t *te = g_fw_dir + t * 32;
+    uint32_t old_size = fat32_le32(de + 0x1C);
+    uint32_t old[FAT32_CHAIN_MAX];
+    uint32_t old_n;
+
+    if (old_size > FAT32_WRITE_MAX) {
+        return fw_fail(FAT32_ERR_TOOBIG, 0);
+    }
+
+    rc = fw_walk(fw_entry_first(de), old_size, old, &old_n);
+
+    if (rc != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    if (fw_read(g_fat32_volume.fsinfo_sector, 1, g_fw_fsi) != FAT32_OK) {
+        return fw_fail(FAT32_ERR_IO, 0);
+    }
+
+    int fsi_ok = fat32_fsinfo_ok(g_fw_fsi);
+
+    de[0x14] = te[0x14];
+    de[0x15] = te[0x15];
+    de[0x1A] = te[0x1A];
+    de[0x1B] = te[0x1B];
+    for (int j = 0x1C; j < 0x20; j++) {
+        de[j] = te[j];
+    }
+    te[0] = 0xE5;
+
+    if (fw_dir_commit(d) != FAT32_OK || fw_free_chain(old, old_n) != FAT32_OK) {
+        return fw_fail(FAT32_ERR_IO, 1);
+    }
+
+    fw_fsinfo_commit(fsi_ok, 0, old_n, 0);
+    g_fat_wr_ok++;
     return FAT32_OK;
 }
 

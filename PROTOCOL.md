@@ -112,17 +112,30 @@ Hanya root directory (cluster root pertama), nama 8.3 `A-Z 0-9 _ -` (huruf kecil
 | `baca NAMA [offset]` | `isi NAMA ukuran=<n>:` lalu maks 1024 byte isi (selain ASCII cetak dan LF jadi `?`); sisa: `(terpotong; lanjut: baca NAMA <offset>)` |
 | `tulis NAMA [teks]` | buat atau timpa, isi = `teks` + LF (tanpa teks: file kosong) -> `OK NAMA ukuran=<n>` |
 | `tambah NAMA teks` | tambah satu baris `teks` + LF (file dibuat bila belum ada) -> `OK NAMA ukuran=<n>` |
+| `hapus NAMA` | D7: hapus file biasa -> `OK hapus NAMA` |
+| `ganti LAMA BARU` | D7: ganti nama; `BARU` tidak boleh sudah ada -> `OK ganti LAMA -> BARU` |
 
 - Teks hanya 0x20..0x7e. Perintah TCP maks 64 byte (UDP 102), jadi teks per baris ~45 byte.
 - File maks 4096 byte (yang lebih besar tidak bisa ditimpa/ditambah/dibaca). `KEY.TXT`, `KEYRO.TXT`,
   `PROG.BIN` ditolak (`ERR: fs: nama dilindungi`). Entri ber-atribut RO/hidden/system/dir tidak ditulis.
+  `CONFIG.CFG`/`CONFIG.TMP` hanya boleh dibaca (diubah lewat `set`, D7). File bernama panjang (ada entri
+  LFN sebelum entri 8.3) tidak bisa dihapus/diganti namanya (`ERR: fs: file bernama panjang (LFN) tidak
+  didukung`), supaya tidak meninggalkan LFN yatim.
 - Kesalahan: `ERR: fs: <alasan>` (tidak ada volume, volume baca saja, error disk, struktur disk rusak,
   disk penuh, direktori root penuh, file melebihi 4096 byte, bukan file biasa, file tidak ada,
-  root lebih dari 1 cluster). Semua pemeriksaan selesai sebelum sektor pertama ditulis.
+  root lebih dari 1 cluster, nama tujuan sudah ada). Semua pemeriksaan selesai sebelum sektor pertama ditulis.
 - Urutan tulis (flush di antaranya): data -> rantai FAT baru (FAT1, FAT2) -> sambungan ujung rantai lama ->
   entri direktori -> (timpa) bebaskan rantai lama -> FSInfo. Crash di tengah: file berisi isi lama atau
   baru, paling buruk ada lost cluster (fsck membersihkan). Error I/O saat menulis -> volume baca saja
   sampai reboot.
+- `hapus`: entri ditandai 0xE5 + flush -> rantai dibebaskan (FAT1, FAT2) -> FSInfo. `ganti`: satu tulis
+  sektor (11 byte nama). Crash di tengah `hapus` = lost cluster saja.
+- Ganti isi atomik (dipakai `set`, D7; `fat32_replace_name`): file sementara sisa crash dihapus -> isi baru
+  ditulis ke file sementara (urutan di atas) di sektor direktori yang sama dengan file tujuan -> SATU tulis
+  sektor: entri tujuan menunjuk rantai baru dan entri sementara 0xE5 -> rantai lama dibebaskan -> FSInfo.
+  Crash: tujuan berisi isi lama utuh (file sementara mungkin tertinggal, dibersihkan `set` berikutnya) atau
+  isi baru utuh. Anggapan: satu tulis sektor 512 byte atomik. Sektor tujuan tanpa slot kosong ->
+  `direktori root penuh`.
 - Volume baca saja sejak boot bila mirroring FAT mati (ExtFlags bit 7) atau FSInfo tidak sah. BPB yang
   tidak lolos validasi -> volume tidak dipakai sama sekali.
 - Tanggal file tetap 2026-01-01 (belum ada RTC tepercaya).

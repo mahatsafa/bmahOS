@@ -6,14 +6,21 @@
 //   baca NAMA [offset]   isi file (maks FSCMD_READ_MAX byte per balasan)
 //   tulis NAMA [teks]    buat/timpa, isi = "teks\n" (tanpa teks: file kosong)
 //   tambah NAMA teks     tambah satu baris "teks\n" (buat bila belum ada)
+//   hapus NAMA           hapus file biasa (D7)
+//   ganti LAMA BARU      ganti nama; BARU tidak boleh sudah ada (D7)
 // Teks hanya 0x20..0x7e. Nama yang dilindungi (kunci, program boot) ditolak
-// untuk baca dan tulis.
+// untuk semua perintah; CONFIG.CFG/.TMP (D7, diubah lewat `set`) hanya boleh
+// dibaca.
 
 #define FSCMD_READ_MAX 1024
 #define FSCMD_LINE_MAX 200
 
 static const char *const g_fs_protected[] = {
     "KEY     TXT", "KEYRO   TXT", "PROG    BIN",
+};
+
+static const char *const g_fs_wprotected[] = {
+    "CONFIG  CFG", "CONFIG  TMP",
 };
 
 static uint8_t g_fs_buf[FAT32_WRITE_MAX];
@@ -76,13 +83,13 @@ static int fs_name83(const uint8_t *s, uint32_t n, char out[11])
     return 1;
 }
 
-static int fs_protected(const char *n83)
+static int fs_in_list(const char *n83, const char *const *list, uint32_t count)
 {
-    for (uint32_t p = 0; p < sizeof(g_fs_protected) / sizeof(g_fs_protected[0]); p++) {
+    for (uint32_t p = 0; p < count; p++) {
         int same = 1;
 
         for (int k = 0; k < 11; k++) {
-            if (n83[k] != g_fs_protected[p][k]) {
+            if (n83[k] != list[p][k]) {
                 same = 0;
                 break;
             }
@@ -94,6 +101,15 @@ static int fs_protected(const char *n83)
     }
 
     return 0;
+}
+
+// write = 1: perintah yang mengubah file (juga menolak CONFIG.CFG/.TMP).
+static int fs_protected(const char *n83, int write)
+{
+    return fs_in_list(n83, g_fs_protected,
+                      sizeof(g_fs_protected) / sizeof(g_fs_protected[0])) ||
+           (write && fs_in_list(n83, g_fs_wprotected,
+                                sizeof(g_fs_wprotected) / sizeof(g_fs_wprotected[0])));
 }
 
 // 11 byte 8.3 -> "NAMA.EXT"; byte tak tercetak jadi '?'.
@@ -133,6 +149,8 @@ static void fs_err(int rc)
     case FAT32_ERR_NOTFILE: m = "bukan file biasa"; break;
     case FAT32_ERR_NOENT:   m = "file tidak ada"; break;
     case FAT32_ERR_UNSUP:   m = "root lebih dari 1 cluster (tidak didukung)"; break;
+    case FAT32_ERR_EXIST:   m = "nama tujuan sudah ada"; break;
+    case FAT32_ERR_LFN:     m = "file bernama panjang (LFN) tidak didukung"; break;
     default:                m = "error"; break;
     }
 
@@ -269,6 +287,48 @@ static void fs_tulis(const char *n83, const uint8_t *text, uint32_t text_len, in
     cmd_putc('\n');
 }
 
+// D7: hapus NAMA / ganti LAMA BARU (n83 sudah sah dan tidak dilindungi).
+static void fs_hapus_ganti(const char *n83, const uint8_t *arg, uint32_t arg_len, int ganti)
+{
+    char b83[11];
+    int rc;
+
+    if (!ganti) {
+        if (arg_len != 0) {
+            cmd_puts("ERR: fs: format: hapus NAMA\n");
+            return;
+        }
+        rc = fat32_delete_name(n83);
+    } else {
+        if (arg_len == 0) {
+            cmd_puts("ERR: fs: format: ganti LAMA BARU\n");
+            return;
+        }
+        if (!fs_name83(arg, arg_len, b83)) {
+            cmd_puts("ERR: fs: nama bukan 8.3 (A-Z 0-9 _ -)\n");
+            return;
+        }
+        if (fs_protected(b83, 1)) {
+            cmd_puts("ERR: fs: nama dilindungi\n");
+            return;
+        }
+        rc = fat32_rename_name(n83, b83);
+    }
+
+    if (rc != FAT32_OK) {
+        fs_err(rc);
+        return;
+    }
+
+    cmd_puts(ganti ? "OK ganti " : "OK hapus ");
+    fs_put_name((const uint8_t *)n83);
+    if (ganti) {
+        cmd_puts(" -> ");
+        fs_put_name((const uint8_t *)b83);
+    }
+    cmd_putc('\n');
+}
+
 int fscmd_execute(const volatile uint8_t *cmd, uint32_t len)
 {
     uint8_t c[FSCMD_LINE_MAX];
@@ -296,16 +356,22 @@ int fscmd_execute(const volatile uint8_t *cmd, uint32_t len)
         op = 1;
     } else if (fs_word(c, len, "tambah")) {
         op = 2;
+    } else if (fs_word(c, len, "hapus")) {
+        op = 3;
+    } else if (fs_word(c, len, "ganti")) {
+        op = 4;
     } else {
         return 0;
     }
 
     g_cmd_len = 0;
 
-    uint32_t p = op == 0 ? 4 : op == 1 ? 5 : 6;
+    uint32_t p = op == 0 ? 4 : op == 2 ? 6 : 5;
 
     if (p >= len) {
-        cmd_puts("ERR: fs: format: baca NAMA [offset] | tulis NAMA [teks] | tambah NAMA teks\n");
+        cmd_puts(op >= 3 ? "ERR: fs: format: hapus NAMA | ganti LAMA BARU\n"
+                         : "ERR: fs: format: baca NAMA [offset] | tulis NAMA [teks] | "
+                           "tambah NAMA teks\n");
         return 1;
     }
 
@@ -324,7 +390,7 @@ int fscmd_execute(const volatile uint8_t *cmd, uint32_t len)
         return 1;
     }
 
-    if (fs_protected(n83)) {
+    if (fs_protected(n83, op != 0)) {
         cmd_puts("ERR: fs: nama dilindungi\n");
         return 1;
     }
@@ -349,7 +415,9 @@ int fscmd_execute(const volatile uint8_t *cmd, uint32_t len)
         }
     }
 
-    if (op == 0) {
+    if (op >= 3) {
+        fs_hapus_ganti(n83, arg, arg_len, op == 4);
+    } else if (op == 0) {
         fs_baca(n83, arg, arg_len);
     } else if (op == 2 && arg_len == 0) {
         cmd_puts("ERR: fs: format: tambah NAMA teks\n");

@@ -59,7 +59,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Login + shell TCP 7779 (D1, D2) | Replay bukti login/perintah, tebak HMAC, sesi menggantung, baris raksasa, sisip segmen setelah login, keluaran besar menahan memori | Nonce per koneksi dari DRBG, pesan "<nonce> tcp-login" dan "<nonce> tcp-cmd <n> <perintah>" berbeda dari UDP dan satu sama lain, 1 percobaan login per koneksi lalu FIN, login maks 10 s, baris maks 128 byte, perbandingan ct_memeq; D2: tiap perintah ditandatangani dengan nomor urut per koneksi (perintah sisipan/diulang/diubah -> ERR lalu FIN), keluaran maks 1432 byte per koneksi (statis), baris berikut tidak dibaca sampai keluaran habis; D4: peran dari kunci (KEYRO.TXT = read-only, daftar putih perintah, perintah ditandatangani kunci peran), maks 2 koneksi 7779, sesi login ditutup 300 s tanpa perintah sah. Balasan tidak ditandatangani dan teks polos (D8) |
 | Nonce | Nonce dapat ditebak melemahkan challenge-response | Modul entropi + HMAC-DRBG (F1.8); menolak jika entropi belum cukup |
 | Parser FAT32 | Struktur disk rusak | D6: validasi BPB lengkap (512 B/sektor, SPC 1/2/4/8, NumFATs 1..2, reserved > 0, area data dan FAT cukup untuk jumlah cluster, RootCluster sah), setiap nomor cluster dicek 2..max, rantai melingkar dideteksi, poll AHCI ber-timeout, kode error bukan halt |
-| Tulis FAT32 (D6) | Perintah tulis merusak volume, menimpa kunci/program boot, crash di tengah tulis | Hanya admin (HMAC), hanya root dir, nama 8.3, KEY.TXT/KEYRO.TXT/PROG.BIN ditolak, file maks 4096 byte, semua cek sebelum tulis pertama, urutan data -> FAT -> dir -> bebaskan lama -> FSInfo dengan flush (uji crash di setiap tulisan, `make host-test`), error I/O -> baca saja |
+| Tulis FAT32 (D6, D7) | Perintah tulis/hapus/ganti nama merusak volume, menimpa atau menghapus kunci/program boot, crash di tengah tulis | Hanya admin (HMAC), hanya root dir, nama 8.3, KEY.TXT/KEYRO.TXT/PROG.BIN ditolak untuk semua perintah (juga sebagai nama tujuan `ganti`), CONFIG.CFG/.TMP hanya lewat `set`, file maks 4096 byte, entri ber-LFN ditolak, semua cek sebelum tulis pertama, urutan data -> FAT -> dir -> bebaskan lama -> FSInfo dengan flush; hapus: entri dulu lalu rantai; ganti isi atomik lewat file sementara + satu tulis sektor (uji crash di setiap tulisan, `make host-test`), error I/O -> baca saja |
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |
 | Syscall | Pointer jahat dari user mode | Validasi pointer (R6) |
 | Klien DHCP/DNS/NTP | Balasan palsu | Validasi ID transaksi, batas ukuran, jangan percaya buta (P3) |
@@ -98,8 +98,9 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    "Siapa" = IP:port + peran (kunci per peran, bukan per pengguna); IP UDP bisa dipalsukan, tetapi entri
    ring ok selalu butuh HMAC sah. Pemegang kunci sah (juga read-only) bisa mendorong entri lama keluar ring ok.
 
-8. Tulis FAT32 (D6): pemegang kunci admin bisa mengisi disk (maks 4096 byte per file, root dir saja) dan
-   menimpa file biasa mana pun selain kunci dan PROG.BIN. Urutan tulis mengandalkan FLUSH CACHE perangkat;
+8. Tulis FAT32 (D6, D7): pemegang kunci admin bisa mengisi disk (maks 4096 byte per file, root dir saja) dan
+   menimpa, menghapus, atau mengganti nama file biasa mana pun selain kunci dan PROG.BIN. Ganti isi atomik
+   (D7) menganggap tulis satu sektor atomik. Urutan tulis mengandalkan FLUSH CACHE perangkat;
    perangkat yang mengabaikan flush bisa mengubah urutan. Crash meninggalkan lost cluster sampai fsck.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
