@@ -375,6 +375,17 @@ int fat32_replace_name(const char *dst83, const char *tmp83, const uint8_t *data
 uint32_t fat32_free_hint(void);
 // fscmd.c: perintah ls/baca/tulis/tambah/hapus/ganti (admin). Return 1 bila dikenali.
 int fscmd_execute(const volatile uint8_t *cmd, uint32_t len);
+const char *fscmd_strerror(int rc);
+
+// ---- config.c (D7: CONFIG.CFG) ----
+#define CFG_CLI_IDLE_DEF 300   // detik
+extern uint32_t g_cli_idle_s;     // net.c: idle sesi CLI login (detik)
+extern uint32_t g_net_src_rate;   // net.c: batas datagram/s per IP sumber
+extern uint32_t g_net_echo;       // net.c: 1 = echo TCP 7 + UDP 7777 aktif
+int config_parse(const uint8_t *b, uint32_t len, uint32_t *out, uint32_t *bad_line,
+                 const char **why);
+void config_load(void);
+int config_execute(const volatile uint8_t *cmd, uint32_t len);
 
 // ---- e1000.c (driver NIC Intel 8254x) ----
 #define E1000_REG_RDT      0x2818

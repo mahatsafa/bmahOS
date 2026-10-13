@@ -105,7 +105,7 @@ HOST_BUILD  := $(BUILD_DIR)/host
 HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host
-HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32
+HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c   # C3c: timer retransmisi
@@ -120,6 +120,8 @@ host_srcs_audit   := $(KERNEL_DIR)/kprintf.c
 host_deps_audit   := $(KERNEL_DIR)/audit.c     # di-#include oleh test_audit.c
 host_srcs_fat32   := $(KERNEL_DIR)/kprintf.c
 host_deps_fat32   := $(KERNEL_DIR)/fat32.c $(KERNEL_DIR)/fscmd.c   # D6: butuh mkfs.vfat, mtools, fsck.fat
+host_srcs_config  := $(KERNEL_DIR)/kprintf.c
+host_deps_config  := $(KERNEL_DIR)/config.c    # di-#include oleh test_config.c
 
 .SECONDEXPANSION:
 $(HOST_BUILD)/test_%: tests/host/test_%.c tests/host/stubs.c tests/host/test.h tests/host/drbg_vectors.h $(HDRS) $$(host_srcs_$$*) $$(host_deps_$$*)

@@ -1974,6 +1974,46 @@ static void test_tcp_audit(void)
     tcp_reset();
 }
 
+// D7: echo=0 -> UDP 7777 diam, SYN port 7 dibalas RST (port 7779 tetap);
+// udp_rate mengganti batas per IP.
+static void test_config_vals(void)
+{
+    uint8_t f[600];
+    tcp_reset();
+
+    g_net_echo = 0;
+    rx(f, mk_udp(f, 5000, 7777, "halo", 0));
+    CHECK(g_tx_n == 0);
+    rx(f, mk_tcp(f, 4000, 7, 1000, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && g_tx[0][34 + 13] == (F_RST | F_ACK) && g_tcbs[0].state == TCP_CLOSED);
+    rx(f, mk_tcp(f, 4001, NET_TCP_CLI_PORT, 1000, 0, F_SYN, ""));
+    CHECK(g_tx_n >= 1 && g_tx[0][34 + 13] == (F_SYN | F_ACK));
+    tcp_reset();
+
+    g_net_echo = 1;
+    rx(f, mk_udp(f, 5000, 7777, "halo", 0));
+    CHECK(g_tx_n == 1);
+    rx(f, mk_tcp(f, 4000, 7, 1000, 0, F_SYN, ""));
+    CHECK(g_tx_n >= 1 && g_tx[0][34 + 13] == (F_SYN | F_ACK));
+    tcp_reset();
+
+    int n5 = 0, n20 = 0;
+    g_net_src_rate = 5;
+    timer_ticks += 100;
+    for (int i = 0; i < 12; i++) {
+        rx_now(f, mk_udp(f, 5000, 7777, "x", 0));
+        n5 += g_tx_n;
+    }
+    g_net_src_rate = NET_UDP_SRC_PER_SEC;
+    timer_ticks += 100;
+    for (int i = 0; i < 30; i++) {
+        rx_now(f, mk_udp(f, 5000, 7777, "x", 0));
+        n20 += g_tx_n;
+    }
+    CHECK(n5 == 5 && n20 == NET_UDP_SRC_PER_SEC);
+    timer_ticks += 100;
+}
+
 int main(void)
 {
     test_checksum();
@@ -1992,6 +2032,7 @@ int main(void)
     test_tcp_shell();
     test_tcp_session();
     test_tcp_audit();
+    test_config_vals();
     test_limits();
     build_templates();
     test_truncation();

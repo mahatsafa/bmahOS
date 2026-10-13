@@ -134,7 +134,7 @@ static void fs_put_dec(uint64_t v)
     cmd_puts(t);
 }
 
-static void fs_err(int rc)
+const char *fscmd_strerror(int rc)
 {
     const char *m;
 
@@ -154,8 +154,13 @@ static void fs_err(int rc)
     default:                m = "error"; break;
     }
 
+    return m;
+}
+
+static void fs_err(int rc)
+{
     cmd_puts("ERR: fs: ");
-    cmd_puts(m);
+    cmd_puts(fscmd_strerror(rc));
     cmd_putc('\n');
 }
 

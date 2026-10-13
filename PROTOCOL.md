@@ -140,5 +140,33 @@ Hanya root directory (cluster root pertama), nama 8.3 `A-Z 0-9 _ -` (huruf kecil
   tidak lolos validasi -> volume tidak dipakai sama sekali.
 - Tanggal file tetap 2026-01-01 (belum ada RTC tepercaya).
 
+## Konfigurasi persisten (D7)
+
+File `CONFIG.CFG` di root FAT32, dibaca sekali saat boot (serial: `CONFIG: sumber=... cli_idle=..
+udp_rate=.. echo=..`). Teks ASCII, satu `kunci=nilai` per baris (LF; CR di akhir baris dibuang), baris
+kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
+
+| Kunci | Rentang | Default | Arti |
+|---|---|---|---|
+| `cli_idle` | 30..3600 | 300 | detik sesi CLI login tanpa perintah sah sebelum ditutup |
+| `udp_rate` | 1..100 | 20 | datagram (dan SYN/segmen di luar koneksi) per detik per IP sumber |
+| `echo` | 0..1 | 1 | 0: UDP 7777 dibuang tanpa balasan, SYN ke TCP port 7 dibalas RST |
+
+- **Gagal tertutup**: satu baris salah (kunci tak dikenal, bukan `kunci=nilai`, kunci ganda, nilai bukan angka
+  atau di luar rentang, byte bukan ASCII tercetak) atau file > 512 byte -> SELURUH file ditolak dan semua
+  kunci memakai default. IP tidak bisa diatur (salah atur = bmahOS tidak bisa dihubungi).
+
+| Perintah | Peran | Hasil |
+|---|---|---|
+| `config` | admin + read-only | `config: sumber=<sumber>` lalu `kunci=nilai` efektif per baris |
+| `set KUNCI NILAI` | admin | simpan + terapkan langsung -> `OK KUNCI=NILAI (tersimpan)`; `NILAI` = `-` -> default |
+
+- `sumber`: `disk`, `bawaan (tidak ada file)`, `bawaan (tanpa disk)`, `bawaan (error baca disk)`,
+  `bawaan (ditolak baris N: alasan)`, `bawaan (ditolak: file > 512 byte)`.
+- `set` menulis ulang file utuh (semua kunci, bentuk kanonik) lewat ganti isi atomik (`CONFIG.TMP` lalu satu
+  tulis sektor, lihat di atas). Nilai di RAM hanya berubah bila penulisan berhasil; gagal ->
+  `ERR: config: tidak tersimpan, nilai tidak diubah (fs: <alasan>)`. File yang ditolak saat boot ditimpa
+  `set` berikutnya. Kesalahan lain: `ERR: config: kunci tak dikenal (...)`, `ERR: config: format: set KUNCI min..max|-`.
+
 Klien: `client/bmctl.py --tcp` (sekali jalan atau interaktif) dan `client/bmtcp.ps1`
 (PowerShell: `bmtcp`, `bmt <perintah>`, `bmtx`); uji: `tests/tcp-login.py HOST PORT KEYFILE [ROKEYFILE]`.

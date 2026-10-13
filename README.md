@@ -30,6 +30,8 @@ Belum pernah diuji di hardware asli.
 - Storage: AHCI (baca/tulis blok, flush, poll ber-timeout), FAT32 (baca file; D6: tulis file teks
   <= 4096 byte di root directory lewat perintah admin `ls`/`baca`/`tulis`/`tambah`, D7: `hapus`/`ganti`,
   urutan tulis aman saat crash, lihat `PROTOCOL.md`), `spawn()` program dari disk
+- Konfigurasi persisten (D7): `CONFIG.CFG` (`cli_idle`, `udp_rate`, `echo`), perintah `config` dan
+  `set` (admin), ditulis atomik lewat file sementara; file rusak -> seluruhnya ditolak, default dipakai
 - Jaringan (NIC Intel 82545EM / E1000 emulasi VMware): TX/RX ring, ARP, IPv4, ICMP echo, UDP
 - Interrupt RX E1000 via IOAPIC (GSI INTx ditemukan lewat eksperimen), net task tidur sampai ada paket
 - Task idle (`hlt`), build produksi tanpa task uji

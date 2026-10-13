@@ -129,6 +129,18 @@ int fscmd_execute(const volatile uint8_t *cmd, uint32_t len)
     return 0;
 }
 
+// D7: config/set di-stub (config.c diuji di test_config).
+int config_execute(const volatile uint8_t *cmd, uint32_t len)
+{
+    if ((len == 6 && memcmp((const void *)cmd, "config", 6) == 0) ||
+        (len > 4 && memcmp((const void *)cmd, "set ", 4) == 0)) {
+        g_cmd_len = 0;
+        cmd_puts("cfg-stub\n");
+        return 1;
+    }
+    return 0;
+}
+
 // ---- pembantu ----
 static const char KEY[] = "kunci-uji-bmahOS-0123456789";
 
@@ -766,6 +778,17 @@ static void test_audit(void)
           memcmp(out, "ERR: peran read-only\n", 21) == 0);
     CHECK(auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"ls", 2, out, sizeof(out), &rb) == 8 &&
           memcmp(out, "fs-stub\n", 8) == 0);
+
+    // D7: config boleh untuk read-only, set dan hapus/ganti hanya admin.
+    CHECK(auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"config", 6, out, sizeof(out), &rb) == 9 &&
+          memcmp(out, "cfg-stub\n", 9) == 0);
+    CHECK(auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"set echo 0", 10, out, sizeof(out), &rb) ==
+          21 && memcmp(out, "ERR: peran read-only\n", 21) == 0);
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"config x", 8));
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"hapus A.TXT", 11));
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"ganti A.TXT B.TXT", 17));
+    CHECK(auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"set echo 0", 10, out, sizeof(out), &rb) ==
+          9 && memcmp(out, "cfg-stub\n", 9) == 0);
 }
 
 int main(void)

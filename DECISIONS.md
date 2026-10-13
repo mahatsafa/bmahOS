@@ -144,3 +144,18 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Tanpa kunci metrics baru** (metrics ~1,25 KB dari batas 1400); jumlah ada di header `audit`.
 - Refactor kecil (`auth_cmd_allowed` dipisah dari `auth_tcp_exec`, port sumber ke `priv_try_handle`) ikut commit
   fitur karena hanya dipakai audit (tanpa audit tidak ada gunanya).
+
+## 2026-10-13 (D7 konfigurasi persisten; rencana disetujui pengguna)
+- **Tiga kunci saja**: `cli_idle` (30..3600 s), `udp_rate` (1..100 per IP), `echo` (0/1). **IP sengaja tidak**:
+  salah atur membuat bmahOS tak terjangkau dan pemulihan butuh edit disk; menunggu P3 (DHCP).
+- **Satu baris salah -> seluruh file ditolak, semua default** (bukan per baris): keadaan setengah-terapkan sulit
+  dinalar; default = nilai hardcode sebelum D7 yang sudah diuji. Alasan penolakan di serial dan `config`.
+- **Ganti atomik = file sementara di sektor direktori yang sama + satu tulis sektor** (entri tujuan menunjuk
+  rantai baru, entri sementara 0xE5). Alternatif dua tulis sektor (tujuan dulu, lalu hapus sementara) memberi
+  keadaan crash dua entri berbagi rantai (cross-link, fsck mengeluh). Sektor tujuan penuh -> tolak.
+- **`set` menulis ulang file utuh** dari nilai efektif (kanonik), jadi file yang ditolak saat boot pulih lewat
+  `set`. Nilai RAM berubah hanya setelah tulis berhasil.
+- **`config` boleh untuk read-only** (tidak rahasia); `set`, `hapus`, `ganti` hanya admin.
+- **Hapus/ganti nama umum** (`hapus`, `ganti`) ditambahkan juga (disetujui pengguna). Entri ber-LFN ditolak
+  supaya tidak meninggalkan LFN yatim. Hapus: entri 0xE5 dulu, lalu rantai (crash = lost cluster).
+- Variabel runtime ada di net.c (pemakainya), config.c hanya mengisi; uji host net.c tidak butuh config.c.

@@ -92,8 +92,8 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     if (len == 0) {
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
-        cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks\n");
-        cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti\n");
+        cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks config\n");
+        cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti set\n");
         cmd_puts("berprivilege: pping reboot audit (audit gagal)\n");
         cmd_puts("kirim CHAL, lalu <nonce> <perintah> <hmac>\n");
 #ifdef BMAHOS_LEGACYCTR
@@ -202,7 +202,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts(" dibuang_sumber=");
         cmd_putdec(g_net_udp_src_dropped);
         cmd_puts(" batas_sumber/detik=");
-        cmd_putdec(NET_UDP_SRC_PER_SEC);
+        cmd_putdec(g_net_src_rate);
         cmd_puts("\nauth: ok=");
         cmd_putdec(g_auth_ok);
         cmd_puts(" nonaktif=");

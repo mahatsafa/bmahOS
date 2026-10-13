@@ -195,6 +195,41 @@ def test_fs_persist(net, cli):
           r == "isi CATATAN.TXT ukuran=21:\nbaris satu\nbaris dua\n", repr(r))
 
 
+def test_config(net, cli):
+    """D7: CONFIG.CFG dari boot pertama terbaca; set echo/udp_rate berlaku
+    langsung (lalu dikembalikan supaya uji berikutnya tidak terpengaruh)."""
+    r = cli.cmd("config")
+    check("D7: setelah reboot config = sumber=disk cli_idle=600 (dari boot pertama)",
+          r == "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=1\n", repr(r))
+    src = bytes([192, 168, 50, 13])
+    r = cli.cmd("set echo 0")
+    e = net.request(src, 47000, ECHO_PORT, b"halo", timeout=1.5)
+    net.send(tcp_frame(src, 47001, 7, 1000, 0, 0x02))
+    t = net.tcp_replies(src, 47001, 2)
+    check("D7: set echo 0 -> UDP 7777 diam, SYN port 7 -> RST|ACK",
+          r == "OK echo=0 (tersimpan)\n" and e is None and t == [(0, 1001, 0x14, 0)],
+          repr((r, e, t)))
+    time.sleep(1.2)
+    r = cli.cmd("set echo 1")
+    e = net.request(src, 47002, ECHO_PORT, b"halo", timeout=5)
+    check("D7: set echo 1 -> echo UDP kembali",
+          r == "OK echo=1 (tersimpan)\n" and e == b"halo", repr((r, e)))
+    time.sleep(1.2)
+    r = cli.cmd("set udp_rate 5")
+    for _ in range(15):
+        net.send(udp_frame(src, 47100, ECHO_PORT, b"x"))
+    n = len(net.udp_replies(src, 47100, 3))
+    time.sleep(1.2)
+    r2 = cli.cmd("set udp_rate -")
+    r3 = cli.cmd("config")
+    # Guest TCG bisa memproses 15 datagram melewati dua jendela 1 s: maks 10.
+    check("D7: set udp_rate 5 -> banjir 15 dibalas 5..10, lalu kembali 20",
+          r == "OK udp_rate=5 (tersimpan)\n" and 5 <= n <= 10 and
+          r2 == "OK udp_rate=20 (tersimpan)\n" and
+          r3 == "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=1\n",
+          repr((r, n, r2, r3)))
+
+
 def test_counters(net, cli):
     """B1: rx_other dan udp_badsum harus naik."""
     m0 = cli.metrics()
@@ -792,6 +827,8 @@ def main():
         test_counters(net, cli)
         time.sleep(1.2)
         test_fs_persist(net, cli)
+        time.sleep(1.2)
+        test_config(net, cli)
         time.sleep(1.2)
         test_src_limit(net, cli)
         time.sleep(2.2)

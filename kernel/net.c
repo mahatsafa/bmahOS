@@ -2,6 +2,11 @@
 
 // ---- Net-5: konfigurasi IP statis + ARP responder + dispatch RX ----
 const uint8_t g_net_ip[4] = {192, 168, 50, 200};
+
+// D7: nilai runtime yang bisa diubah CONFIG.CFG (config.c); awal = default.
+uint32_t g_cli_idle_s = CFG_CLI_IDLE_DEF;
+uint32_t g_net_src_rate = NET_UDP_SRC_PER_SEC;
+uint32_t g_net_echo = 1;
 uint32_t g_net_arp_replies_sent = 0;
 uint64_t g_net_tx_buf_phys = 0;
 
@@ -382,7 +387,7 @@ static int net_udp_src_budget_ok(const volatile uint8_t *ip)
         s->used = 0;
     }
 
-    if (s->used >= NET_UDP_SRC_PER_SEC) {
+    if (s->used >= g_net_src_rate) {
         g_net_udp_src_dropped++;
         return 0;
     }
@@ -703,7 +708,7 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 // terakhir; batas diam TCP 30 s tidak berlaku untuknya selama antrean kirim
 // kosong. Byte yang menetes tanpa perintah utuh tidak memperpanjang sesi.
 #define TCP_CLI_MAX         2
-#define TCP_CLI_IDLE        30000  // tick (300 detik)
+#define TCP_CLI_IDLE        ((uint64_t)g_cli_idle_s * 100)  // tick (D7: cli_idle)
 enum { TCP_APP_ECHO = 0, TCP_APP_CLI };
 
 // Nilai juga dipakai metrics tcp_state.
@@ -1551,7 +1556,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         return 1;
     }
 
-    if ((dport == NET_TCP_ECHO_PORT || dport == NET_TCP_CLI_PORT) && (flags & TCP_SYN) &&
+    if (((dport == NET_TCP_ECHO_PORT && g_net_echo) || dport == NET_TCP_CLI_PORT) &&
+        (flags & TCP_SYN) &&
         !(flags & (TCP_ACK | TCP_RST))) {
         uint32_t same_ip = 0, cli_n = 0;
         tcp_tcb_t *victim = 0, *cli_victim = 0;
@@ -1756,6 +1762,10 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
 
     if (dst_port != NET_UDP_ECHO_PORT && dst_port != NET_UDP_CMD_PORT) {
         return;
+    }
+
+    if (dst_port == NET_UDP_ECHO_PORT && !g_net_echo) {
+        return;   // D7: echo=0
     }
 
     if (!net_udp_src_budget_ok(buf + 26)) {

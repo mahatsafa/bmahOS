@@ -296,6 +296,24 @@ FS_U2="$($BM "baca UDP.TXT" 2>&1)"
 check "D6: UDP (jalur nonce) tulis + baca UDP.TXT" \
     '[ "$FS_U1" = "OK UDP.TXT ukuran=9" ] && echo "$FS_U2" | tail -1 | grep -q "^dari udp$"'
 
+# D7: CONFIG.CFG (set/config) + hapus/ganti lewat shell TCP. cli_idle=600
+# dibiarkan tersimpan: boot kedua (qemu-rawnet.py test_config) membacanya.
+check "D7: serial boot pertama: CONFIG: sumber=bawaan (tidak ada file)" \
+    'grep -aq "CONFIG: sumber=bawaan (tidak ada file) cli_idle=300 udp_rate=20 echo=1" "$LOG"'
+sleep 2.5
+CF_OUT="$($BMT --key "$KEY" config "set cli_idle 600" config "tulis HAPUS.TXT x" \
+    "hapus HAPUS.TXT" "tulis GANTI.TXT isi ganti" "ganti GANTI.TXT GANTI2.TXT" \
+    "hapus CONFIG.CFG" "set echo 2" 2>&1)"
+echo "$CF_OUT" | sed "s/^/info  cfg: /" | head -20
+check "D7: config awal default, set cli_idle 600 tersimpan, config sumber=disk" \
+    'echo "$CF_OUT" | grep -q "^config: sumber=bawaan (tidak ada file)$" && echo "$CF_OUT" | grep -q "^OK cli_idle=600 (tersimpan)$" && echo "$CF_OUT" | grep -q "^config: sumber=disk$" && echo "$CF_OUT" | grep -q "^cli_idle=600$"'
+check "D7: hapus/ganti lewat TCP, CONFIG.CFG dilindungi, set nilai salah ERR" \
+    'echo "$CF_OUT" | grep -q "^OK hapus HAPUS.TXT$" && echo "$CF_OUT" | grep -q "^OK ganti GANTI.TXT -> GANTI2.TXT$" && echo "$CF_OUT" | grep -q "^ERR: fs: nama dilindungi$" && echo "$CF_OUT" | grep -qF "ERR: config: format: set echo 0..1|-"'
+sleep 2.5
+CF_OUT="$($BMT --key "$ROKEY" config "set echo 0" 2>&1)"
+check "D7: read-only: config boleh, set -> ERR peran read-only" \
+    'echo "$CF_OUT" | grep -q "^config: sumber=disk$" && echo "$CF_OUT" | grep -q "^cli_idle=600$" && echo "$CF_OUT" | grep -q "^ERR: peran read-only$"'
+
 # Replay: datagram yang sama dikirim dua kali, yang kedua harus ditolak.
 # Argumen: mode (nonce|counter) dan perintah. Keluaran: "<balasan1>|<balasan2>".
 replay() {
@@ -360,6 +378,10 @@ check "D6: fsck.fat -n bersih setelah tulis (FAT, dir, FSInfo)" \
     'fsck.fat -n "$DISK" >"$WORK/fsck.out" 2>&1'
 check "D6: mtype dari host = isi yang ditulis kernel; KEY.TXT tidak berubah" \
     'mtype -i "$DISK" ::CATATAN.TXT | cmp -s - "$WORK/catatan.want" && mtype -i "$DISK" ::PANJANG.TXT | cmp -s - "$WORK/panjang.want" && mtype -i "$DISK" ::KEY.TXT | cmp -s - "$KEY"'
+printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\n' \
+    > "$WORK/config.want"
+check "D7: mtype CONFIG.CFG kanonik; CONFIG.TMP/HAPUS.TXT/GANTI.TXT tidak ada; GANTI2.TXT ada" \
+    'mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1 && ! mtype -i "$DISK" ::HAPUS.TXT >/dev/null 2>&1 && ! mtype -i "$DISK" ::GANTI.TXT >/dev/null 2>&1 && [ "$(mtype -i "$DISK" ::GANTI2.TXT)" = "isi ganti" ]'
 
 # Tahap 2: boot kedua dengan frame Ethernet mentah (lihat tests/qemu-rawnet.py).
 echo
@@ -374,6 +396,9 @@ FAIL=$((FAIL + $(echo "$RAW_OUT" | grep -c '^FAIL')))
 if [ "$RAW_RC" -ne 0 ] && ! echo "$RAW_OUT" | grep -q '^FAIL'; then
     bad "qemu-rawnet.py keluar dengan kode $RAW_RC"
 fi
+# D7: boot kedua menulis CONFIG.CFG lewat UDP (set echo/udp_rate, dikembalikan).
+check "D7: setelah boot kedua: fsck.fat -n bersih, CONFIG.CFG kanonik" \
+    'fsck.fat -n "$DISK" >"$WORK/fsck2.out" 2>&1 && mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1'
 
 # Tahap 3: boot tanpa NIC dan tanpa disk (seperti hardware tanpa driver yang
 # cocok). Kernel harus melewati driver yang tidak ada tanpa exception.
@@ -398,6 +423,8 @@ wait "$BPID" 2>/dev/null
 check "tanpa NIC: E1000 dilewati"      'grep -q "PCI-1: E1000 tidak ditemukan" "$BARE"'
 check "tanpa NIC: net task berhenti rapi" 'grep -q "RX belum di-init, net task berhenti" "$BARE"'
 check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$BARE"'
+check "D7: tanpa disk: CONFIG: sumber=bawaan (tanpa disk)" \
+    'grep -q "CONFIG: sumber=bawaan (tanpa disk) cli_idle=300 udp_rate=20 echo=1" "$BARE"'
 
 echo
 echo "hasil: $PASS lulus, $FAIL gagal (log: $LOG)"

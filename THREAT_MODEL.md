@@ -60,6 +60,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Nonce | Nonce dapat ditebak melemahkan challenge-response | Modul entropi + HMAC-DRBG (F1.8); menolak jika entropi belum cukup |
 | Parser FAT32 | Struktur disk rusak | D6: validasi BPB lengkap (512 B/sektor, SPC 1/2/4/8, NumFATs 1..2, reserved > 0, area data dan FAT cukup untuk jumlah cluster, RootCluster sah), setiap nomor cluster dicek 2..max, rantai melingkar dideteksi, poll AHCI ber-timeout, kode error bukan halt |
 | Tulis FAT32 (D6, D7) | Perintah tulis/hapus/ganti nama merusak volume, menimpa atau menghapus kunci/program boot, crash di tengah tulis | Hanya admin (HMAC), hanya root dir, nama 8.3, KEY.TXT/KEYRO.TXT/PROG.BIN ditolak untuk semua perintah (juga sebagai nama tujuan `ganti`), CONFIG.CFG/.TMP hanya lewat `set`, file maks 4096 byte, entri ber-LFN ditolak, semua cek sebelum tulis pertama, urutan data -> FAT -> dir -> bebaskan lama -> FSInfo dengan flush; hapus: entri dulu lalu rantai; ganti isi atomik lewat file sementara + satu tulis sektor (uji crash di setiap tulisan, `make host-test`), error I/O -> baca saja |
+| Konfigurasi persisten (D7) | File CONFIG.CFG rusak/dimanipulasi lewat disk, nilai yang melemahkan batas, crash saat `set` | Parser ketat: satu baris salah -> seluruh file ditolak, semua default (= nilai sebelum D7); rentang dibatasi (udp_rate maks 100 = batas global, cli_idle 30..3600); IP tidak bisa diatur; `set` hanya admin, tercatat di audit; tulis atomik lewat file sementara; nilai RAM berubah hanya bila tersimpan |
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |
 | Syscall | Pointer jahat dari user mode | Validasi pointer (R6) |
 | Klien DHCP/DNS/NTP | Balasan palsu | Validasi ID transaksi, batas ukuran, jangan percaya buta (P3) |
@@ -100,7 +101,11 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 
 8. Tulis FAT32 (D6, D7): pemegang kunci admin bisa mengisi disk (maks 4096 byte per file, root dir saja) dan
    menimpa, menghapus, atau mengganti nama file biasa mana pun selain kunci dan PROG.BIN. Ganti isi atomik
-   (D7) menganggap tulis satu sektor atomik. Urutan tulis mengandalkan FLUSH CACHE perangkat;
+   (D7) menganggap tulis satu sektor atomik.
+
+9. Konfigurasi (D7): pemegang kunci admin bisa melonggarkan batas laju per IP (maks 100/s = batas global) dan
+   memperpanjang sesi idle (maks 1 jam). Siapa pun yang bisa menulis disk secara langsung bisa mengubah
+   CONFIG.CFG dalam rentang yang sah (disk tidak ditandatangani). Urutan tulis mengandalkan FLUSH CACHE perangkat;
    perangkat yang mengabaikan flush bisa mengubah urutan. Crash meninggalkan lost cluster sampai fsck.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
