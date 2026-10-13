@@ -910,6 +910,69 @@ int fat32_root_read(const uint8_t **dir, uint32_t *entries)
     return FAT32_OK;
 }
 
+// Cluster pertama dari entri direktori 32 byte.
+static uint32_t fw_entry_first(const uint8_t *e)
+{
+    return ((uint32_t)e[0x14] | ((uint32_t)e[0x15] << 8)) << 16 |
+           (uint32_t)e[0x1A] | ((uint32_t)e[0x1B] << 8);
+}
+
+// Tulis sektor root yang memuat entri idx dari salinan g_fw_dir, lalu flush.
+static int fw_dir_commit(int idx)
+{
+    uint32_t sec = ((uint32_t)idx * 32) / 512;
+
+    if (fw_write(fw_cluster_lba(g_fat32_volume.root_cluster) + sec, 1,
+                 g_fw_dir + sec * 512) != FAT32_OK ||
+        fw_flush() != FAT32_OK) {
+        return FAT32_ERR_IO;
+    }
+
+    return FAT32_OK;
+}
+
+// Perbarui FSInfo (g_fw_fsi sudah dibaca): add cluster dipakai (terakhir =
+// last), freed dibebaskan. Data sudah utuh di disk; gagal di sini hanya
+// membuat volume baca saja.
+static void fw_fsinfo_commit(int fsi_ok, uint32_t add, uint32_t freed, uint32_t last)
+{
+    if (!fsi_ok || (add == 0 && freed == 0)) {
+        return;
+    }
+
+    uint32_t fc = fat32_le32(g_fw_fsi + 488);
+
+    if (fc != 0xFFFFFFFFu) {
+        fc = (fc + freed >= add && fc + freed <= g_fat32_volume.max_cluster - 1)
+                 ? fc + freed - add : 0xFFFFFFFFu;
+        fat32_put32(g_fw_fsi + 488, fc);
+    }
+
+    if (add > 0) {
+        fat32_put32(g_fw_fsi + 492, last + 1 > g_fat32_volume.max_cluster ? 2 : last + 1);
+    }
+
+    if (fw_write(g_fat32_volume.fsinfo_sector, 1, g_fw_fsi) != FAT32_OK ||
+        fw_flush() != FAT32_OK) {
+        g_fat32_volume.writable = 0;
+        serial_write("FAT32: ERROR - FSInfo gagal ditulis, volume kini baca saja\r\n");
+    }
+}
+
+// Bebaskan rantai (count cluster) di semua salinan FAT, lalu flush.
+static int fw_free_chain(const uint32_t *chain, uint32_t count)
+{
+    for (uint32_t f = 0; f < g_fat32_volume.num_fats; f++) {
+        for (uint32_t i = 0; i < count; i++) {
+            if (fw_fat_set(f, chain[i], 0) != FAT32_OK) {
+                return FAT32_ERR_IO;
+            }
+        }
+    }
+
+    return count > 0 ? fw_flush() : FAT32_OK;
+}
+
 // Cari nama 8.3 (11 byte) di salinan root. Return indeks entri atau -1;
 // *free_slot = slot 0xE5/0x00 pertama (atau -1).
 static int fw_dir_find(const uint8_t *dir, uint32_t n, const char *name83, int *free_slot)
@@ -978,8 +1041,7 @@ int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *ou
         return FAT32_ERR_NOTFILE;   // direktori / label volume
     }
 
-    uint32_t first = ((uint32_t)e[0x14] | ((uint32_t)e[0x15] << 8)) << 16 |
-                     (uint32_t)e[0x1A] | ((uint32_t)e[0x1B] << 8);
+    uint32_t first = fw_entry_first(e);
     uint32_t size = fat32_le32(e + 0x1C);
 
     if (size > max || size > FAT32_WRITE_MAX) {
@@ -1065,8 +1127,7 @@ int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
             return fw_fail(FAT32_ERR_NOTFILE, 0);   // RO/hidden/system/label/dir
         }
 
-        old_first = ((uint32_t)e[0x14] | ((uint32_t)e[0x15] << 8)) << 16 |
-                    (uint32_t)e[0x1A] | ((uint32_t)e[0x1B] << 8);
+        old_first = fw_entry_first(e);
         old_size = fat32_le32(e + 0x1C);
 
         if (old_size > FAT32_WRITE_MAX) {
@@ -1195,11 +1256,7 @@ int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
     e[0x1B] = (uint8_t)(first >> 8);
     fat32_put32(e + 0x1C, new_size);
 
-    uint32_t sec = ((uint32_t)idx * 32) / 512;
-
-    if (fw_write(fw_cluster_lba(g_fat32_volume.root_cluster) + sec, 1,
-                 g_fw_dir + sec * 512) != FAT32_OK ||
-        fw_flush() != FAT32_OK) {
+    if (fw_dir_commit(idx) != FAT32_OK) {
         return fw_fail(FAT32_ERR_IO, 1);
     }
 
@@ -1207,15 +1264,7 @@ int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
     uint32_t freed = 0;
 
     if (!append && old_n > 0) {
-        for (uint32_t f = 0; f < nf; f++) {
-            for (uint32_t i = 0; i < old_n; i++) {
-                if (fw_fat_set(f, old[i], 0) != FAT32_OK) {
-                    return fw_fail(FAT32_ERR_IO, 1);
-                }
-            }
-        }
-
-        if (fw_flush() != FAT32_OK) {
+        if (fw_free_chain(old, old_n) != FAT32_OK) {
             return fw_fail(FAT32_ERR_IO, 1);
         }
 
@@ -1224,26 +1273,7 @@ int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
 
     // Fase 6: FSInfo. File sudah utuh di disk; gagal di sini hanya membuat
     // volume baca saja, hasil tetap OK.
-    if (fsi_ok && (add > 0 || freed > 0)) {
-        uint32_t fc = fat32_le32(g_fw_fsi + 488);
-
-        if (fc != 0xFFFFFFFFu) {
-            fc = (fc + freed >= add && fc + freed <= g_fat32_volume.max_cluster - 1)
-                     ? fc + freed - add : 0xFFFFFFFFu;
-            fat32_put32(g_fw_fsi + 488, fc);
-        }
-
-        if (add > 0) {
-            fat32_put32(g_fw_fsi + 492, nw[add - 1] + 1 > g_fat32_volume.max_cluster
-                                            ? 2 : nw[add - 1] + 1);
-        }
-
-        if (fw_write(g_fat32_volume.fsinfo_sector, 1, g_fw_fsi) != FAT32_OK ||
-            fw_flush() != FAT32_OK) {
-            g_fat32_volume.writable = 0;
-            serial_write("FAT32: ERROR - FSInfo gagal ditulis, volume kini baca saja\r\n");
-        }
-    }
+    fw_fsinfo_commit(fsi_ok, add, freed, add > 0 ? nw[add - 1] : 0);
 
     g_fat_wr_ok++;
     *out_size = new_size;
