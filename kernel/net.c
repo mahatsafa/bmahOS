@@ -749,6 +749,22 @@ static uint32_t net_tcp_rcv_wnd(const tcp_tcb_t *t)
     return TCP_BUF_SIZE - t->buf_count;
 }
 
+// D1: tambahkan data ke antrean kirim TCB (ekor TCB_BUF), maks sebanyak ruang
+// kosong. Return jumlah byte yang masuk; pengiriman oleh net_tcp_output.
+static uint32_t net_tcp_queue(tcp_tcb_t *t, const volatile uint8_t *d,
+                              uint32_t len)
+{
+    uint32_t room = TCP_BUF_SIZE - t->buf_count;
+    uint32_t tail = (t->buf_head + t->buf_count) % TCP_BUF_SIZE;
+    uint32_t n = len > room ? room : len;
+
+    for (uint32_t i = 0; i < n; i++) {
+        TCB_BUF(t)[(tail + i) % TCP_BUF_SIZE] = d[i];
+    }
+    t->buf_count += n;
+    return n;
+}
+
 static uint32_t net_rd32(const volatile uint8_t *p)
 {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -1212,15 +1228,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         }
 
         if (t->state == TCP_ESTABLISHED && dlen > 0) {
-            // Hanya sebanyak ruang buffer (= jendela yang kita iklankan).
-            uint32_t room = TCP_BUF_SIZE - t->buf_count;
-            uint32_t tail = (t->buf_head + t->buf_count) % TCP_BUF_SIZE;
-
-            n = dlen > room ? room : dlen;
-            for (uint32_t i = 0; i < n; i++) {
-                TCB_BUF(t)[(tail + i) % TCP_BUF_SIZE] = buf[r + doff + i];
-            }
-            t->buf_count += n;
+            // Echo: data masuk langsung jadi data kirim, hanya sebanyak ruang
+            // buffer (= jendela yang kita iklankan).
+            n = net_tcp_queue(t, buf + r + doff, dlen);
             t->rcv_nxt += n;
             g_tcp_rx_bytes += n;
             if (n > 0) {
