@@ -14,10 +14,27 @@ static struct {
     uint32_t port;
     uint64_t cmd_table_phys;
     uint8_t *cmd_table_virt;
+    uint64_t data_phys;      // D6-1: buffer DMA 1 halaman per port, dipakai ulang
+    uint8_t *data_virt;
     int initialized;
 } g_ahci_ata_ports[AHCI_MAX_ATA_PORTS];
 
 int g_ahci_ata_port_count = 0;
+
+// D6-1: semua poll register dibatasi (dulu tanpa timeout). Satu baca MMIO di VM
+// ~1 us, jadi 5 juta putaran = beberapa detik; habis -> error, bukan macet.
+#define AHCI_POLL_MAX 5000000u
+
+static int ahci_wait_clear(volatile uint32_t *reg, uint32_t mask)
+{
+    for (uint32_t i = 0; i < AHCI_POLL_MAX; i++) {
+        if (!(*reg & mask)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
 
 void ahci_port_init(volatile uint32_t *hba, uint32_t port)
 {
@@ -49,8 +66,9 @@ void ahci_port_init(volatile uint32_t *hba, uint32_t port)
         *pcmd = cmd;
     }
 
-    while (*pcmd & (1u << 15)) {
-        /* poll PxCMD.CR sampai 0 - TIDAK ADA TIMEOUT, utang teknis */
+    if (!ahci_wait_clear(pcmd, 1u << 15)) {
+        serial_write("AHCI: port_init: ERROR - PxCMD.CR tidak turun (timeout), port dilewati\r\n");
+        return;
     }
 
     cmd = *pcmd;
@@ -60,8 +78,9 @@ void ahci_port_init(volatile uint32_t *hba, uint32_t port)
         *pcmd = cmd;
     }
 
-    while (*pcmd & (1u << 14)) {
-        /* poll PxCMD.FR sampai 0 - TIDAK ADA TIMEOUT, utang teknis */
+    if (!ahci_wait_clear(pcmd, 1u << 14)) {
+        serial_write("AHCI: port_init: ERROR - PxCMD.FR tidak turun (timeout), port dilewati\r\n");
+        return;
     }
 
     serial_write("AHCI: port_init: port stopped (CR=0, FR=0)\r\n");
@@ -69,12 +88,16 @@ void ahci_port_init(volatile uint32_t *hba, uint32_t port)
     uint64_t cmd_list_phys  = pmm_alloc();
     uint64_t fis_phys       = pmm_alloc();
     uint64_t cmd_table_phys = pmm_alloc();
+    uint64_t data_phys      = pmm_alloc();
 
-    if (cmd_list_phys == 0 || fis_phys == 0 || cmd_table_phys == 0) {
-        serial_write("AHCI: port_init: FATAL - pmm_alloc gagal\r\n");
-        for (;;) {
-            __asm__ volatile ("hlt");
-        }
+    if (cmd_list_phys == 0 || fis_phys == 0 || cmd_table_phys == 0 || data_phys == 0) {
+        // D6-1: dulu halt; kini port dilewati (pmm_free(0) no-op).
+        serial_write("AHCI: port_init: ERROR - pmm_alloc gagal, port dilewati\r\n");
+        pmm_free(cmd_list_phys);
+        pmm_free(fis_phys);
+        pmm_free(cmd_table_phys);
+        pmm_free(data_phys);
+        return;
     }
 
     uint8_t *cmd_list_virt  = (uint8_t *)(cmd_list_phys + hhdm_offset);
@@ -131,6 +154,8 @@ void ahci_port_init(volatile uint32_t *hba, uint32_t port)
     g_ahci_ata_ports[slot].port = port;
     g_ahci_ata_ports[slot].cmd_table_phys = cmd_table_phys;
     g_ahci_ata_ports[slot].cmd_table_virt = cmd_table_virt;
+    g_ahci_ata_ports[slot].data_phys = data_phys;
+    g_ahci_ata_ports[slot].data_virt = (uint8_t *)(data_phys + hhdm_offset);
     g_ahci_ata_ports[slot].initialized = 1;
 
     g_ahci_ata_port_count++;
@@ -153,7 +178,12 @@ void ahci_port_init(volatile uint32_t *hba, uint32_t port)
 // jadi kita sengaja tidak mendukung count > 8 di checkpoint ini
 // (utang teknis eksplisit, bukan lupa: perlu multi-PRDT/scatter-gather
 // untuk mendukung lebih dari 1 halaman).
+// D6-1: *out_buf = buffer DMA milik port (tidak lagi pmm_alloc per panggilan,
+// dulu bocor 1 halaman tiap baca); isinya hanya berlaku sampai panggilan
+// ahci_* berikutnya. Timeout PxCI -> AHCI_ERR_TIMEOUT dan port dimatikan
+// (perintah mungkin masih berjalan, buffer tidak boleh dipakai lagi).
 #define AHCI_ERR_BAD_PORT   -6
+#define AHCI_ERR_TIMEOUT    -7
 
 int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_buf)
 {
@@ -183,13 +213,8 @@ int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_b
     volatile uint32_t *ptfd    = &hba[(port_base + 0x20) / 4];
     volatile uint32_t *pclb    = &hba[(port_base + 0x00) / 4];
 
-    uint64_t data_buf_phys = pmm_alloc();
-
-    if (data_buf_phys == 0) {
-        return AHCI_ERR_ALLOC;
-    }
-
-    uint8_t *data_buf_virt = (uint8_t *)(data_buf_phys + hhdm_offset);
+    uint64_t data_buf_phys = g_ahci_ata_ports[port_index].data_phys;
+    uint8_t *data_buf_virt = g_ahci_ata_ports[port_index].data_virt;
 
     for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
         data_buf_virt[i] = 0xAA;
@@ -235,8 +260,9 @@ int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_b
 
     *pci_reg = (1u << 0);
 
-    while (*pci_reg & (1u << 0)) {
-        /* poll PxCI sampai 0 - TIDAK ADA TIMEOUT, utang teknis */
+    if (!ahci_wait_clear(pci_reg, 1u << 0)) {
+        g_ahci_ata_ports[port_index].initialized = 0;
+        return AHCI_ERR_TIMEOUT;
     }
 
     uint32_t tfd = *ptfd;
