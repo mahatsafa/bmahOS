@@ -18,7 +18,30 @@ static struct {
     uint64_t data_start_lba;
     uint64_t total_sectors;    // D6-2
     uint32_t max_cluster;      // D6-2: cluster sah = 2..max_cluster
+    uint32_t fsinfo_sector;    // D6-3
+    int writable;              // D6-3: 0 = baca saja (BPB/FSInfo, atau error I/O saat tulis)
 } g_fat32_volume;
+
+static uint32_t fat32_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static void fat32_put32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+// D6-3: FSInfo sah = tiga tanda tangan di tempatnya.
+static int fat32_fsinfo_ok(const uint8_t *b)
+{
+    return fat32_le32(b) == 0x41615252u && fat32_le32(b + 484) == 0x61417272u &&
+           fat32_le32(b + 508) == 0xAA550000u;
+}
 
 // D6-2: nomor cluster dari disk (dir entry, FAT, BPB) tidak dipercaya.
 static int fat32_cluster_ok(uint32_t c)
@@ -171,9 +194,39 @@ void ahci_fat32_probe_and_log(void)
         g_fat32_volume.total_sectors = total_sectors;
         g_fat32_volume.max_cluster = max_cluster;
 
+        // D6-3: tulis hanya bila semua FAT dicerminkan (ExtFlags bit 7 = 0)
+        // dan FSInfo sah. buf (buffer DMA) dipakai ulang oleh baca FSInfo.
+        uint16_t ext_flags = (uint16_t)buf[0x28] | ((uint16_t)buf[0x29] << 8);
+        uint16_t fsinfo = (uint16_t)buf[0x30] | ((uint16_t)buf[0x31] << 8);
+        const char *ro_why = 0;
+
+        g_fat32_volume.fsinfo_sector = fsinfo;
+        g_fat32_volume.writable = 0;
+
+        if (ext_flags & 0x80) {
+            ro_why = "mirroring FAT mati (ExtFlags bit 7)";
+        } else if (fsinfo == 0 || fsinfo >= reserved_sector_count) {
+            ro_why = "sektor FSInfo di luar area reserved";
+        } else if (ahci_read((uint32_t)idx, fsinfo, 1, &buf) != AHCI_OK) {
+            ro_why = "FSInfo tidak terbaca";
+        } else if (!fat32_fsinfo_ok(buf)) {
+            ro_why = "tanda tangan FSInfo salah";
+        } else {
+            g_fat32_volume.writable = 1;
+        }
+
         serial_write("FAT32: port_index ");
         serial_write_hex((uint64_t)idx);
         serial_write(" - VALID FAT32 volume ditemukan\r\n");
+        serial_write("FAT32: max_cluster=");
+        serial_write_hex(max_cluster);
+        if (ro_why) {
+            serial_write(" mode=baca-saja: ");
+            serial_write(ro_why);
+            serial_write("\r\n");
+        } else {
+            serial_write(" mode=tulis\r\n");
+        }
     }
 }
 
@@ -296,13 +349,13 @@ uint8_t *fat32_load_file(uint32_t first_cluster, uint32_t file_size)
 
     if (!fat32_cluster_ok(first_cluster)) {
         serial_write("FAT32-4A: ERROR - first_cluster di luar jangkauan padahal file_size > 0\r\n");
-        return 0;
+        goto fail;
     }
 
     uint32_t sectors_per_cluster = g_fat32_volume.sectors_per_cluster;
 
     if (sectors_per_cluster == 0 || sectors_per_cluster > 8) {
-        return 0;
+        goto fail;
     }
 
     uint32_t cluster_size_bytes = sectors_per_cluster * g_fat32_volume.bytes_per_sector;
@@ -317,7 +370,7 @@ uint8_t *fat32_load_file(uint32_t first_cluster, uint32_t file_size)
 
         if (iteration_guard > 1000) {
             serial_write("FAT32-4A: FATAL - lebih dari 1000 iterasi cluster chain\r\n");
-            return 0;
+            goto fail;
         }
 
         uint64_t lba = g_fat32_volume.data_start_lba +
@@ -327,7 +380,7 @@ uint8_t *fat32_load_file(uint32_t first_cluster, uint32_t file_size)
         int rc = ahci_read(g_fat32_volume.port_index, lba, sectors_per_cluster, &sector_buf);
 
         if (rc != AHCI_OK) {
-            return 0;
+            goto fail;
         }
 
         uint32_t to_copy = bytes_remaining;
@@ -350,21 +403,26 @@ uint8_t *fat32_load_file(uint32_t first_cluster, uint32_t file_size)
         cluster = fat32_read_fat_entry(cluster);
 
         if (cluster == 0xFFFFFFFFu) {
-            return 0;
+            goto fail;
         }
 
         if (cluster < 0x0FFFFFF8u && !fat32_cluster_ok(cluster)) {
             serial_write("FAT32-4A: ERROR - rantai cluster di luar jangkauan\r\n");
-            return 0;
+            goto fail;
         }
     }
 
     if (bytes_remaining > 0) {
         serial_write("FAT32-4A: WARNING - chain berakhir tapi masih ada byte tersisa\r\n");
-        return 0;
+        goto fail;
     }
 
     return buf_virt;
+
+fail:
+    // D6-3: dulu halaman ini bocor di setiap jalur gagal.
+    pmm_free(buf_phys);
+    return 0;
 }
 
 // FAT32-2: konversi RootCluster (nomor cluster dari BPB) menjadi LBA
@@ -662,4 +720,549 @@ void fat32_read_file(uint32_t first_cluster, uint32_t file_size)
     } else {
         serial_write("FAT32-4: file selesai dibaca, seluruh byte cocok dengan file_size\r\n");
     }
+}
+
+// ---- D6-3: FAT32 tulis (root directory saja, file <= FAT32_WRITE_MAX) ----
+// Urutan tulis (flush perangkat di antara fase), supaya crash di titik mana
+// pun paling buruk menyisakan cluster hilang (lost cluster), tidak pernah
+// entri direktori yang menunjuk ke data/rantai yang belum ditulis:
+//   1. data ke cluster baru (dan ekor cluster terakhir di belakang ukuran lama)
+//   2. entri FAT rantai baru, semua salinan FAT (FAT1 lalu FAT2)
+//   3. tambah: sambungkan ujung rantai lama ke rantai baru
+//   4. entri direktori (cluster awal + ukuran), satu sektor
+//   5. timpa: bebaskan rantai lama (copy-on-write: rantai lama tidak
+//      pernah disentuh sebelum entri direktori menunjuk rantai baru)
+//   6. FSInfo (jumlah bebas + petunjuk cluster bebas)
+// Semua pemeriksaan (nama, ukuran, rantai lama, ruang kosong, slot dir)
+// selesai sebelum fase 1. Error I/O setelah fase 1 dimulai -> volume baca
+// saja sampai reboot (gagal tertutup).
+
+uint64_t g_fat_wr_ok = 0;
+uint64_t g_fat_wr_fail = 0;
+
+static uint8_t g_fw_sec[512];                    // FAT / FSInfo (baca-ubah-tulis)
+static uint8_t g_fw_fsi[512];                    // FSInfo
+static uint8_t g_fw_dir[FAT32_WRITE_MAX];        // cluster root (spc <= 8)
+static uint8_t g_fw_clu[FAT32_WRITE_MAX];        // satu cluster data
+
+#define FAT32_EOC 0x0FFFFFFFu
+#define FAT32_CHAIN_MAX (FAT32_WRITE_MAX / 512)  // cluster maks satu file yang ditulis
+
+static int fw_read(uint64_t lba, uint32_t n, uint8_t *dst)
+{
+    uint8_t *b = 0;
+
+    if (ahci_read(g_fat32_volume.port_index, lba, n, &b) != AHCI_OK) {
+        return FAT32_ERR_IO;
+    }
+
+    for (uint32_t i = 0; i < n * 512u; i++) {
+        dst[i] = b[i];
+    }
+
+    return FAT32_OK;
+}
+
+static int fw_write(uint64_t lba, uint32_t n, const uint8_t *src)
+{
+    if (ahci_write(g_fat32_volume.port_index, lba, n, src) != AHCI_OK) {
+        return FAT32_ERR_IO;
+    }
+
+    return FAT32_OK;
+}
+
+static int fw_flush(void)
+{
+    return ahci_flush(g_fat32_volume.port_index) == AHCI_OK ? FAT32_OK : FAT32_ERR_IO;
+}
+
+static uint64_t fw_cluster_lba(uint32_t c)
+{
+    return g_fat32_volume.data_start_lba +
+           (uint64_t)(c - 2) * g_fat32_volume.sectors_per_cluster;
+}
+
+// Ubah satu entri di salinan FAT ke-f; 4 bit atas entri lama dipertahankan.
+static int fw_fat_set(uint32_t f, uint32_t cluster, uint32_t value)
+{
+    uint64_t lba = g_fat32_volume.fat_start_lba + (uint64_t)f * g_fat32_volume.fat_sz32 +
+                   ((uint64_t)cluster * 4) / 512;
+    uint32_t off = (cluster * 4) % 512;
+
+    if (fw_read(lba, 1, g_fw_sec) != FAT32_OK) {
+        return FAT32_ERR_IO;
+    }
+
+    uint32_t old = fat32_le32(g_fw_sec + off);
+    fat32_put32(g_fw_sec + off, (old & 0xF0000000u) | (value & 0x0FFFFFFFu));
+    return fw_write(lba, 1, g_fw_sec);
+}
+
+// Cari n cluster bebas (entri FAT1 == 0) mulai dari petunjuk, memutar sekali.
+static int fw_alloc(uint32_t n, uint32_t hint, uint32_t *out)
+{
+    uint32_t c = fat32_cluster_ok(hint) ? hint : 2;
+    uint32_t found = 0;
+    uint64_t cached = ~0ull;
+
+    for (uint32_t k = 0; k < g_fat32_volume.max_cluster - 1 && found < n; k++) {
+        uint64_t lba = g_fat32_volume.fat_start_lba + ((uint64_t)c * 4) / 512;
+
+        if (lba != cached) {
+            if (fw_read(lba, 1, g_fw_sec) != FAT32_OK) {
+                return FAT32_ERR_IO;
+            }
+            cached = lba;
+        }
+
+        if ((fat32_le32(g_fw_sec + (c * 4) % 512) & 0x0FFFFFFFu) == 0) {
+            out[found++] = c;
+        }
+
+        c = c >= g_fat32_volume.max_cluster ? 2 : c + 1;
+    }
+
+    return found == n ? FAT32_OK : FAT32_ERR_FULL;
+}
+
+// Rantai file: ceil(size / ukuran cluster) cluster sah, berbeda satu sama lain.
+// Rantai yang lebih panjang dari ukuran diterima (sisanya diabaikan = lost
+// cluster): itu keadaan sah setelah crash di antara fase 3 dan 4 di bawah.
+static int fw_walk(uint32_t first, uint32_t size, uint32_t *chain, uint32_t *count)
+{
+    uint32_t cs = g_fat32_volume.sectors_per_cluster * 512;
+    uint32_t need = (size + cs - 1) / cs;
+
+    *count = 0;
+
+    if (size == 0) {
+        return first == 0 ? FAT32_OK : FAT32_ERR_CORRUPT;
+    }
+
+    uint32_t c = first;
+
+    for (uint32_t i = 0; i < need; i++) {
+        if (!fat32_cluster_ok(c)) {
+            return FAT32_ERR_CORRUPT;
+        }
+
+        for (uint32_t j = 0; j < i; j++) {
+            if (chain[j] == c) {
+                return FAT32_ERR_CORRUPT;   // rantai melingkar
+            }
+        }
+
+        chain[i] = c;
+
+        uint32_t next = fat32_read_fat_entry(c);
+
+        if (next == 0xFFFFFFFFu) {
+            return FAT32_ERR_IO;
+        }
+
+        if (i + 1 < need) {
+            c = next;
+        }
+    }
+
+    *count = need;
+    return FAT32_OK;
+}
+
+// Salinan cluster root dir (berlaku sampai fat32_* berikutnya). Hanya cluster
+// root pertama; kalau tidak ada penanda akhir (0x00) di sana dan rantai root
+// berlanjut -> FAT32_ERR_UNSUP (nama di cluster berikutnya tidak terlihat).
+int fat32_root_read(const uint8_t **dir, uint32_t *entries)
+{
+    if (!g_fat32_volume.valid) {
+        return FAT32_ERR_NOVOL;
+    }
+
+    uint32_t spc = g_fat32_volume.sectors_per_cluster;
+
+    if (fw_read(fw_cluster_lba(g_fat32_volume.root_cluster), spc, g_fw_dir) != FAT32_OK) {
+        return FAT32_ERR_IO;
+    }
+
+    uint32_t n = spc * 16;
+
+    for (uint32_t i = 0; i < n; i++) {
+        if (g_fw_dir[i * 32] == 0x00) {
+            *dir = g_fw_dir;
+            *entries = n;
+            return FAT32_OK;
+        }
+    }
+
+    uint32_t next = fat32_read_fat_entry(g_fat32_volume.root_cluster);
+
+    if (next == 0xFFFFFFFFu) {
+        return FAT32_ERR_IO;
+    }
+
+    if (next < 0x0FFFFFF8u) {
+        return FAT32_ERR_UNSUP;
+    }
+
+    *dir = g_fw_dir;
+    *entries = n;
+    return FAT32_OK;
+}
+
+// Cari nama 8.3 (11 byte) di salinan root. Return indeks entri atau -1;
+// *free_slot = slot 0xE5/0x00 pertama (atau -1).
+static int fw_dir_find(const uint8_t *dir, uint32_t n, const char *name83, int *free_slot)
+{
+    *free_slot = -1;
+
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *e = dir + i * 32;
+
+        if (e[0] == 0x00) {
+            if (*free_slot < 0) {
+                *free_slot = (int)i;
+            }
+            return -1;
+        }
+
+        if (e[0] == 0xE5) {
+            if (*free_slot < 0) {
+                *free_slot = (int)i;
+            }
+            continue;
+        }
+
+        if (e[0x0B] == 0x0F) {
+            continue;   // LFN
+        }
+
+        int match = 1;
+
+        for (int c = 0; c < 11; c++) {
+            if (e[c] != (uint8_t)name83[c]) {
+                match = 0;
+                break;
+            }
+        }
+
+        if (match) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+// Baca file (<= max byte) ke out. Return FAT32_OK / FAT32_ERR_*.
+int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *out_size)
+{
+    const uint8_t *dir;
+    uint32_t n;
+    int rc = fat32_root_read(&dir, &n);
+
+    if (rc != FAT32_OK) {
+        return rc;
+    }
+
+    int free_slot;
+    int idx = fw_dir_find(dir, n, name83, &free_slot);
+
+    if (idx < 0) {
+        return FAT32_ERR_NOENT;
+    }
+
+    const uint8_t *e = dir + idx * 32;
+
+    if (e[0x0B] & 0x18) {
+        return FAT32_ERR_NOTFILE;   // direktori / label volume
+    }
+
+    uint32_t first = ((uint32_t)e[0x14] | ((uint32_t)e[0x15] << 8)) << 16 |
+                     (uint32_t)e[0x1A] | ((uint32_t)e[0x1B] << 8);
+    uint32_t size = fat32_le32(e + 0x1C);
+
+    if (size > max || size > FAT32_WRITE_MAX) {
+        return FAT32_ERR_TOOBIG;
+    }
+
+    uint32_t chain[FAT32_CHAIN_MAX];
+    uint32_t cnt;
+
+    rc = fw_walk(first, size, chain, &cnt);
+
+    if (rc != FAT32_OK) {
+        return rc;
+    }
+
+    uint32_t cs = g_fat32_volume.sectors_per_cluster * 512;
+    uint32_t pos = 0;
+
+    for (uint32_t i = 0; i < cnt; i++) {
+        if (fw_read(fw_cluster_lba(chain[i]), g_fat32_volume.sectors_per_cluster,
+                    g_fw_clu) != FAT32_OK) {
+            return FAT32_ERR_IO;
+        }
+
+        for (uint32_t j = 0; j < cs && pos < size; j++) {
+            out[pos++] = g_fw_clu[j];
+        }
+    }
+
+    *out_size = size;
+    return FAT32_OK;
+}
+
+static int fw_fail(int rc, int started)
+{
+    g_fat_wr_fail++;
+
+    if (started && rc == FAT32_ERR_IO) {
+        g_fat32_volume.writable = 0;
+        serial_write("FAT32: ERROR - I/O gagal saat menulis, volume kini baca saja\r\n");
+    }
+
+    return rc;
+}
+
+// Tulis (append = 0: buat/timpa) atau tambah (append = 1: buat bila belum ada)
+// len byte ke file name83 (11 byte 8.3) di root. *out_size = ukuran baru.
+int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
+                     int append, uint32_t *out_size)
+{
+    if (!g_fat32_volume.valid) {
+        return fw_fail(FAT32_ERR_NOVOL, 0);
+    }
+
+    if (!g_fat32_volume.writable) {
+        return fw_fail(FAT32_ERR_RO, 0);
+    }
+
+    if (len > FAT32_WRITE_MAX) {
+        return fw_fail(FAT32_ERR_TOOBIG, 0);
+    }
+
+    uint32_t spc = g_fat32_volume.sectors_per_cluster;
+    uint32_t cs = spc * 512;
+    uint32_t nf = g_fat32_volume.num_fats;
+    const uint8_t *dir;
+    uint32_t n;
+    int rc = fat32_root_read(&dir, &n);
+
+    if (rc != FAT32_OK) {
+        return fw_fail(rc, 0);
+    }
+
+    int free_slot;
+    int idx = fw_dir_find(dir, n, name83, &free_slot);
+    uint32_t old_first = 0, old_size = 0, old_n = 0;
+    uint32_t old[FAT32_CHAIN_MAX];
+
+    if (idx >= 0) {
+        const uint8_t *e = dir + idx * 32;
+
+        if (e[0x0B] & 0x1F) {
+            return fw_fail(FAT32_ERR_NOTFILE, 0);   // RO/hidden/system/label/dir
+        }
+
+        old_first = ((uint32_t)e[0x14] | ((uint32_t)e[0x15] << 8)) << 16 |
+                    (uint32_t)e[0x1A] | ((uint32_t)e[0x1B] << 8);
+        old_size = fat32_le32(e + 0x1C);
+
+        if (old_size > FAT32_WRITE_MAX) {
+            return fw_fail(FAT32_ERR_TOOBIG, 0);
+        }
+
+        rc = fw_walk(old_first, old_size, old, &old_n);
+
+        if (rc != FAT32_OK) {
+            return fw_fail(rc, 0);
+        }
+    } else if (free_slot < 0) {
+        return fw_fail(FAT32_ERR_DIRFULL, 0);
+    } else {
+        idx = free_slot;
+    }
+
+    uint32_t new_size = append ? old_size + len : len;
+
+    if (new_size > FAT32_WRITE_MAX) {
+        return fw_fail(FAT32_ERR_TOOBIG, 0);
+    }
+
+    uint32_t keep = append ? old_n : 0;
+    uint32_t need = (new_size + cs - 1) / cs;
+    uint32_t add = need - keep;
+    uint32_t nw[FAT32_CHAIN_MAX];
+
+    if (fw_read(g_fat32_volume.fsinfo_sector, 1, g_fw_fsi) != FAT32_OK) {
+        return fw_fail(FAT32_ERR_IO, 0);
+    }
+
+    int fsi_ok = fat32_fsinfo_ok(g_fw_fsi);
+
+    if (add > 0) {
+        rc = fw_alloc(add, fsi_ok ? fat32_le32(g_fw_fsi + 492) : 2, nw);
+
+        if (rc != FAT32_OK) {
+            return fw_fail(rc, 0);
+        }
+    }
+
+    // Fase 1: data.
+    uint32_t pos = 0;
+    uint32_t tail = append ? old_size % cs : 0;
+
+    if (tail != 0 && len > 0) {
+        uint64_t lba = fw_cluster_lba(old[old_n - 1]);
+
+        if (fw_read(lba, spc, g_fw_clu) != FAT32_OK) {
+            return fw_fail(FAT32_ERR_IO, 1);
+        }
+
+        for (uint32_t j = tail; j < cs && pos < len; j++) {
+            g_fw_clu[j] = data[pos++];
+        }
+
+        if (fw_write(lba, spc, g_fw_clu) != FAT32_OK) {
+            return fw_fail(FAT32_ERR_IO, 1);
+        }
+    }
+
+    for (uint32_t i = 0; i < add; i++) {
+        for (uint32_t j = 0; j < cs; j++) {
+            g_fw_clu[j] = pos < len ? data[pos++] : 0;
+        }
+
+        if (fw_write(fw_cluster_lba(nw[i]), spc, g_fw_clu) != FAT32_OK) {
+            return fw_fail(FAT32_ERR_IO, 1);
+        }
+    }
+
+    if (fw_flush() != FAT32_OK) {
+        return fw_fail(FAT32_ERR_IO, 1);
+    }
+
+    // Fase 2 + 3: rantai baru, lalu sambungan dari ujung rantai lama.
+    if (add > 0) {
+        for (uint32_t f = 0; f < nf; f++) {
+            for (uint32_t i = 0; i < add; i++) {
+                if (fw_fat_set(f, nw[i], i + 1 < add ? nw[i + 1] : FAT32_EOC) != FAT32_OK) {
+                    return fw_fail(FAT32_ERR_IO, 1);
+                }
+            }
+        }
+
+        if (fw_flush() != FAT32_OK) {
+            return fw_fail(FAT32_ERR_IO, 1);
+        }
+
+        if (keep > 0) {
+            for (uint32_t f = 0; f < nf; f++) {
+                if (fw_fat_set(f, old[keep - 1], nw[0]) != FAT32_OK) {
+                    return fw_fail(FAT32_ERR_IO, 1);
+                }
+            }
+
+            if (fw_flush() != FAT32_OK) {
+                return fw_fail(FAT32_ERR_IO, 1);
+            }
+        }
+    }
+
+    // Fase 4: entri direktori (g_fw_dir masih salinan root; fw_* lain tidak
+    // menyentuhnya).
+    uint32_t first = keep > 0 ? old_first : (add > 0 ? nw[0] : 0);
+    uint8_t *e = g_fw_dir + idx * 32;
+
+    if (e[0] == 0x00 || e[0] == 0xE5) {
+        for (int j = 0; j < 32; j++) {
+            e[j] = 0;
+        }
+        for (int j = 0; j < 11; j++) {
+            e[j] = (uint8_t)name83[j];
+        }
+        e[0x0B] = 0x20;   // archive
+        // Tanggal tetap 2026-01-01 (belum ada RTC tepercaya): ((2026-1980)<<9)|(1<<5)|1
+        e[0x10] = 0x21; e[0x11] = 0x5C;   // tanggal buat
+        e[0x12] = 0x21; e[0x13] = 0x5C;   // tanggal akses
+        e[0x18] = 0x21; e[0x19] = 0x5C;   // tanggal ubah
+    }
+
+    e[0x14] = (uint8_t)(first >> 16);
+    e[0x15] = (uint8_t)(first >> 24);
+    e[0x1A] = (uint8_t)first;
+    e[0x1B] = (uint8_t)(first >> 8);
+    fat32_put32(e + 0x1C, new_size);
+
+    uint32_t sec = ((uint32_t)idx * 32) / 512;
+
+    if (fw_write(fw_cluster_lba(g_fat32_volume.root_cluster) + sec, 1,
+                 g_fw_dir + sec * 512) != FAT32_OK ||
+        fw_flush() != FAT32_OK) {
+        return fw_fail(FAT32_ERR_IO, 1);
+    }
+
+    // Fase 5: timpa -> bebaskan rantai lama (file sudah menunjuk rantai baru).
+    uint32_t freed = 0;
+
+    if (!append && old_n > 0) {
+        for (uint32_t f = 0; f < nf; f++) {
+            for (uint32_t i = 0; i < old_n; i++) {
+                if (fw_fat_set(f, old[i], 0) != FAT32_OK) {
+                    return fw_fail(FAT32_ERR_IO, 1);
+                }
+            }
+        }
+
+        if (fw_flush() != FAT32_OK) {
+            return fw_fail(FAT32_ERR_IO, 1);
+        }
+
+        freed = old_n;
+    }
+
+    // Fase 6: FSInfo. File sudah utuh di disk; gagal di sini hanya membuat
+    // volume baca saja, hasil tetap OK.
+    if (fsi_ok && (add > 0 || freed > 0)) {
+        uint32_t fc = fat32_le32(g_fw_fsi + 488);
+
+        if (fc != 0xFFFFFFFFu) {
+            fc = (fc + freed >= add && fc + freed <= g_fat32_volume.max_cluster - 1)
+                     ? fc + freed - add : 0xFFFFFFFFu;
+            fat32_put32(g_fw_fsi + 488, fc);
+        }
+
+        if (add > 0) {
+            fat32_put32(g_fw_fsi + 492, nw[add - 1] + 1 > g_fat32_volume.max_cluster
+                                            ? 2 : nw[add - 1] + 1);
+        }
+
+        if (fw_write(g_fat32_volume.fsinfo_sector, 1, g_fw_fsi) != FAT32_OK ||
+            fw_flush() != FAT32_OK) {
+            g_fat32_volume.writable = 0;
+            serial_write("FAT32: ERROR - FSInfo gagal ditulis, volume kini baca saja\r\n");
+        }
+    }
+
+    g_fat_wr_ok++;
+    *out_size = new_size;
+    return FAT32_OK;
+}
+
+int fat32_writable(void)
+{
+    return g_fat32_volume.valid && g_fat32_volume.writable;
+}
+
+// Jumlah cluster bebas dari FSInfo (0xFFFFFFFF = tidak diketahui).
+uint32_t fat32_free_hint(void)
+{
+    if (!g_fat32_volume.valid ||
+        fw_read(g_fat32_volume.fsinfo_sector, 1, g_fw_fsi) != FAT32_OK ||
+        !fat32_fsinfo_ok(g_fw_fsi)) {
+        return 0xFFFFFFFFu;
+    }
+
+    return fat32_le32(g_fw_fsi + 488);
 }

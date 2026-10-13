@@ -188,6 +188,13 @@ class Client:
                 (l.split("=", 1) for l in r.strip().splitlines() if "=" in l)}
 
 
+def test_fs_persist(net, cli):
+    """D6: file yang ditulis di boot pertama terbaca kernel setelah reboot."""
+    r = cli.cmd("baca CATATAN.TXT")
+    check("D6: setelah reboot baca CATATAN.TXT = baris satu + baris dua",
+          r == "isi CATATAN.TXT ukuran=21:\nbaris satu\nbaris dua\n", repr(r))
+
+
 def test_counters(net, cli):
     """B1: rx_other dan udp_badsum harus naik."""
     m0 = cli.metrics()
@@ -783,6 +790,8 @@ def main():
         cli = Client(net, key, bytes([192, 168, 50, 1]))
 
         test_counters(net, cli)
+        time.sleep(1.2)
+        test_fs_persist(net, cli)
         time.sleep(1.2)
         test_src_limit(net, cli)
         time.sleep(2.2)

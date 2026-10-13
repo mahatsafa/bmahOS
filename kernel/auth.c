@@ -461,6 +461,8 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         audit_dump(0);   // D5: hanya admin (tidak di g_ro_cmds)
     } else if (net_cmd_is(cmd, len, "audit gagal")) {
         audit_dump(1);
+    } else if (fscmd_execute(cmd, len)) {
+        // D6: ls/baca/tulis/tambah (admin; tidak di g_ro_cmds)
     } else {
         // B2: perintah baca juga boleh lewat jalur nonce.
         net_cmd_execute(cmd, len);

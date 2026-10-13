@@ -185,7 +185,11 @@ void ahci_port_init(volatile uint32_t *hba, uint32_t port)
 #define AHCI_ERR_BAD_PORT   -6
 #define AHCI_ERR_TIMEOUT    -7
 
-int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_buf)
+// D6-3: satu perintah ATA lewat slot 0. ata_cmd 0x25 READ DMA EXT,
+// 0x35 WRITE DMA EXT (wbuf = isi count sektor, disalin ke buffer DMA port),
+// 0xEA FLUSH CACHE EXT (count 0, tanpa PRDT).
+static int ahci_issue(uint32_t port_index, uint8_t ata_cmd, uint64_t lba,
+                      uint32_t count, const uint8_t *wbuf)
 {
     if (port_index >= (uint32_t)g_ahci_ata_port_count) {
         return AHCI_ERR_BAD_PORT;
@@ -195,13 +199,11 @@ int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_b
         return AHCI_ERR_NOT_INIT;
     }
 
-    if (count == 0 || count > 8) {
+    if (count > 8 || (count == 0 && ata_cmd != 0xEA)) {
         return AHCI_ERR_COUNT;
     }
 
-    uint64_t lba_end = lba + (uint64_t)(count - 1);
-
-    if (lba_end > 0x0000FFFFFFFFFFFFULL) {
+    if (count > 0 && lba + (uint64_t)(count - 1) > 0x0000FFFFFFFFFFFFULL) {
         return AHCI_ERR_LBA;
     }
 
@@ -216,8 +218,14 @@ int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_b
     uint64_t data_buf_phys = g_ahci_ata_ports[port_index].data_phys;
     uint8_t *data_buf_virt = g_ahci_ata_ports[port_index].data_virt;
 
-    for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
-        data_buf_virt[i] = 0xAA;
+    if (wbuf) {
+        for (uint32_t i = 0; i < count * 512u; i++) {
+            data_buf_virt[i] = wbuf[i];
+        }
+    } else {
+        for (uint64_t i = 0; i < PMM_PAGE_SIZE; i++) {
+            data_buf_virt[i] = 0xAA;
+        }
     }
 
     uint8_t *cmd_table_virt = g_ahci_ata_ports[port_index].cmd_table_virt;
@@ -230,7 +238,7 @@ int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_b
 
     cmd_table_virt[0x00] = 0x27;
     cmd_table_virt[0x01] = 0x80;
-    cmd_table_virt[0x02] = 0x25;
+    cmd_table_virt[0x02] = ata_cmd;
     cmd_table_virt[0x03] = 0x00;
     cmd_table_virt[0x04] = (uint8_t)((lba >> 0) & 0xFF);
     cmd_table_virt[0x05] = (uint8_t)((lba >> 8) & 0xFF);
@@ -255,7 +263,12 @@ int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_b
     uint32_t *header0 = (uint32_t *)(cmd_list_phys_current + hhdm_offset);
 
     header0[0] = 5u;
-    header0[0] |= (1u << 16);
+    if (count > 0) {
+        header0[0] |= (1u << 16);   // PRDTL = 1
+    }
+    if (wbuf) {
+        header0[0] |= (1u << 6);    // W: host -> perangkat
+    }
     header0[1] = 0;
 
     *pci_reg = (1u << 0);
@@ -271,7 +284,36 @@ int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_b
         return AHCI_ERR_DEVICE;
     }
 
-    *out_buf = data_buf_virt;
-
     return AHCI_OK;
+}
+
+int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_buf)
+{
+    if (count == 0) {
+        return AHCI_ERR_COUNT;
+    }
+
+    int rc = ahci_issue(port_index, 0x25, lba, count, 0);
+
+    if (rc == AHCI_OK) {
+        *out_buf = g_ahci_ata_ports[port_index].data_virt;
+    }
+
+    return rc;
+}
+
+// D6-3: tulis count (1..8) sektor dari buf. Cache perangkat belum tentu
+// sudah ke media: pemanggil yang butuh urutan memanggil ahci_flush().
+int ahci_write(uint32_t port_index, uint64_t lba, uint32_t count, const uint8_t *buf)
+{
+    if (count == 0 || !buf) {
+        return AHCI_ERR_COUNT;
+    }
+
+    return ahci_issue(port_index, 0x35, lba, count, buf);
+}
+
+int ahci_flush(uint32_t port_index)
+{
+    return ahci_issue(port_index, 0xEA, 0, 0, 0);
 }

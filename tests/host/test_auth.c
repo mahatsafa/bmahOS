@@ -118,6 +118,17 @@ uint8_t *fat32_load_file(uint32_t first_cluster, uint32_t file_size)
     return buf;
 }
 
+// D6: perintah berkas di-stub (fscmd.c diuji di test_fat32); "ls" dikenali.
+int fscmd_execute(const volatile uint8_t *cmd, uint32_t len)
+{
+    if (len == 2 && cmd[0] == 'l' && cmd[1] == 's') {
+        g_cmd_len = 0;
+        cmd_puts("fs-stub\n");
+        return 1;
+    }
+    return 0;
+}
+
 // ---- pembantu ----
 static const char KEY[] = "kunci-uji-bmahOS-0123456789";
 
@@ -746,6 +757,15 @@ static void test_audit(void)
           memcmp(out, "ERR: peran read-only\n", 21) == 0);
     CHECK(auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"audit", 5, out, sizeof(out), &rb) ==
           sizeof(out) && memcmp(out, "audit ok: total=", 16) == 0);
+
+    // D6: perintah berkas hanya admin (tidak di daftar putih ro).
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"ls", 2));
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"tulis A.TXT x", 13));
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"baca A.TXT", 10));
+    CHECK(auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"ls", 2, out, sizeof(out), &rb) == 21 &&
+          memcmp(out, "ERR: peran read-only\n", 21) == 0);
+    CHECK(auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"ls", 2, out, sizeof(out), &rb) == 8 &&
+          memcmp(out, "fs-stub\n", 8) == 0);
 }
 
 int main(void)

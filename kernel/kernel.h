@@ -337,6 +337,8 @@ void ioapic_map_and_configure(uint64_t pml4_phys, uint32_t gsi, uint8_t vector, 
 extern int g_ahci_ata_port_count;
 void ahci_port_init(volatile uint32_t *hba, uint32_t port);
 int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_buf);
+int ahci_write(uint32_t port_index, uint64_t lba, uint32_t count, const uint8_t *buf);
+int ahci_flush(uint32_t port_index);
 
 // ---- fat32.c (FAT32 baca) ----
 void ahci_fat32_probe_and_log(void);
@@ -345,6 +347,28 @@ uint8_t * fat32_load_file(uint32_t first_cluster, uint32_t file_size);
 void fat32_probe_root_cluster(void);
 void fat32_list_root_directory(void);
 void fat32_read_file(uint32_t first_cluster, uint32_t file_size);
+// D6-3: tulis (root saja). Kode error negatif, tidak pernah halt.
+#define FAT32_WRITE_MAX    4096
+#define FAT32_OK           0
+#define FAT32_ERR_NOVOL   -1
+#define FAT32_ERR_RO      -2
+#define FAT32_ERR_IO      -3
+#define FAT32_ERR_CORRUPT -4
+#define FAT32_ERR_FULL    -5
+#define FAT32_ERR_DIRFULL -6
+#define FAT32_ERR_TOOBIG  -7
+#define FAT32_ERR_NOTFILE -8
+#define FAT32_ERR_NOENT   -9
+#define FAT32_ERR_UNSUP   -10
+extern uint64_t g_fat_wr_ok, g_fat_wr_fail;
+int fat32_root_read(const uint8_t **dir, uint32_t *entries);
+int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *out_size);
+int fat32_write_name(const char *name83, const uint8_t *data, uint32_t len,
+                     int append, uint32_t *out_size);
+int fat32_writable(void);
+uint32_t fat32_free_hint(void);
+// fscmd.c: perintah ls/baca/tulis/tambah (admin). Return 1 bila dikenali.
+int fscmd_execute(const volatile uint8_t *cmd, uint32_t len);
 
 // ---- e1000.c (driver NIC Intel 8254x) ----
 #define E1000_REG_RDT      0x2818

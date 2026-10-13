@@ -12,10 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Pasang clang
+      - name: Pasang clang (+ dosfstools/mtools untuk uji FAT32, D6)
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang
+          sudo apt-get install -y clang dosfstools mtools
 
       - name: make host-test
         run: make host-test

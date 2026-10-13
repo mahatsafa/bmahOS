@@ -42,7 +42,7 @@ trap cleanup EXIT
 for f in "$ISO" "$OVMF_CODE" "$OVMF_VARS"; do
     [ -f "$f" ] || { echo "tidak ada: $f"; exit 2; }
 done
-for t in "$QEMU" mkfs.vfat mcopy python3; do
+for t in "$QEMU" mkfs.vfat mcopy mtype fsck.fat python3; do
     command -v "$t" >/dev/null 2>&1 || { echo "butuh program: $t"; exit 2; }
 done
 
@@ -265,6 +265,37 @@ check "D5: UDP audit gagal: hmac salah dari jalur UDP tercatat (kode 5)" \
 check "D5: baris AUDIT di serial (login, cmd, gagal), tidak di perintah log" \
     'grep -aq "AUDIT #[0-9]* t=[0-9]* .* tcp admin login" "$LOG" && grep -aq "AUDIT #.* udp admin cmd audit" "$LOG" && grep -aq "AUDIT #.* login-gagal kode=5" "$LOG" && ! $BM log | grep -q AUDIT'
 
+# D6: FAT32 tulis lewat shell TCP (admin), UDP, dan penolakan read-only.
+# Isi disk diperiksa lagi dari host (fsck.fat, mtype) setelah QEMU keluar,
+# dan oleh kernel di boot kedua (qemu-rawnet.py test_fs_persist).
+sleep 2.5
+FS_OUT="$($BMT --key "$KEY" ls "tulis catatan.txt baris satu" \
+    "tambah CATATAN.TXT baris dua" "baca CATATAN.TXT" "tulis KEY.TXT x" "baca KEY.TXT" \
+    "tulis A.B.C x" 2>&1)"
+echo "$FS_OUT" | sed "s/^/info  fs: /" | head -20
+check "D6: ls (fs: mode=tulis) + tulis/tambah/baca CATATAN.TXT lewat TCP" \
+    'echo "$FS_OUT" | grep -q "^KEY.TXT 32$" && echo "$FS_OUT" | grep -q "^fs: mode=tulis " && echo "$FS_OUT" | grep -q "^OK CATATAN.TXT ukuran=11$" && echo "$FS_OUT" | grep -q "^OK CATATAN.TXT ukuran=21$" && echo "$FS_OUT" | grep -A2 "^isi CATATAN.TXT ukuran=21:$" | tail -1 | grep -q "^baris dua$"'
+check "D6: KEY.TXT dilindungi (tulis/baca), nama bukan 8.3 ditolak" \
+    '[ "$(echo "$FS_OUT" | grep -c "^ERR: fs: nama dilindungi$")" -eq 2 ] && echo "$FS_OUT" | grep -q "^ERR: fs: nama bukan 8.3"'
+sleep 2.5
+FS_ARGS=("tulis PANJANG.TXT")
+for i in $(seq 0 127); do
+    FS_ARGS+=("tambah PANJANG.TXT $(printf 'baris-%04d-xxxxxxxxxxxxxxxxxxxx' "$i")")
+done
+FS_ARGS+=("tambah PANJANG.TXT lebih" "baca PANJANG.TXT 4064")
+FS_OUT="$($BMT --key "$KEY" "${FS_ARGS[@]}" 2>&1)"
+check "D6: 128 baris -> 4096 byte (8 cluster), baris ke-129 ERR melebihi 4096" \
+    '[ "$(echo "$FS_OUT" | grep -c "^OK PANJANG.TXT ukuran=")" -eq 129 ] && echo "$FS_OUT" | grep -q "^OK PANJANG.TXT ukuran=4096$" && echo "$FS_OUT" | grep -q "^ERR: fs: file melebihi 4096 byte$" && echo "$FS_OUT" | grep -q "^baris-0127-x*$"'
+sleep 2.5
+FS_OUT="$($BMT --key "$ROKEY" ls "tulis RO.TXT x" "baca CATATAN.TXT" 2>&1)"
+check "D6: read-only: ls/tulis/baca -> ERR peran read-only" \
+    '[ "$(echo "$FS_OUT" | grep -c "^ERR: peran read-only$")" -eq 3 ]'
+sleep 1.2
+FS_U1="$($BM "tulis UDP.TXT dari udp" 2>&1)"
+FS_U2="$($BM "baca UDP.TXT" 2>&1)"
+check "D6: UDP (jalur nonce) tulis + baca UDP.TXT" \
+    '[ "$FS_U1" = "OK UDP.TXT ukuran=9" ] && echo "$FS_U2" | tail -1 | grep -q "^dari udp$"'
+
 # Replay: datagram yang sama dikirim dua kali, yang kedua harus ditolak.
 # Argumen: mode (nonce|counter) dan perintah. Keluaran: "<balasan1>|<balasan2>".
 replay() {
@@ -321,6 +352,14 @@ check "reboot lewat reset ACPI"   'grep -q "ACPI-R: reboot via register reset FA
 
 check "tanpa exception/fault di log" \
     '! grep -qiE "EXCEPTION|#GP|#PF|fault|panic|FATAL" "$LOG"'
+
+# D6: disk setelah boot pertama (QEMU sudah keluar) dibaca dari host.
+printf 'baris satu\nbaris dua\n' > "$WORK/catatan.want"
+for i in $(seq 0 127); do printf 'baris-%04d-xxxxxxxxxxxxxxxxxxxx\n' "$i"; done > "$WORK/panjang.want"
+check "D6: fsck.fat -n bersih setelah tulis (FAT, dir, FSInfo)" \
+    'fsck.fat -n "$DISK" >"$WORK/fsck.out" 2>&1'
+check "D6: mtype dari host = isi yang ditulis kernel; KEY.TXT tidak berubah" \
+    'mtype -i "$DISK" ::CATATAN.TXT | cmp -s - "$WORK/catatan.want" && mtype -i "$DISK" ::PANJANG.TXT | cmp -s - "$WORK/panjang.want" && mtype -i "$DISK" ::KEY.TXT | cmp -s - "$KEY"'
 
 # Tahap 2: boot kedua dengan frame Ethernet mentah (lihat tests/qemu-rawnet.py).
 echo

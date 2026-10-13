@@ -101,5 +101,31 @@ audit ok: total=<n> tampil=<k> ditimpa=<n-k>
 - Ring penuh: entri tertua ditimpa. Bila keluaran tidak muat 1400 byte: `...(terpotong)`.
 - Tiap entri juga ke serial sebagai `AUDIT <baris>` (tidak masuk ring `log`). Isi ring hilang saat reboot.
 
+## Berkas FAT32 (D6)
+
+Hanya admin (UDP 7778 jalur nonce atau sesi TCP admin; read-only -> `ERR: peran read-only`).
+Hanya root directory (cluster root pertama), nama 8.3 `A-Z 0-9 _ -` (huruf kecil diubah ke besar).
+
+| Perintah | Hasil |
+|---|---|
+| `ls` | satu baris per entri (`NAMA.EXT <ukuran>` atau `NAMA/`), lalu `fs: mode=tulis\|baca-saja bebas_cluster=<n\|?> tulis_ok=<n> tulis_gagal=<n>` |
+| `baca NAMA [offset]` | `isi NAMA ukuran=<n>:` lalu maks 1024 byte isi (selain ASCII cetak dan LF jadi `?`); sisa: `(terpotong; lanjut: baca NAMA <offset>)` |
+| `tulis NAMA [teks]` | buat atau timpa, isi = `teks` + LF (tanpa teks: file kosong) -> `OK NAMA ukuran=<n>` |
+| `tambah NAMA teks` | tambah satu baris `teks` + LF (file dibuat bila belum ada) -> `OK NAMA ukuran=<n>` |
+
+- Teks hanya 0x20..0x7e. Perintah TCP maks 64 byte (UDP 102), jadi teks per baris ~45 byte.
+- File maks 4096 byte (yang lebih besar tidak bisa ditimpa/ditambah/dibaca). `KEY.TXT`, `KEYRO.TXT`,
+  `PROG.BIN` ditolak (`ERR: fs: nama dilindungi`). Entri ber-atribut RO/hidden/system/dir tidak ditulis.
+- Kesalahan: `ERR: fs: <alasan>` (tidak ada volume, volume baca saja, error disk, struktur disk rusak,
+  disk penuh, direktori root penuh, file melebihi 4096 byte, bukan file biasa, file tidak ada,
+  root lebih dari 1 cluster). Semua pemeriksaan selesai sebelum sektor pertama ditulis.
+- Urutan tulis (flush di antaranya): data -> rantai FAT baru (FAT1, FAT2) -> sambungan ujung rantai lama ->
+  entri direktori -> (timpa) bebaskan rantai lama -> FSInfo. Crash di tengah: file berisi isi lama atau
+  baru, paling buruk ada lost cluster (fsck membersihkan). Error I/O saat menulis -> volume baca saja
+  sampai reboot.
+- Volume baca saja sejak boot bila mirroring FAT mati (ExtFlags bit 7) atau FSInfo tidak sah. BPB yang
+  tidak lolos validasi -> volume tidak dipakai sama sekali.
+- Tanggal file tetap 2026-01-01 (belum ada RTC tepercaya).
+
 Klien: `client/bmctl.py --tcp` (sekali jalan atau interaktif) dan `client/bmtcp.ps1`
 (PowerShell: `bmtcp`, `bmt <perintah>`, `bmtx`); uji: `tests/tcp-login.py HOST PORT KEYFILE [ROKEYFILE]`.
