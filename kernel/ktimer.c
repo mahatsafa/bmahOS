@@ -158,10 +158,14 @@ void ktimer_selftest(void)
     ktimer_start(&g_kt_b, 5, kt_record, (void *)'B');    // dibatalkan
     ktimer_start(&g_kt_c, 20, kt_record, (void *)'C');
     ktimer_start(&g_kt_r, 3, kt_rearm, (void *)'R');     // 3, 7, 11
+    // Net task bisa di-preempt di antara baris di atas (build dev: task uji
+    // round-robin), jadi deadline R pertama dicatat, bukan dihitung dari t0.
+    uint64_t r0 = g_kt_r.deadline;
     int cancel_ok = ktimer_cancel(&g_kt_b) == 1 && ktimer_cancel(&g_kt_b) == 0 &&
                     !ktimer_pending(&g_kt_b) && ktimer_pending(&g_kt_a);
 
-    while (timer_ticks - t0 < 30) {
+    // Tunggu kelima kejadian (C paling lambat t0 + 20 + preemption); maks 60.
+    while (g_kt_n < 5 && timer_ticks - t0 < 60) {
         task_sleep(1);
         ktimer_run();
     }
@@ -170,14 +174,17 @@ void ktimer_selftest(void)
     // dipasang ulang relatif waktu jalan, jadi bila net task telat urutannya
     // bisa lain (mis. RARRC) dan itu benar. Yang diuji: 5 kejadian (R 3x,
     // A, C), menyala urut deadline, tidak pernah sebelum deadline-nya.
-    int nr = 0, na = 0, nc = 0;
+    int nr = 0, na = 0, nc = 0, first_r = -1;
     for (int i = 0; i < g_kt_n; i++) {
         nr += g_kt_id[i] == 'R';
         na += g_kt_id[i] == 'A';
         nc += g_kt_id[i] == 'C';
+        if (g_kt_id[i] == 'R' && first_r < 0) {
+            first_r = i;
+        }
     }
     int order_ok = g_kt_n == 5 && nr == 3 && na == 1 && nc == 1 &&
-                   g_kt_due[0] == t0 + 3;
+                   first_r >= 0 && g_kt_due[first_r] == r0;
     for (int i = 1; order_ok && i < 5; i++) {
         order_ok = g_kt_due[i] >= g_kt_due[i - 1];
     }
