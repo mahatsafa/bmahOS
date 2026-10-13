@@ -120,6 +120,7 @@ int ktimer_run(void)
 #define KT_TEST_EVENTS 8
 
 static uint64_t g_kt_tick[KT_TEST_EVENTS];
+static uint64_t g_kt_due[KT_TEST_EVENTS];   // deadline timer saat menyala
 static char g_kt_id[KT_TEST_EVENTS];
 static int g_kt_n;
 static ktimer_t g_kt_a, g_kt_b, g_kt_c, g_kt_r;
@@ -127,9 +128,14 @@ static int g_kt_rearm;
 
 static void kt_record(void *arg)
 {
+    char id = (char)(uintptr_t)arg;
+    ktimer_t *t = id == 'A' ? &g_kt_a : id == 'B' ? &g_kt_b :
+                  id == 'C' ? &g_kt_c : &g_kt_r;
+
     if (g_kt_n < KT_TEST_EVENTS) {
-        g_kt_id[g_kt_n] = (char)(uintptr_t)arg;
+        g_kt_id[g_kt_n] = id;
         g_kt_tick[g_kt_n] = timer_ticks;
+        g_kt_due[g_kt_n] = t->deadline;
         g_kt_n++;
     }
 }
@@ -160,20 +166,27 @@ void ktimer_selftest(void)
         ktimer_run();
     }
 
-    // Urutan yang diharapkan: R(3) R(7) A(10) R(11) C(20); B tidak pernah.
-    static const char want[] = "RRARC";
-    int order_ok = g_kt_n == 5;
-    for (int i = 0; order_ok && i < 5; i++) {
-        order_ok = g_kt_id[i] == want[i];
+    // Tanpa keterlambatan: R(3) R(7) A(10) R(11) C(20); B tidak pernah. R
+    // dipasang ulang relatif waktu jalan, jadi bila net task telat urutannya
+    // bisa lain (mis. RARRC) dan itu benar. Yang diuji: 5 kejadian (R 3x,
+    // A, C), menyala urut deadline, tidak pernah sebelum deadline-nya.
+    int nr = 0, na = 0, nc = 0;
+    for (int i = 0; i < g_kt_n; i++) {
+        nr += g_kt_id[i] == 'R';
+        na += g_kt_id[i] == 'A';
+        nc += g_kt_id[i] == 'C';
     }
-    static const uint64_t due[5] = { 3, 7, 10, 11, 20 };
+    int order_ok = g_kt_n == 5 && nr == 3 && na == 1 && nc == 1 &&
+                   g_kt_due[0] == t0 + 3;
+    for (int i = 1; order_ok && i < 5; i++) {
+        order_ok = g_kt_due[i] >= g_kt_due[i - 1];
+    }
     uint64_t late = 0;
     int time_ok = order_ok;
     for (int i = 0; time_ok && i < 5; i++) {
-        uint64_t at = g_kt_tick[i] - t0;
-        time_ok = at >= due[i];
-        if (at - due[i] > late) {
-            late = at - due[i];
+        time_ok = g_kt_tick[i] >= g_kt_due[i];
+        if (g_kt_tick[i] - g_kt_due[i] > late) {
+            late = g_kt_tick[i] - g_kt_due[i];
         }
     }
     // Batas longgar: net task bergiliran round-robin dengan task lain (build
