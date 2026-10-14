@@ -176,7 +176,7 @@ Linux, dan klien Python.
 - [x] **D5** Audit log: siapa menjalankan perintah apa, kapan (cap waktu menyusul di P3). (75634ee, 2026-10-13)
 - [x] **D6** FAT32 tulis dengan aturan aman (validasi BPB, kode error bukan halt, urutan tulis FAT). (824aa4f + f873194 + 682969f, 2026-10-13)
 - [x] **D7** (2026-10-13; KT-2 cb7f132, D7-1 8a55d19, D7-2 ae42e86, D7-3 bdc58cb; `CONFIG.CFG`, `config`/`set`, `hapus`/`ganti`) Konfigurasi persisten dengan penulisan atomik (tulis file sementara lalu rename).
-- [ ] **D8** Keputusan kerahasiaan balasan: lapisan enkripsi dari library teruji, atau SSH. Catat di `DECISIONS.md`
+- [x] **D8** (2026-10-13, f7d32ae) Keputusan kerahasiaan balasan: lapisan enkripsi dari library teruji, atau SSH. Catat di `DECISIONS.md`
   sebelum implementasi. Jangan merancang protokol kripto sendiri.
   Keputusan (2026-10-13): TLS 1.2 dengan BearSSL di port TCP 7780, sertifikat self-signed di-pin klien (DECISIONS).
 - [ ] **D9** TLS port 7780 (BearSSL, keputusan D8). Rencana dulu, lalu bertahap: D9a vendor BearSSL + build freestanding
