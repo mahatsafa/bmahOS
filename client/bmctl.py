@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bmctl: klien perintah jarak jauh bmahOS (UDP 7778 / TCP 7779, HMAC-SHA256).
+"""bmctl: klien perintah jarak jauh bmahOS (UDP 7778 / TCP 7779 / TLS 7780, HMAC-SHA256).
 
 Hanya pustaka standar Python 3, jalan di Windows dan Linux.
 
@@ -10,6 +10,7 @@ Contoh:
     python bmctl.py --key key.txt reboot
     python bmctl.py --tcp --key key.txt uptime metrics   (satu sesi TCP)
     python bmctl.py --tcp --key key.txt                  (interaktif)
+    python bmctl.py --tls --pin tlspin.txt --key key.txt uptime   (TLS 7780)
 
 Semua perintah memakai jalur nonce: kirim "CHAL", terima "nonce: <32 hex>",
 lalu kirim "<nonce> <perintah> <hmac>". hmac = HMAC-SHA256 atas teks sebelum
@@ -26,6 +27,13 @@ berakhir di "END <n>". Tanpa perintah: mode interaktif (prompt bila stdin
 terminal, "exit" atau EOF menutup). Kode keluar: 0 OK, 1 ada ERR atau server
 menutup, 2 koneksi/timeout.
 
+--tls (D9) = protokol --tcp yang sama di dalam TLS 1.2 ke port 7780.
+Identitas server dicek dengan pin: sha256 sertifikat (64 hex, atau file
+berisi 64 hex lewat --pin / $BMAHOS_TLS_PIN), dibandingkan sebelum byte
+aplikasi apa pun dikirim; beda -> kode keluar 2 tanpa login. Verifikasi CA
+tidak dipakai (sertifikat self-signed); tanda tangan handshake tetap
+diverifikasi OpenSSL dengan kunci di sertifikat itu.
+
 Kunci dibaca dari file (sama dengan KEY.TXT di disk bmahOS); spasi/CR/LF/NUL
 di akhir file dibuang, sama seperti yang dilakukan kernel.
 """
@@ -34,13 +42,16 @@ import argparse
 import hashlib
 import hmac
 import os
+import re
 import socket
+import ssl
 import sys
 import time
 
 DEFAULT_HOST = "192.168.50.200"
 DEFAULT_PORT = 7778
 DEFAULT_TCP_PORT = 7779
+DEFAULT_TLS_PORT = 7780
 CMD_MAX = 64   # panjang perintah maks di shell TCP (kernel/auth.c)
 
 READ_CMDS = ("help", "ping", "uptime", "mem", "log", "irq", "stats",
@@ -70,11 +81,13 @@ def exchange(sock, addr, text):
 class TcpSession:
     """Satu koneksi shell TCP 7779 yang sudah login."""
 
-    def __init__(self, host, port, key, timeout):
+    def __init__(self, host, port, key, timeout, pin=None):
         self.key = key
         self.seq = 0
         self.buf = b""
         self.sock = socket.create_connection((host, port), timeout=timeout)
+        if pin is not None:
+            self.sock = tls_wrap(self.sock, pin)
         l1 = self.readline()
         l2 = self.readline()
         if l1 != "bmahOS login" or not l2.startswith("nonce: ") or len(l2) != 39:
@@ -117,6 +130,41 @@ class TcpSession:
         self.sock.close()
 
 
+class PinError(Exception):
+    pass
+
+
+def tls_wrap(sock, pin):
+    """D9: TLS 1.2 tanpa verifikasi CA; sertifikat server harus sama dengan pin."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        s = ctx.wrap_socket(sock)
+    except BaseException:
+        sock.close()
+        raise
+    got = hashlib.sha256(s.getpeercert(binary_form=True)).hexdigest()
+    if not hmac.compare_digest(got, pin):
+        s.close()
+        raise PinError("pin sertifikat beda: server %s" % got)
+    return s
+
+
+def load_pin(arg):
+    """64 hex langsung, atau path file berisi 64 hex."""
+    text = arg
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", arg.strip()):
+        with open(arg) as f:
+            text = f.read()
+    text = text.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", text):
+        raise ValueError("pin harus 64 hex (sha256 sertifikat)")
+    return text
+
+
 def check_cmd(cmd):
     if not 1 <= len(cmd.encode()) <= CMD_MAX or cmd != cmd.strip() or "\n" in cmd:
         return "bmctl: perintah harus 1..%d byte tanpa spasi di awal/akhir" % CMD_MAX
@@ -125,14 +173,30 @@ def check_cmd(cmd):
 
 def run_tcp(args):
     key = load_key(args.key)
-    port = args.port or int(os.environ.get("BMAHOS_TCP_PORT", DEFAULT_TCP_PORT))
+    pin = None
+    if args.tls:
+        pin_arg = args.pin or os.environ.get("BMAHOS_TLS_PIN")
+        if not pin_arg:
+            sys.stderr.write("bmctl: --tls butuh --pin (atau $BMAHOS_TLS_PIN)\n")
+            return 2
+        try:
+            pin = load_pin(pin_arg)
+        except (OSError, ValueError) as e:
+            sys.stderr.write("bmctl: pin tidak valid: %s\n" % e)
+            return 2
+        port = args.port or int(os.environ.get("BMAHOS_TLS_PORT", DEFAULT_TLS_PORT))
+    else:
+        port = args.port or int(os.environ.get("BMAHOS_TCP_PORT", DEFAULT_TCP_PORT))
     for c in args.command:
         err = check_cmd(c)
         if err:
             sys.stderr.write(err + "\n")
             return 2
     try:
-        sess = TcpSession(args.host, port, key, args.timeout)
+        sess = TcpSession(args.host, port, key, args.timeout, pin)
+    except PinError as e:
+        sys.stderr.write("bmctl: %s (koneksi ditutup tanpa login)\n" % e)
+        return 2
     except (OSError, ConnectionError) as e:
         sys.stderr.write("bmctl: gagal terhubung ke %s:%d: %s\n" % (args.host, port, e))
         return 2
@@ -192,7 +256,7 @@ def run_tcp(args):
 
 
 def run(args):
-    if args.tcp:
+    if args.tcp or args.tls:
         return run_tcp(args)
     if len(args.command) != 1:
         sys.stderr.write("bmctl: jalur UDP butuh tepat satu perintah (pakai --tcp untuk sesi)\n")
@@ -237,12 +301,18 @@ def main():
                         "beberapa = dijalankan berurutan dalam satu sesi)")
     p.add_argument("--tcp", action="store_true",
                    help="shell TCP port 7779 (login + perintah bertanda tangan nomor urut)")
+    p.add_argument("--tls", action="store_true",
+                   help="shell yang sama lewat TLS 1.2 port 7780 (butuh --pin)")
+    p.add_argument("--pin", default=None,
+                   help="sha256 sertifikat server (64 hex) atau file berisi pin; "
+                        "default $BMAHOS_TLS_PIN")
     p.add_argument("--key", required=True, help="file kunci (isi sama dengan KEY.TXT)")
     p.add_argument("--host", default=os.environ.get("BMAHOS_HOST", DEFAULT_HOST),
                    help="alamat bmahOS (default %s atau $BMAHOS_HOST)" % DEFAULT_HOST)
     p.add_argument("--port", type=int, default=None,
                    help="port (default UDP %d atau $BMAHOS_PORT; TCP %d atau "
-                        "$BMAHOS_TCP_PORT)" % (DEFAULT_PORT, DEFAULT_TCP_PORT))
+                        "$BMAHOS_TCP_PORT; TLS %d atau $BMAHOS_TLS_PORT)"
+                        % (DEFAULT_PORT, DEFAULT_TCP_PORT, DEFAULT_TLS_PORT))
     p.add_argument("--counter", action="store_true",
                    help="jalur counter lama (hanya build LEGACYCTR=1)")
     p.add_argument("--priv", action="store_true",
@@ -251,7 +321,7 @@ def main():
                    help="detik per balasan (default UDP 3, TCP 10)")
     args = p.parse_args()
     if args.timeout is None:
-        args.timeout = 10.0 if args.tcp else 3.0
+        args.timeout = 10.0 if args.tcp or args.tls else 3.0
     return run(args)
 
 

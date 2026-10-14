@@ -277,6 +277,21 @@ check "D9: pcap kontrol: payload 7779 memuat teks polos (penangkapan bekerja)" \
     '! python3 "$ROOT/tests/pcap-check.py" "$WORK/net.pcap" 7779 "bmahOS login" >/dev/null'
 check "D9: AUDIT di serial: login lewat tls" 'grep -aq "AUDIT #.* tls admin login" "$LOG"'
 
+# D9c: bmctl.py --tls (pin dari file; pin salah -> rc 2 tanpa login).
+echo "$TLSPIN" > "$WORK/tlspin.txt"
+BMS="python3 $ROOT/client/bmctl.py --tls --host 127.0.0.1 --port $SPORT --timeout 20"
+sleep 2.5
+S_OUT="$($BMS --pin "$WORK/tlspin.txt" --key "$KEY" uptime pping 2>&1)"; S_RC=$?
+check "D9c: bmctl --tls --pin file: uptime pping, rc 0" \
+    '[ "$S_RC" -eq 0 ] && echo "$S_OUT" | grep -q "^uptime: " && echo "$S_OUT" | grep -q "^ppong$" && echo "$S_OUT" | grep -q "^bye$"'
+sleep 2.5
+S_OUT="$($BMS --pin "$(printf "%064d" 0)" --key "$KEY" uptime 2>&1)"; S_RC=$?
+check "D9c: bmctl --tls pin salah -> rc 2, tanpa login" \
+    '[ "$S_RC" -eq 2 ] && echo "$S_OUT" | grep -q "pin sertifikat beda: server $TLSPIN" && ! echo "$S_OUT" | grep -q "^uptime"'
+S_OUT="$($BMS --key "$KEY" uptime 2>&1)"; S_RC=$?
+check "D9c: bmctl --tls tanpa pin -> rc 2" \
+    '[ "$S_RC" -eq 2 ] && echo "$S_OUT" | grep -q "butuh --pin"'
+
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
 
 # D3: bmctl.py --tcp (sekali jalan, interaktif lewat pipa, kunci salah). Jeda
