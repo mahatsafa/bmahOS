@@ -162,6 +162,11 @@ void print_idt_entry32(void)
 
 
 _Static_assert(sizeof(struct tss) == 0x68, "TSS size is wrong");
+// TSS-1: offset sesuai Intel SDM Vol. 3 Gambar 8-11 (TSS 64-bit).
+_Static_assert(offsetof(struct tss, rsp0) == 0x04, "TSS rsp0 offset");
+_Static_assert(offsetof(struct tss, ist1) == 0x24, "TSS ist1 offset");
+_Static_assert(offsetof(struct tss, ist7) == 0x54, "TSS ist7 offset");
+_Static_assert(offsetof(struct tss, iopb_offset) == 0x66, "TSS iopb offset");
 _Static_assert(sizeof(struct gdt_entry) == 8, "GDT entry size is wrong");
 _Static_assert(sizeof(bmahOS_gdt) == 56, "GDT size is wrong");
 
@@ -224,6 +229,9 @@ void gdt_init(void)
     // Stack tumbuh ke bawah -> RSP0 harus nunjuk ke alamat TERTINGGI
     // dari buffer, bukan awal buffer.
     bmahOS_tss.rsp0 = (uint64_t)&rsp0_stack[RSP0_STACK_SIZE];
+    // TSS-1: peta izin I/O di luar limit TSS = tidak ada peta; I/O dari
+    // ring 3 (IOPL 0) selalu #GP.
+    bmahOS_tss.iopb_offset = sizeof(bmahOS_tss);
 }
 
 void print_bmahOS_gdt(void)

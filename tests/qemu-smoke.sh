@@ -202,6 +202,7 @@ check "KEY.TXT dimuat"           'grep -q "Net-11: kunci dimuat" "$LOG"'
 check "D4: KEYRO.TXT dimuat"     'grep -q "D4: kunci read-only dimuat" "$LOG"'
 check "reset ACPI terdeteksi"    'grep -q "ACPI-R: reset ACPI siap" "$LOG"'
 check "NX self-test (B3)"        'grep -q "NX: self-test PASS" "$LOG"'
+check "TSS-1: iopb_offset=0x68 (I/O ring 3 ditolak)" 'grep -q "TSS-1: iopb_offset=0x68 (tanpa peta I/O)" "$LOG"'
 check "PMM free/realloc PASS"    'grep -aq "PMM free/realloc test: PASS" "$LOG"'
 if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "user mode + spawn jalan (hello 2x)" '[ "$(grep -c "^hello" "$LOG")" -eq 2 ]'

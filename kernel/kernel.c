@@ -775,6 +775,10 @@ void kmain(void)
     serial_write_hex(bmahOS_tss.rsp0);
     serial_write("\r\n");
 
+    // TSS-1: baca langsung offset yang dipakai CPU (0x66 = I/O map base).
+    kprintf("TSS-1: iopb_offset=0x%x (tanpa peta I/O)\r\n",
+            (unsigned)*(volatile uint16_t *)((uint8_t *)&bmahOS_tss + 0x66));
+
     serial_write("TSS descriptor AFTER LTR:\r\n");
     print_bmahOS_gdt();
     serial_write("\r\n");

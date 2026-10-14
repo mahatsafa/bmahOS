@@ -138,7 +138,7 @@ struct tss
     uint64_t rsp0;
     uint64_t rsp1;
     uint64_t rsp2;
-    uint32_t reserved1;
+    uint64_t reserved1;   // TSS-1: 64-bit (dulu 32 -> ist* bergeser 4 byte)
     uint64_t ist1;
     uint64_t ist2;
     uint64_t ist3;
@@ -146,10 +146,9 @@ struct tss
     uint64_t ist5;
     uint64_t ist6;
     uint64_t ist7;
-    uint32_t reserved2;
-    uint32_t reserved3;
+    uint64_t reserved2;
+    uint16_t reserved3;
     uint16_t iopb_offset;
-    uint8_t  reserved4[6];
 } __attribute__((packed));
 
 struct idt_entry
