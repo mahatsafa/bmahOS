@@ -1,7 +1,7 @@
 #include "kernel.h"
 
 _Static_assert(
-    sizeof(struct exception_context) == 20 * sizeof(uint64_t),
+    sizeof(struct exception_context) == 22 * sizeof(uint64_t),
     "exception_context size is wrong"
 );
 

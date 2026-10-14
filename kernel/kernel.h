@@ -292,6 +292,7 @@ extern int g_acpi_reset_ok;
 extern uint16_t g_acpi_reset_port;
 extern uint8_t g_acpi_reset_value;
 void acpi_init(void);
+void machine_reboot(void) __attribute__((noreturn));
 
 // ---- pic.c (8259 PIC + PIT) ----
 void pic_remap(void);
@@ -677,6 +678,8 @@ struct exception_context
     uint64_t rip;
     uint64_t cs;
     uint64_t rflags;
+    uint64_t rsp;      // long mode: CPU selalu menyimpan SS:RSP
+    uint64_t ss;
 };
 void trigger_breakpoint(void);
 

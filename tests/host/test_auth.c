@@ -10,9 +10,7 @@
 #include "auth.c"
 
 // ---- stub untuk auth.c ----
-int g_acpi_reset_ok = 0;
-uint16_t g_acpi_reset_port = 0;
-uint8_t g_acpi_reset_value = 0;
+void machine_reboot(void) { abort(); }   // R1-1: acpi.c
 uint64_t g_auth_ctr_off = 0;
 uint64_t g_chal_issued = 0;
 uint64_t g_chal_noentropy = 0;

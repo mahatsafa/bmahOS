@@ -157,6 +157,62 @@ int g_acpi_reset_ok = 0;
 uint16_t g_acpi_reset_port = 0;
 uint8_t g_acpi_reset_value = 0;
 
+// R1-1 (dulu priv_do_reboot di auth.c): register reset ACPI (FADT, ACPI-R),
+// 8042 pulse reset (0xFE), lalu cadangan triple fault (IDT limit 0 lalu
+// int3). NOACPIRESET=1 dan NOKBDRESET=1 melewati jalur masing-masing untuk
+// menguji cadangan. Tidak pernah kembali.
+void machine_reboot(void)
+{
+    __asm__ volatile("cli");
+    g_serial_mute = 0;
+
+#ifndef BMAHOS_NOACPIRESET
+    if (g_acpi_reset_ok) {
+        serial_write("ACPI-R: reboot via register reset FADT\r\n");
+        outb(g_acpi_reset_port, g_acpi_reset_value);
+
+        for (uint32_t i = 0; i < 1000000; i++) {
+            (void)inb(0x64);
+        }
+
+        serial_write("ACPI-R: reset ACPI tidak me-reset, lanjut 8042\r\n");
+    }
+#else
+    serial_write("ACPI-R: reset ACPI dilewati (build NOACPIRESET)\r\n");
+#endif
+
+#ifndef BMAHOS_NOKBDRESET
+    serial_write("Net-18B: reboot via 8042 (0xFE)\r\n");
+
+    for (uint32_t i = 0; i < 100000; i++) {
+        if ((inb(0x64) & 0x02) == 0) {
+            break;
+        }
+    }
+
+    outb(0x64, 0xFE);
+
+    for (uint32_t i = 0; i < 1000000; i++) {
+        (void)inb(0x64);
+    }
+
+    serial_write("Net-18B: 8042 tidak me-reset, cadangan triple fault\r\n");
+#else
+    serial_write("Net-18B: reboot via triple fault (build NOKBDRESET)\r\n");
+#endif
+
+    struct __attribute__((packed)) {
+        uint16_t limit;
+        uint64_t base;
+    } zero_idt = {0, 0};
+
+    __asm__ volatile("lidt %0; int3" : : "m"(zero_idt));
+
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
 static void acpi_parse_fadt(struct acpi_sdt_header *fadt)
 {
     uint8_t *f = (uint8_t *)fadt;
