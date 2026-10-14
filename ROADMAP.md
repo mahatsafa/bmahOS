@@ -187,7 +187,7 @@ Linux, dan klien Python.
 
 ### Fase 4: Keandalan dan observabilitas
 
-- [ ] **R1** Panic handler: cetak jenis error, RIP, register, stack trace (butuh `-fno-omit-frame-pointer`),
+- [x] **R1** (2026-10-14, 3fa72c4 R1-1, 1fea8fe TSS-1, c9c5d71 R1-2; VMware lulus pf/df/ud/assert) Panic handler: cetak jenis error, RIP, register, stack trace (butuh `-fno-omit-frame-pointer`),
   lalu reboot otomatis setelah N detik. Double fault memakai IST di TSS.
 - [ ] **R2** Netconsole UDP (jalur sederhana, tanpa heap).
 - [ ] **R3** Registry metrik (satu tempat semua counter) dan perintah `bmctl metrics`: CPU, memori, uptime,
