@@ -766,6 +766,7 @@ static ktimer_t g_tcp_rtx_timer[TCP_MAX_CONN];
 
 static void net_tcp_rtx_arm(tcp_tcb_t *t);
 static void net_tcp_log(const char *msg);
+static int net_tcp_cli_flushed(const tcp_tcb_t *t);
 
 // Metrics tcp_state: keadaan slot aktif pertama, 0 bila semua CLOSED.
 int net_tcp_state(void)
@@ -1025,7 +1026,7 @@ static int net_tcp_output(tcp_tcb_t *t)
         // D2: reboot setelah keluaran perintah terkirim dan di-ACK. Dicek
         // sebelum FIN: peer bisa mengirim ACK + FIN dalam satu segmen
         // (Windows Close()), lalu koneksi CLOSE_WAIT.
-        if (t->reboot_after && t->buf_count == 0 && t->out_pos == t->out_len) {
+        if (t->reboot_after && net_tcp_cli_flushed(t)) {
             t->reboot_after = 0;
             g_cli_reboot = 0;
             net_tcp_log("CLI reboot");
@@ -1041,8 +1042,7 @@ static int net_tcp_output(tcp_tcb_t *t)
         }
         // D1: CLI memutuskan menutup (login gagal/timeout, baris panjang):
         // FIN setelah balasan terkirim dan di-ACK.
-        if (t->state == TCP_ESTABLISHED && t->close_after && t->buf_count == 0 &&
-            t->out_pos == t->out_len) {
+        if (t->state == TCP_ESTABLISHED && t->close_after && net_tcp_cli_flushed(t)) {
             net_tcp_send_fin(t, TCP_FIN_WAIT_1);
             net_tcp_log("FIN dikirim (FIN_WAIT_1)");
             return 1;
@@ -1143,6 +1143,25 @@ static void net_tcp_rtx_fire(void *arg)
 }
 
 // ---- D1: CLI port 7779 (login) ----
+// D9b-1: satu pintu keluaran CLI. Return jumlah byte yang masuk antrean.
+static uint32_t net_tcp_cli_write(tcp_tcb_t *t, const volatile uint8_t *d,
+                                  uint32_t len)
+{
+    return net_tcp_queue(t, d, len);
+}
+
+// Ruang antrean untuk balasan CLI (byte).
+static uint32_t net_tcp_cli_space(const tcp_tcb_t *t)
+{
+    return TCP_BUF_SIZE - t->buf_count;
+}
+
+// Keluaran CLI sudah habis terkirim dan di-ACK (syarat FIN close_after/reboot).
+static int net_tcp_cli_flushed(const tcp_tcb_t *t)
+{
+    return t->buf_count == 0 && t->out_pos == t->out_len;
+}
+
 static void net_tcp_cli_reply(tcp_tcb_t *t, const char *s)
 {
     uint32_t n = 0;
@@ -1150,7 +1169,7 @@ static void net_tcp_cli_reply(tcp_tcb_t *t, const char *s)
     while (s[n]) {
         n++;
     }
-    net_tcp_queue(t, (const volatile uint8_t *)s, n);
+    net_tcp_cli_write(t, (const volatile uint8_t *)s, n);
 }
 
 // Dipanggil saat handshake selesai: banner + nonce login.
@@ -1169,14 +1188,13 @@ static void net_tcp_cli_banner(tcp_tcb_t *t)
         m[k++] = hx[t->nonce[i] & 0xF];
     }
     m[k++] = '\n';
-    t->opened = timer_ticks;
-    net_tcp_queue(t, (const volatile uint8_t *)m, k);
+    net_tcp_cli_write(t, (const volatile uint8_t *)m, k);
 }
 
 // D2: alirkan keluaran yang tersisa ke antrean kirim (sebanyak ruang).
 static void net_tcp_cli_drain(tcp_tcb_t *t)
 {
-    t->out_pos += net_tcp_queue(t, t->out + t->out_pos, t->out_len - t->out_pos);
+    t->out_pos += net_tcp_cli_write(t, t->out + t->out_pos, t->out_len - t->out_pos);
 }
 
 static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
@@ -1281,7 +1299,7 @@ static uint32_t net_tcp_cli_rx(tcp_tcb_t *t, const volatile uint8_t *d,
         if (t->close_after) {
             continue;
         }
-        if (TCP_BUF_SIZE - t->buf_count < TCP_CLI_REPLY_MAX ||
+        if (net_tcp_cli_space(t) < TCP_CLI_REPLY_MAX ||
             t->out_pos < t->out_len) {
             break;
         }
@@ -1443,6 +1461,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             g_tcp_conn_open++;
             net_tcp_log("ESTABLISHED");
             if (t->app == TCP_APP_CLI) {
+                t->opened = timer_ticks;
                 net_tcp_cli_banner(t);
             }
         }
