@@ -179,7 +179,7 @@ Linux, dan klien Python.
 - [x] **D8** (2026-10-13, f7d32ae) Keputusan kerahasiaan balasan: lapisan enkripsi dari library teruji, atau SSH. Catat di `DECISIONS.md`
   sebelum implementasi. Jangan merancang protokol kripto sendiri.
   Keputusan (2026-10-13): TLS 1.2 dengan BearSSL di port TCP 7780, sertifikat self-signed di-pin klien (DECISIONS).
-- [ ] **D9** TLS port 7780 (BearSSL, keputusan D8). Rencana dulu, lalu bertahap: D9a vendor BearSSL + build freestanding
+- [x] **D9** (2026-10-14; D9a 9a5493e, D9b-1 5fea1d4, D9b-2 34cf14b, D9c 427d8af, D9d c83719a) TLS port 7780 (BearSSL, keputusan D8). Rencana dulu, lalu bertahap: D9a vendor BearSSL + build freestanding
   + uji host (vektor/handshake di host), D9b TLS server di net task (TCB 7780 membungkus protokol baris 7779,
   konteks statis per sesi), D9c klien `bmctl.py --tls` (pin sha256) + `bmtcp.ps1` (SslStream), D9d dokumen +
   keputusan nasib 7779/UDP. Lulus: QEMU sesi TLS dengan pin benar jalan, pin salah gagal, 7779 tetap; VMware
