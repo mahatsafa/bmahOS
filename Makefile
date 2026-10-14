@@ -7,7 +7,9 @@ LIMINE_INC   := tools/limine/limine-protocol/include
 CC := gcc
 LD := ld
 
-CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -m64 -march=x86-64 -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=kernel -Wall -Wextra -I$(KERNEL_DIR) -I$(LIMINE_INC) -c
+# D9a: ARCH_CFLAGS dipakai juga untuk BearSSL (harus sama: tanpa SSE, mcmodel=kernel).
+ARCH_CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -m64 -march=x86-64 -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=kernel
+CFLAGS := $(ARCH_CFLAGS) -Wall -Wextra -I$(KERNEL_DIR) -I$(LIMINE_INC) -c
 
 ifeq ($(PROD),1)
 CFLAGS += -DBMAHOS_PROD
@@ -73,6 +75,30 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.S
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@
 
+# D9a: BearSSL (third_party/bearssl, commit tercatat di 3RDPARTY.md, tidak diubah).
+# Semua src/*.c -> build/libbearssl.a dengan -O2 (kode kernel sendiri tetap tanpa -O).
+# Konfigurasi: tanpa SSE2/AES-NI/POWER8/RDRAND, tanpa RNG/waktu OS; BR_INT128 nyala.
+# string.h dari kernel/compat (deklarasi mem* dan strlen; implementasi di kernel).
+BEARSSL_DIR  := third_party/bearssl
+BEARSSL_DEFS := -DBR_RDRAND=0 -DBR_USE_GETENTROPY=0 -DBR_USE_URANDOM=0 \
+                -DBR_USE_WIN32_RAND=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_TIME=0 \
+                -DBR_AES_X86NI=0 -DBR_SSE2=0 -DBR_POWER8=0 -DBR_INT128=1
+BEARSSL_INC  := -I$(BEARSSL_DIR)/inc -I$(BEARSSL_DIR)/src
+BEARSSL_SRCS := $(sort $(shell find $(BEARSSL_DIR)/src -name '*.c'))
+BEARSSL_HDRS := $(wildcard $(BEARSSL_DIR)/inc/*.h) $(BEARSSL_DIR)/src/inner.h \
+                $(BEARSSL_DIR)/src/config.h $(KERNEL_DIR)/compat/string.h
+BEARSSL_OBJS := $(patsubst $(BEARSSL_DIR)/src/%.c,$(BUILD_DIR)/bearssl/%.o,$(BEARSSL_SRCS))
+BEARSSL_LIB  := $(BUILD_DIR)/libbearssl.a
+
+$(BUILD_DIR)/bearssl/%.o: $(BEARSSL_DIR)/src/%.c $(BEARSSL_HDRS)
+	@mkdir -p $(dir $@)
+	@$(CC) $(ARCH_CFLAGS) -O2 -I$(KERNEL_DIR)/compat $(BEARSSL_INC) $(BEARSSL_DEFS) -c $< -o $@
+
+$(BEARSSL_LIB): $(BEARSSL_OBJS)
+	@rm -f $@
+	ar rcs $@ $(BEARSSL_OBJS)
+	@echo ">> BearSSL: $(words $(BEARSSL_OBJS)) objek -> $@"
+
 $(KERNEL_ELF): $(OBJS) linker.ld
 	$(LD) $(LDFLAGS) $(OBJS) -o $(KERNEL_ELF)
 
@@ -94,7 +120,7 @@ run: iso
 	@cp -n /usr/share/edk2/ovmf/OVMF_VARS.fd $(BUILD_DIR)/ovmf/OVMF_VARS.fd
 	$(QEMU) -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd -drive if=pflash,format=raw,file=$(BUILD_DIR)/ovmf/OVMF_VARS.fd -cdrom $(ISO_OUT) -serial stdio -m 512M
 
-test: iso
+test: iso $(BEARSSL_LIB)
 	QEMU=$(QEMU) OVMF_CODE=$(OVMF) tests/qemu-smoke.sh
 
 # F1.7: uji unit fungsi murni di host (Linux), dengan ASan + UBSan.
@@ -123,13 +149,42 @@ host_deps_fat32   := $(KERNEL_DIR)/fat32.c $(KERNEL_DIR)/fscmd.c   # D6: butuh m
 host_srcs_config  := $(KERNEL_DIR)/kprintf.c
 host_deps_config  := $(KERNEL_DIR)/config.c    # di-#include oleh test_config.c
 
+# D9a: BearSSL versi host (clang + ASan/UBSan) dan test_crypto upstream untuk
+# implementasi yang dipakai profil TLS D9. -fno-sanitize=function: vtable BearSSL
+# memanggil lewat pointer bertipe kelas (disengaja); alignment: BR_LE_UNALIGNED x86.
+HOST_BEARSSL_CFLAGS := -std=gnu11 -g -O1 -fsanitize=address,undefined \
+               -fno-sanitize=function,alignment -fno-sanitize-recover=all \
+               $(BEARSSL_DEFS) $(BEARSSL_INC)
+HOST_BEARSSL_OBJS := $(patsubst $(BEARSSL_DIR)/src/%.c,$(HOST_BUILD)/bearssl/%.o,$(BEARSSL_SRCS))
+HOST_BEARSSL_LIB  := $(HOST_BUILD)/libbearssl.a
+BEARSSL_KAT := SHA256 HMAC HMAC_DRBG PRF AES_ct64 GHASH_ctmul64 GCM ChaCha20_ct \
+               Poly1305_ctmulq EC_p256_m64 ECDSA_i31
+# baris "done." yang diharapkan (EC_p256_m64 punya baris keygen sendiri)
+BEARSSL_KAT_LINES := 12
+
+$(HOST_BUILD)/bearssl/%.o: $(BEARSSL_DIR)/src/%.c $(BEARSSL_HDRS)
+	@mkdir -p $(dir $@)
+	@$(HOST_CC) $(HOST_BEARSSL_CFLAGS) -c $< -o $@
+
+$(HOST_BEARSSL_LIB): $(HOST_BEARSSL_OBJS)
+	@rm -f $@
+	ar rcs $@ $(HOST_BEARSSL_OBJS)
+
+$(HOST_BUILD)/bearssl_test_crypto: $(BEARSSL_DIR)/test/test_crypto.c $(HOST_BEARSSL_LIB)
+	$(HOST_CC) $(HOST_BEARSSL_CFLAGS) $< $(HOST_BEARSSL_LIB) -o $@
+
 .SECONDEXPANSION:
 $(HOST_BUILD)/test_%: tests/host/test_%.c tests/host/stubs.c tests/host/test.h tests/host/drbg_vectors.h $(HDRS) $$(host_srcs_$$*) $$(host_deps_$$*)
 	@mkdir -p $(HOST_BUILD)
 	$(HOST_CC) $(HOST_CFLAGS) tests/host/test_$*.c tests/host/stubs.c $(host_srcs_$*) -o $@
 
-host-test: $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS))
-	@fail=0; for t in $^; do $$t || fail=1; done; \
+host-test: $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS)) $(HOST_BUILD)/bearssl_test_crypto
+	@fail=0; for t in $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS)); do $$t || fail=1; done; \
+	log=$(HOST_BUILD)/bearssl_test_crypto.log; \
+	if $(HOST_BUILD)/bearssl_test_crypto $(BEARSSL_KAT) > $$log 2>&1 && \
+	   [ "$$(grep -c 'done\.$$' $$log)" -eq $(BEARSSL_KAT_LINES) ]; then \
+	    echo "bearssl      $(BEARSSL_KAT_LINES) uji test_crypto upstream lulus"; \
+	else echo "bearssl      GAGAL (lihat $$log)"; tail -5 $$log; fail=1; fi; \
 	if [ $$fail -eq 0 ]; then echo ">> host-test: semua lulus"; \
 	else echo ">> host-test: ADA YANG GAGAL"; exit 1; fi
 

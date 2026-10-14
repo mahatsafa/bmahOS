@@ -179,6 +179,14 @@ check "ct_memeq: 1 lompatan bersyarat, tanpa call" \
     '[ "$(echo "$CT_ASM" | grep -E "\sj[a-z]+\s" | grep -vc "\sjmp\s")" -eq 1 ] &&
      ! echo "$CT_ASM" | grep -qE "\scall"'
 check "auth.o memanggil ct_memeq 7x (D1: + login TCP, D2: + perintah TCP, D4: + login ro, KEYRO)" '[ "$(objdump -dr "$ROOT/build/auth.o" | grep -c "R_X86_64_PLT32.*ct_memeq\|R_X86_64_PC32.*ct_memeq")" -eq 7 ]'
+# D9a: BearSSL freestanding: tanpa instruksi SSE (register xmm/ymm/zmm) dan
+# hanya butuh memcpy/memmove/memset/memcmp/strlen dari luar pustaka.
+BLIB="$ROOT/build/libbearssl.a"
+check "D9a: libbearssl.a tanpa instruksi SSE" \
+    '[ -s "$BLIB" ] && ! objdump -d "$BLIB" | grep -qE "%[xyz]mm[0-9]"'
+check "D9a: libbearssl.a hanya butuh mem*/strlen dari luar" \
+    '[ -s "$BLIB" ] && [ "$(nm -u "$BLIB" | awk "/ U /{print \$2}" | grep -v "^br_" |
+       sort -u | tr "\n" " ")" = "memcmp memcpy memmove memset strlen " ]'
 check "PCI-1 menemukan AHCI"     'grep -q "PCI-1: AHCI di" "$LOG"'
 check "PCI-1 menemukan E1000"    'grep -q "PCI-1: E1000 di" "$LOG"'
 check "KEY.TXT dimuat"           'grep -q "Net-11: kunci dimuat" "$LOG"'
