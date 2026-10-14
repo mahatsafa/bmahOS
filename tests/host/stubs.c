@@ -45,6 +45,18 @@ WEAK void serial_write_nolog(const char *s)
     }
 }
 
+// R1: kassert_fail (kprintf.c) memanggil panic.c.
+WEAK void panic_begin(void)
+{
+}
+
+WEAK void panic_finish(uint64_t rip, uint64_t rbp)
+{
+    (void)rip;
+    (void)rbp;
+    abort();
+}
+
 WEAK void serial_write_hex(uint64_t value)
 {
     static const char hx[] = "0123456789ABCDEF";

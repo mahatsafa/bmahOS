@@ -206,6 +206,11 @@ check "TSS-1: iopb_offset=0x68 (I/O ring 3 ditolak)" 'grep -q "TSS-1: iopb_offse
 check "PMM free/realloc PASS"    'grep -aq "PMM free/realloc test: PASS" "$LOG"'
 if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "user mode + spawn jalan (hello 2x)" '[ "$(grep -c "^hello" "$LOG")" -eq 2 ]'
+else
+    # R1: perintah uji panic tidak ada di build PROD (dicek di biner; mengirimnya
+    # akan menaruh "cmd panic pf" di baris AUDIT dan memicu grep "panic").
+    check "R1: PROD: tanpa kode uji panic (simbol + string)" \
+        '! nm "$ROOT/build/kernel.elf" | grep -q panic_test_ && ! strings "$ROOT/build/kernel.elf" | grep -q "panic: uji"'
 fi
 
 check "ping -> pong"             '[ "$($BM ping)" = "pong" ]'
@@ -514,6 +519,85 @@ check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|FATA
 check "D7: tanpa disk: CONFIG: sumber=bawaan (tanpa disk)" \
     'grep -q "CONFIG: sumber=bawaan (tanpa disk) cli_idle=300 udp_rate=20 echo=1" "$BARE"'
 check "D9: tanpa disk: TLS nonaktif" 'grep -q "TLS: nonaktif (TLSKEY.DER tidak ada)" "$BARE"'
+
+# R1: panic handler (build dev saja). Satu QEMU TANPA -no-reboot: panic pf ->
+# reboot otomatis -> panic df (RSP rusak, harus lewat IST1) -> reboot -> panic
+# assert -> reboot. Log serial berlanjut melewati reset.
+if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    echo
+    echo "boot keempat: uji panic pf/df/assert (~2 menit)..."
+    PLOG="$WORK/serial-panic.log"
+    cp "$OVMF_VARS" "$WORK/vars-panic.fd"
+    "$QEMU" -machine q35 -m 512M -cpu max \
+        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+        -drive if=pflash,format=raw,file="$WORK/vars-panic.fd" \
+        -cdrom "$ISO" \
+        -drive id=d0,file="$DISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
+        -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778 \
+        -device e1000,netdev=n0 \
+        -display none -serial file:"$PLOG" \
+        >"$WORK/qemu-panic.out" 2>&1 &
+    PQPID=$!
+    # wait_n POLA N: tunggu sampai POLA muncul >= N kali di PLOG; 0 = berhasil.
+    wait_n() {
+        for _ in $(seq 1 "$BOOT_TIMEOUT"); do
+            c="$(grep -ac "$1" "$PLOG" 2>/dev/null)"
+            [ "${c:-0}" -ge "$2" ] && return 0
+            kill -0 "$PQPID" 2>/dev/null || return 1
+            sleep 1
+        done
+        return 1
+    }
+    PANIC_REPLY=""
+    PANIC_WAIT=""
+    i=0
+    for kind in pf df assert; do
+        i=$((i + 1))
+        wait_n "Entropi: siap" "$i" || break
+        sleep 1
+        PANIC_REPLY="$PANIC_REPLY$($BM "panic $kind" 2>&1)
+"
+        wait_n "PANIC: reboot otomatis dalam 10 detik" "$i" || break
+        t0=$(date +%s)
+        wait_n "ACPI-R: reboot via register reset FADT" "$i" || break
+        PANIC_WAIT="$PANIC_WAIT $(($(date +%s) - t0))"
+    done
+    wait_n "PCI-1: E1000 di" 4
+    kill "$PQPID" 2>/dev/null
+    wait "$PQPID" 2>/dev/null
+    tr -d '\r' < "$PLOG" > "$WORK/serial-panic.txt"
+    "$ROOT/tools/symbolize.sh" "$PLOG" > "$WORK/panic-sym.txt" 2>&1 || true
+    echo "balasan:"; echo "$PANIC_REPLY"
+    echo "jeda panic -> reboot (s):$PANIC_WAIT"
+    grep -a "^PANIC" "$WORK/serial-panic.txt" | head -20
+    cat "$WORK/panic-sym.txt"
+    P="$WORK/serial-panic.txt"
+    check "R1: balasan perintah panic (pf, df, assert)" \
+        '[ "$(echo "$PANIC_REPLY" | grep -c "^panic: uji \(pf\|df\|assert\) dalam 1 detik$")" -eq 3 ]'
+    check "R1: 4 boot (3 reboot otomatis setelah panic)" '[ "$(grep -c "PCI-1: E1000 di" "$P")" -eq 4 ]'
+    check "R1: pf: #PF page fault error=0x2 [tidak-ada tulis kernel], CR2=0" \
+        'grep -q "^PANIC: exception #PF page fault (vektor 14) error=0x2 \[tidak-ada tulis kernel\]$" "$P" && grep -q "^PANIC: CR0=0x[0-9a-f]* CR2=0x0000000000000000 " "$P"'
+    check "R1: pf: mode kernel, stack biasa, register lengkap" \
+        'grep -q "^PANIC: RIP=0xffffffff8.* CS=0x8 .* mode=kernel$" "$P" && grep -q "^PANIC: RSP=.* stack=biasa$" "$P" && grep -q "^PANIC: R13=0x.* R15=0x" "$P"'
+    check "R1: df: #DF double fault lewat IST1" \
+        'grep -q "^PANIC: exception #DF double fault (vektor 8) error=0x0$" "$P" && grep -q "^PANIC: RSP=.* stack=IST1$" "$P"'
+    check "R1: assert: baris ASSERT + trace" \
+        'grep -q "^PANIC: ASSERT gagal: g_panic_test_kind != 3 di kernel/panic.c:[0-9]* (panic_test_assert)$" "$P"'
+    check "R1: trace 3x (>= 4 frame)" \
+        '[ "$(grep -c "^PANIC: trace \([4-9]\|1[0-6]\) frame (" "$P")" -eq 3 ]'
+    check "R1: symbolize: pemicu -> panic_test_fire -> ktimer_run" \
+        'grep -q "^#0 .* panic_test_pf " "$WORK/panic-sym.txt" && grep -q "^#0 .* panic_test_df " "$WORK/panic-sym.txt" && grep -q "^#1 .* panic_test_assert " "$WORK/panic-sym.txt" && [ "$(grep -c " panic_test_fire " "$WORK/panic-sym.txt")" -eq 3 ] && [ "$(grep -c " ktimer_run " "$WORK/panic-sym.txt")" -eq 3 ]'
+    # Jeda tiap panic harus 9..13 s (PANIC_REBOOT_S 10 + reset ACPI).
+    panic_wait_ok() {
+        [ "$#" -eq 3 ] || return 1
+        for w in "$@"; do
+            [ "$w" -ge 9 ] && [ "$w" -le 13 ] || return 1
+        done
+    }
+    check "R1: reboot setelah ~10 s (3x 9..13 s)" 'panic_wait_ok $PANIC_WAIT'
+    check "R1: tanpa panic bersarang / PIT macet" \
+        '! grep -qE "fault di dalam panic handler|PIT tidak berjalan|PANIC-UJI" "$P"'
+fi
 
 echo
 echo "hasil: $PASS lulus, $FAIL gagal (log: $LOG)"

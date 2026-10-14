@@ -5,18 +5,6 @@ _Static_assert(
     "exception_context size is wrong"
 );
 
-static uint64_t read_ss(void)
-{
-    uint16_t ss;
-
-    __asm__ volatile (
-        "mov %%ss, %0"
-        : "=r"(ss)
-    );
-
-    return ss;
-}
-
 // ===============================================================
 // Syscall dispatch table
 //
@@ -153,43 +141,8 @@ void exception_dispatcher(struct exception_context *context)
         return;
     }
 
-    serial_write("\r\n");
-    serial_write("=== EXCEPTION DISPATCHER ===\r\n");
-
-    serial_write("vector:  ");
-    serial_write_hex(context->vector);
-    serial_write("\r\n");
-
-    serial_write("error:   ");
-    serial_write_hex(context->error_code);
-    serial_write("\r\n");
-
-    serial_write("RIP:     ");
-    serial_write_hex(context->rip);
-    serial_write("\r\n");
-
-    serial_write("CS:      ");
-    serial_write_hex(context->cs);
-    serial_write("\r\n");
-
-    serial_write("RFLAGS:  ");
-    serial_write_hex(context->rflags);
-    serial_write("\r\n");
-
-    serial_write("SS:      ");
-    serial_write_hex(read_ss());
-    serial_write("\r\n");
-
-        {
-        uint64_t cr2;
-        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
-        serial_write("CR2 (fault addr, relevan utk #PF): ");
-        serial_write_hex(cr2);
-        serial_write("\r\n");
-    }
-
-    serial_write("=== END EXCEPTION ===\r\n");
-    for (;;) { __asm__ volatile ("hlt"); }
+    // R1: dump register + stack trace + reboot otomatis (panic.c).
+    panic_exception(context);
 }
 volatile uint64_t timer_ticks = 0;
 

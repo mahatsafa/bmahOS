@@ -116,6 +116,11 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    dihitung sinkron di net task, jadi banjir handshake memperlambat semua jaringan (dibatasi 2 TCB 7780 dan
    batas SYN per IP); pengaman `cli_plain` membuat penulis disk bisa menyalakan 7779 dengan menghapus file TLS.
 
+11. Panic (R1): exception apa pun, juga dari program user mode, me-reboot sistem (penolakan layanan oleh
+   program di disk; mematikan task saja = R6). Dump register di serial bisa memuat sisa nilai rahasia di
+   register (serial = akses fisik/hypervisor, di luar cakupan penyerang jaringan). Perintah uji `panic`
+   hanya ada di build dev dan hanya untuk admin.
+
 ## 7. Aturan pengembangan yang menurunkan risiko
 
 - Semua panjang dari luar divalidasi **sebelum** dipakai untuk mengindeks atau menyalin.

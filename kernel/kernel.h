@@ -765,4 +765,22 @@ __attribute__((noreturn)) void kassert_fail(const char *expr, const char *file, 
         } \
     } while (0)
 
+// ---- panic.c (R1: panic handler) ----
+#define PANIC_REBOOT_S 10
+#define DF_STACK_SIZE  16384
+extern uint8_t g_df_stack[];   // cpu.c, TSS.IST1
+typedef struct {
+    uint64_t text_lo;
+    uint64_t text_hi;
+    uint64_t stack_min;
+} panic_bounds_t;
+enum { PANIC_WALK_END, PANIC_WALK_BADRBP, PANIC_WALK_NOTEXT, PANIC_WALK_MAX };
+const char *panic_exc_name(uint64_t vector);
+void panic_pf_decode(uint64_t err, char *buf, size_t size);
+int panic_walk(uint64_t rbp, const panic_bounds_t *b, uint64_t *out, int max, int *why);
+void panic_begin(void);
+__attribute__((noreturn)) void panic_finish(uint64_t rip, uint64_t rbp);
+__attribute__((noreturn)) void panic_exception(struct exception_context *c);
+int panic_test_execute(const volatile uint8_t *cmd, uint32_t len);   // build dev saja
+
 #endif

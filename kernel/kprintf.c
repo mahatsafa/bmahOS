@@ -149,12 +149,9 @@ size_t ksnprintf(char *buf, size_t size, const char *fmt, ...)
 
 void kassert_fail(const char *expr, const char *file, int line, const char *func)
 {
-    __asm__ volatile("cli");
-    g_serial_mute = 0;   // pesan ini wajib sampai ke UART
+    panic_begin();   // R1: cli + unmute serial
     kprintf(KASSERT_FMT, expr, file, line, func);
-    for (;;) {
-        __asm__ volatile("cli; hlt");
-    }
+    panic_finish(0, (uint64_t)(uintptr_t)__builtin_frame_address(0));
 }
 
 static int kstr_eq(const char *a, const char *b)

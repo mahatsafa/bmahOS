@@ -412,6 +412,10 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         audit_dump(0);   // D5: hanya admin (tidak di g_ro_cmds)
     } else if (net_cmd_is(cmd, len, "audit gagal")) {
         audit_dump(1);
+#ifndef BMAHOS_PROD
+    } else if (panic_test_execute(cmd, len)) {
+        // R1: panic pf|df|ud|assert (admin; tidak di g_ro_cmds; build dev saja)
+#endif
     } else if (config_execute(cmd, len)) {
         // D7: config (juga read-only) / set (admin)
     } else if (fscmd_execute(cmd, len)) {

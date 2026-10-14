@@ -169,6 +169,24 @@ ISR_NOERR 18
 # #XM — SIMD Floating-Point Exception — no error code
 ISR_NOERR 19
 
+# R1: vektor 15 dan 20-31 juga dipasang supaya setiap exception tertangkap
+# dengan namanya sendiri (dulu entri IDT kosong -> #NP -> #DF).
+ISR_NOERR 15
+ISR_NOERR 20
+# #CP — CPU DOES push error code
+ISR_ERR 21
+ISR_NOERR 22
+ISR_NOERR 23
+ISR_NOERR 24
+ISR_NOERR 25
+ISR_NOERR 26
+ISR_NOERR 27
+ISR_NOERR 28
+# #VC, #SX — CPU DOES push error code
+ISR_ERR 29
+ISR_ERR 30
+ISR_NOERR 31
+
 # ===============================================================
 # Syscall entry (int 0x80)
 #

@@ -19,6 +19,19 @@ extern void isr16(void);
 extern void isr17(void);
 extern void isr18(void);
 extern void isr19(void);
+extern void isr15(void);
+extern void isr20(void);
+extern void isr21(void);
+extern void isr22(void);
+extern void isr23(void);
+extern void isr24(void);
+extern void isr25(void);
+extern void isr26(void);
+extern void isr27(void);
+extern void isr28(void);
+extern void isr29(void);
+extern void isr30(void);
+extern void isr31(void);
 extern void isr128(void);
 
 struct gdt_entry bmahOS_gdt[7];
@@ -29,6 +42,10 @@ struct tss bmahOS_tss;
 // (lewat PMM) belum siap saat gdt_init() dipanggil di kmain().
 #define RSP0_STACK_SIZE 16384
 static uint8_t rsp0_stack[RSP0_STACK_SIZE];
+
+// R1: stack khusus #DF (TSS.IST1). CPU selalu pindah ke sini saat #DF,
+// jadi stack kernel yang rusak/habis tetap menghasilkan dump panic.
+uint8_t g_df_stack[DF_STACK_SIZE] __attribute__((aligned(16)));
 
 struct idt_entry bmahOS_idt[256];
 
@@ -85,6 +102,19 @@ static const idt_vector_entry_t bmahOS_idt_vectors[] = {
     { 17, (uint64_t)isr17 },
     { 18, (uint64_t)isr18 },
     { 19, (uint64_t)isr19 },
+    { 15, (uint64_t)isr15 },
+    { 20, (uint64_t)isr20 },
+    { 21, (uint64_t)isr21 },
+    { 22, (uint64_t)isr22 },
+    { 23, (uint64_t)isr23 },
+    { 24, (uint64_t)isr24 },
+    { 25, (uint64_t)isr25 },
+    { 26, (uint64_t)isr26 },
+    { 27, (uint64_t)isr27 },
+    { 28, (uint64_t)isr28 },
+    { 29, (uint64_t)isr29 },
+    { 30, (uint64_t)isr30 },
+    { 31, (uint64_t)isr31 },
 };
 
 static const uint64_t bmahOS_idt_vector_count =
@@ -117,6 +147,9 @@ void idt_init(void)
     // trigger tanpa #GP. Selector tetap 0x08 (kernel code) karena
     // handler-nya SELALU jalan di ring 0, terlepas dari ring pemanggil.
     idt_set_entry(128, (uint64_t)isr128, 0x08, 0xEE);
+
+    // R1: #DF selalu memakai IST1 (bmahOS_tss.ist1, gdt_init).
+    bmahOS_idt[8].ist = 1;
 }
 
 
@@ -232,6 +265,7 @@ void gdt_init(void)
     // TSS-1: peta izin I/O di luar limit TSS = tidak ada peta; I/O dari
     // ring 3 (IOPL 0) selalu #GP.
     bmahOS_tss.iopb_offset = sizeof(bmahOS_tss);
+    bmahOS_tss.ist1 = (uint64_t)&g_df_stack[DF_STACK_SIZE];
 }
 
 void print_bmahOS_gdt(void)

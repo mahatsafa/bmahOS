@@ -10,7 +10,9 @@ LD := ld
 # D9a: ARCH_CFLAGS dipakai juga untuk BearSSL (harus sama: tanpa SSE, mcmodel=kernel).
 ARCH_CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -m64 -march=x86-64 -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=kernel
 # D9b: kernel/tls.c memakai header BearSSL; string.h dari kernel/compat.
-CFLAGS := $(ARCH_CFLAGS) -Wall -Wextra -I$(KERNEL_DIR) -I$(LIMINE_INC) \
+# R1: frame pointer eksplisit untuk stack trace panic (tanpa -O gcc sudah
+# memakainya; BearSSL -O2 butuh flag ini supaya rantai rbp tidak putus).
+CFLAGS := $(ARCH_CFLAGS) -fno-omit-frame-pointer -Wall -Wextra -I$(KERNEL_DIR) -I$(LIMINE_INC) \
           -I$(KERNEL_DIR)/compat -Ithird_party/bearssl/inc -c
 
 ifeq ($(PROD),1)
@@ -94,7 +96,7 @@ BEARSSL_LIB  := $(BUILD_DIR)/libbearssl.a
 
 $(BUILD_DIR)/bearssl/%.o: $(BEARSSL_DIR)/src/%.c $(BEARSSL_HDRS)
 	@mkdir -p $(dir $@)
-	@$(CC) $(ARCH_CFLAGS) -O2 -I$(KERNEL_DIR)/compat $(BEARSSL_INC) $(BEARSSL_DEFS) -c $< -o $@
+	@$(CC) $(ARCH_CFLAGS) -O2 -fno-omit-frame-pointer -I$(KERNEL_DIR)/compat $(BEARSSL_INC) $(BEARSSL_DEFS) -c $< -o $@
 
 $(BEARSSL_LIB): $(BEARSSL_OBJS)
 	@rm -f $@
@@ -133,7 +135,7 @@ HOST_BUILD  := $(BUILD_DIR)/host
 HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host -Ithird_party/bearssl/inc
-HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config
+HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config panic
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
@@ -152,6 +154,8 @@ host_srcs_fat32   := $(KERNEL_DIR)/kprintf.c
 host_deps_fat32   := $(KERNEL_DIR)/fat32.c $(KERNEL_DIR)/fscmd.c   # D6: butuh mkfs.vfat, mtools, fsck.fat
 host_srcs_config  := $(KERNEL_DIR)/kprintf.c
 host_deps_config  := $(KERNEL_DIR)/config.c    # di-#include oleh test_config.c
+host_srcs_panic   := $(KERNEL_DIR)/kprintf.c
+host_deps_panic   := $(KERNEL_DIR)/panic.c     # R1: di-#include oleh test_panic.c
 
 # D9a: BearSSL versi host (clang + ASan/UBSan) dan test_crypto upstream untuk
 # implementasi yang dipakai profil TLS D9. -fno-sanitize=function: vtable BearSSL

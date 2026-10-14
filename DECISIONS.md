@@ -224,3 +224,28 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   Akibat: penyerang yang bisa menulis disk bisa menyalakan lagi 7779 dengan menghapus file TLS; penulis disk
   sudah di luar cakupan (THREAT_MODEL 8).
 - Ganti kunci HMAC jarak jauh lewat TLS: belum (tetap pertanyaan terbuka).
+
+## 2026-10-14 (R1 panic handler; rencana disetujui pengguna)
+- **Satu jalur akhir**: semua exception (vektor 0-31; 15 dan 20-31 kini terpasang) dan `ASSERT` ->
+  `panic.c`. Dump ke serial lewat `kprintf` (ikut ring log): nama exception, error (#PF diurai P/W/U/RSVD/I),
+  RIP/CS/RFLAGS/RSP/SS, CR0/2/3/4, 15 GPR, tick, task, trace. Prefiks `PANIC:` di setiap baris.
+- **Stack trace** lewat rantai rbp: kernel `-O0` sudah memakai frame pointer, `-fno-omit-frame-pointer`
+  ditambahkan eksplisit dan juga ke BearSSL (`-O2`). Kode mesin `ct_memeq` tidak berubah (dibandingkan).
+  Tiap rbp dicek sebelum dibaca (rata 8, half atas, naik ketat, jarak <= 64 KB), alamat kembali harus di
+  `.text` (`__text_start/__text_end` di linker.ld), maks 16 frame. Tanpa tabel simbol di kernel:
+  `tools/symbolize.sh` (addr2line) di mesin dev.
+- **Reboot otomatis 10 s** (`PANIC_REBOOT_S`, konstanta; bukan kunci CONFIG.CFG). Interrupt mati, jadi waktu
+  dihitung dari counter PIT ch0 yang diprogram ulang 100 Hz (tidak bergantung frekuensi TSC); PIT macet ->
+  reboot langsung. Reboot lewat `machine_reboot()` (refactor R1-1 dari `priv_do_reboot`).
+- **Panic bersarang**: kedalaman 2 -> satu baris + reboot langsung; 3 -> triple fault.
+- **#DF lewat IST1** (stack statis 16 KB). Uji `panic df`: RSP non-kanonik lalu push -> #SS saat mengirim
+  #SS -> #DF; tanpa IST ini triple fault tanpa pesan.
+- **TSS-1 (bug lama, commit terpisah)**: `struct tss` punya `reserved1` 32-bit -> ist1..7 dan iopb_offset
+  bergeser 4 byte. Terungkap karena uji `panic df` triple fault. Selain IST, iopb_offset yang dibaca CPU = 0
+  sehingga peta izin I/O mulai di byte 0 TSS (user mode mungkin bisa I/O ke port rendah). Kini offset
+  dicek `_Static_assert` dan `iopb_offset = sizeof(tss)` (tanpa peta: semua I/O ring 3 -> #GP).
+- **Pemicu uji = perintah admin `panic pf|df|ud|assert`, hanya build dev** (bukan flag build): satu ISO
+  untuk semua jenis, bisa diuji di VMware. Fault dijalankan ktimer 1 s kemudian supaya balasan terkirim
+  (UDP, TCP, TLS). Tidak di `g_ro_cmds`. Build PROD: kode tidak ada (`make test` mengecek).
+- **Di luar cakupan**: fault dari user mode tetap panic (dulu hang, kini reboot; mematikan task saja = R6),
+  guard page stack (R6), dump persisten (R4).

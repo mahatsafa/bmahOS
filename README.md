@@ -21,6 +21,9 @@ Belum pernah diuji di hardware asli.
 ## Status (terverifikasi lewat log serial dan Wireshark di VMware)
 
 - Boot: Limine UEFI, GDT/TSS, IDT, exception handler, PMM (bitmap), VMM (paging), kernel heap
+- Panic handler (R1): exception/ASSERT mencetak register + stack trace ke serial lalu reboot otomatis
+  setelah 10 detik; double fault memakai stack IST tersendiri. Terjemahkan alamat trace dengan
+  `tools/symbolize.sh <log-serial>` (ELF dari build yang sama)
 - Multitasking preemptive (timer 100 Hz via LAPIC/IOAPIC), semaphore, user mode (ring 3) dengan syscall
 - NX/XD: heap, stack, MMIO, `.data`/`.rodata`, dan seluruh HHDM tidak bisa dieksekusi; hanya kernel
   `.text` dan halaman kode user yang executable (self-test page walk saat boot)
@@ -70,8 +73,11 @@ Flag uji (bisa digabung):
     NOKBDRESET=1        # reboot tanpa 8042 (uji jalur cadangan triple fault)
     NOACPIRESET=1       # reboot tanpa register reset ACPI (uji jalur 8042)
     LEGACYCTR=1         # nyalakan lagi jalur counter lama (transisi; lihat di bawah)
-    NXTEST=1            # sengaja eksekusi dari heap saat boot; harus berhenti di #PF error 0x11
-    ASSERTTEST=1        # sengaja ASSERT gagal di kmain; harus berhenti dengan "PANIC: ASSERT gagal: ... di file:baris"
+    NXTEST=1            # sengaja eksekusi dari heap saat boot; harus panic #PF error=0x11 [... fetch]
+    ASSERTTEST=1        # sengaja ASSERT gagal di kmain; harus panic "PANIC: ASSERT gagal: ... di file:baris"
+
+Build dev (tanpa `PROD=1`) punya perintah admin `panic pf|df|ud|assert` untuk menguji panic handler
+(fault 1 detik setelah balasan, lalu reboot otomatis). Build PROD tidak memilikinya.
 
 Hasil: `build/bmahOS.iso`.
 
@@ -228,6 +234,8 @@ TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 
 - Hanya driver E1000 (device ID `0x100F` 82545EM dan `0x100E` 82540EM yang sudah diuji); belum ada
   driver untuk NIC hardware target
 - Hanya controller AHCI pertama yang dipakai
+- Panic: exception dari user mode juga me-reboot seluruh sistem (belum mematikan task saja, R6); dump
+  hanya ke serial dan ring log RAM (hilang saat reboot, persisten di R4); trace berisi alamat mentah
 - TLS hanya 1.2 (BearSSL tanpa TLS 1.3), handshake dihitung di net task; maks 2 sesi TLS
 - TCP masih minimal: maks 4 koneksi (port 7 echo + 7779 CLI + 7780 TLS), maks 2 per IP sumber, kirim stop-and-wait, retransmisi dengan RTO tetap
   1 detik lalu eksponensial (maks 8 detik, 5 kali, lalu RST), tanpa pengukuran RTT. Penutupan FIN dua arah:
