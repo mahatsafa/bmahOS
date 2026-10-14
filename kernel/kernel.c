@@ -344,6 +344,42 @@ static void idle_task_entry(void)
     }
 }
 
+// ---- D9: stack net task ----
+// Handshake TLS (ECDHE + ECDSA P-256, BearSSL) jalan di net task, jadi
+// stack-nya dinaikkan 8 -> 32 KB. Stack diisi pola 0xA5 sebelum task jalan;
+// perintah `tls` melaporkan puncak pemakaian (byte yang polanya rusak).
+#define NET_TASK_STACK 32768
+static uint8_t *g_net_stack_base;
+
+static void net_stack_paint(task_t *t)
+{
+    g_net_stack_base = (uint8_t *)(t->rsp0 - NET_TASK_STACK);
+
+    uint8_t *end = (uint8_t *)t->rsp - 64;   // jangan sentuh frame awal task
+
+    for (uint8_t *p = g_net_stack_base; p < end; p++) {
+        *p = 0xA5;
+    }
+}
+
+uint64_t net_stack_size(void)
+{
+    return NET_TASK_STACK;
+}
+
+uint64_t net_stack_used(void)
+{
+    uint64_t free_bytes = 0;
+
+    if (g_net_stack_base == 0) {
+        return 0;
+    }
+    while (free_bytes < NET_TASK_STACK && g_net_stack_base[free_bytes] == 0xA5) {
+        free_bytes++;
+    }
+    return NET_TASK_STACK - free_bytes;
+}
+
 static void net_task_entry(void)
 {
     if (!g_e1000_rx_initialized) {
@@ -1107,7 +1143,8 @@ void kmain(void)
 #endif
 
     if (task_count < MAX_TASKS) {
-        task_create(&tasks[task_count], net_task_entry, 8192);
+        task_create(&tasks[task_count], net_task_entry, NET_TASK_STACK);
+        net_stack_paint(&tasks[task_count]);
         serial_write("Net-7: net task dibuat di slot ");
         serial_write_hex((uint64_t)task_count);
         serial_write("\r\n");

@@ -22,6 +22,7 @@ OVMF_VARS="${OVMF_VARS:-/usr/share/edk2/ovmf/OVMF_VARS.fd}"
 PORT="${BMTEST_PORT:-17778}"
 TPORT="${BMTEST_TCP_PORT:-17007}"   # C4: echo TCP port 7
 CPORT="${BMTEST_CLI_PORT:-17779}"   # D1: CLI TCP port 7779
+SPORT="${BMTEST_TLS_PORT:-17780}"   # D9: CLI TLS port 7780
 BOOT_TIMEOUT="${BMTEST_BOOT_TIMEOUT:-180}"
 
 PASS=0
@@ -42,7 +43,7 @@ trap cleanup EXIT
 for f in "$ISO" "$OVMF_CODE" "$OVMF_VARS"; do
     [ -f "$f" ] || { echo "tidak ada: $f"; exit 2; }
 done
-for t in "$QEMU" mkfs.vfat mcopy mtype fsck.fat python3; do
+for t in "$QEMU" mkfs.vfat mcopy mtype fsck.fat python3 openssl; do
     command -v "$t" >/dev/null 2>&1 || { echo "butuh program: $t"; exit 2; }
 done
 
@@ -60,6 +61,13 @@ mcopy -i "$DISK" "$KEY" ::KEY.TXT
 ROKEY="$WORK/KEYRO.TXT"
 python3 -c 'import secrets; print(secrets.token_hex(16), end="")' > "$ROKEY"
 mcopy -i "$DISK" "$ROKEY" ::KEYRO.TXT
+# D9: identitas TLS acak per jalan (kunci EC P-256 + sertifikat self-signed).
+openssl ecparam -name prime256v1 -genkey -noout -outform DER -out "$WORK/TLSKEY.DER" 2>/dev/null
+openssl req -new -x509 -key "$WORK/TLSKEY.DER" -keyform DER -days 3650 \
+    -subj /CN=bmahOS-uji -outform DER -out "$WORK/TLSCERT.DER" 2>/dev/null
+mcopy -i "$DISK" "$WORK/TLSKEY.DER" ::TLSKEY.DER
+mcopy -i "$DISK" "$WORK/TLSCERT.DER" ::TLSCERT.DER
+TLSPIN="$(sha256sum "$WORK/TLSCERT.DER" | cut -d" " -f1)"
 cp "$OVMF_VARS" "$WORK/vars.fd"
 
 "$QEMU" -machine q35 -m 512M -cpu max \
@@ -67,7 +75,8 @@ cp "$OVMF_VARS" "$WORK/vars.fd"
     -drive if=pflash,format=raw,file="$WORK/vars.fd" \
     -cdrom "$ISO" \
     -drive id=d0,file="$DISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
-    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=tcp:127.0.0.1:$TPORT-192.168.50.200:7,hostfwd=tcp:127.0.0.1:$CPORT-192.168.50.200:7779 \
+    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=tcp:127.0.0.1:$TPORT-192.168.50.200:7,hostfwd=tcp:127.0.0.1:$CPORT-192.168.50.200:7779,hostfwd=tcp:127.0.0.1:$SPORT-192.168.50.200:7780 \
+    -object filter-dump,id=fd0,netdev=n0,file="$WORK/net.pcap" \
     -device e1000,netdev=n0 \
     -display none -serial file:"$LOG" -no-reboot \
     >"$WORK/qemu.out" 2>&1 &
@@ -235,6 +244,38 @@ check "D5: audit admin: login/cmd/tolak-peran; audit gagal: login gagal/timeout/
     'echo "$LOGIN_OUT" | grep -q "^OK audit$"'
 check "D5: audit dan audit gagal di sesi read-only -> ERR peran read-only" \
     'echo "$LOGIN_OUT" | grep -q "^OK audit-ro$"'
+
+# D9: CLI TLS port 7780 (Python ssl/OpenSSL), pin = sha256 sertifikat uji.
+check "D9: serial: TLS aktif port 7780, pin = sha256 TLSCERT.DER" \
+    'grep -aq "TLS: aktif port 7780 pin=$TLSPIN" "$LOG"'
+sleep 2.5
+TLS_OUT="$(python3 "$ROOT/tests/tls-login.py" 127.0.0.1 "$SPORT" "$KEY" "$ROKEY" \
+    "$WORK/TLSCERT.DER" 2>&1)"
+echo "$TLS_OUT" | sed "s/^/info  /"
+check "D9: TLS AES-128-GCM: login, uptime, metrics > 1 KB, tls (pin, sesi), exit" \
+    'echo "$TLS_OUT" | grep -q "^OK aes$"'
+check "D9: TLS ChaCha20-Poly1305: login + ping" 'echo "$TLS_OUT" | grep -q "^OK chacha$"'
+check "D9: TLS kunci read-only: uptime jalan, pping ERR peran" \
+    'echo "$TLS_OUT" | grep -q "^OK ro$"'
+check "D9: pin salah -> klien berhenti sebelum kirim data" \
+    'echo "$TLS_OUT" | grep -q "^OK pin-salah$"'
+check "D9: hmac salah lewat TLS -> ERR login gagal + ditutup" \
+    'echo "$TLS_OUT" | grep -q "^OK hmac-salah$"'
+check "D9: klien TLS 1.3 saja ditolak (hanya TLS 1.2)" \
+    'echo "$TLS_OUT" | grep -q "^OK tls13-ditolak$"'
+check "D9: teks polos ke 7780 tidak dilayani" \
+    'echo "$TLS_OUT" | grep -q "^OK teks-polos-ditolak$"'
+sleep 1.2
+TLS_ST="$($BM tls 2>&1)"
+echo "$TLS_ST" | sed "s/^/info  tls: /"
+STK="$(echo "$TLS_ST" | sed -n "s/^stack_net: terpakai_maks=\([0-9]*\) dari 32768$/\1/p")"
+check "D9: UDP tls: aktif, ok >= 5, gagal >= 1, stack net task < 24 KB dari 32 KB" \
+    'echo "$TLS_ST" | grep -q "^tls: aktif port 7780$" && echo "$TLS_ST" | grep -q "^pin: $TLSPIN$" && [ "$(echo "$TLS_ST" | sed -n "s/.* ok=\([0-9]*\) gagal=\([0-9]*\) .*/\1/p")" -ge 5 ] && [ "$(echo "$TLS_ST" | sed -n "s/.* gagal=\([0-9]*\) .*/\1/p")" -ge 1 ] && [ -n "$STK" ] && [ "$STK" -lt 24576 ]'
+check "D9: pcap: payload 7780 tanpa teks polos (banner, login, perintah, keluaran)" \
+    'python3 "$ROOT/tests/pcap-check.py" "$WORK/net.pcap" 7780 "bmahOS login" "nonce:" "OK login" "uptime" "metrics" "END " "tcp_rx=" "pong"'
+check "D9: pcap kontrol: payload 7779 memuat teks polos (penangkapan bekerja)" \
+    '! python3 "$ROOT/tests/pcap-check.py" "$WORK/net.pcap" 7779 "bmahOS login" >/dev/null'
+check "D9: AUDIT di serial: login lewat tls" 'grep -aq "AUDIT #.* tls admin login" "$LOG"'
 
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
 
@@ -433,6 +474,7 @@ check "tanpa NIC: net task berhenti rapi" 'grep -q "RX belum di-init, net task b
 check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$BARE"'
 check "D7: tanpa disk: CONFIG: sumber=bawaan (tanpa disk)" \
     'grep -q "CONFIG: sumber=bawaan (tanpa disk) cli_idle=300 udp_rate=20 echo=1" "$BARE"'
+check "D9: tanpa disk: TLS nonaktif" 'grep -q "TLS: nonaktif (TLSKEY.DER tidak ada)" "$BARE"'
 
 echo
 echo "hasil: $PASS lulus, $FAIL gagal (log: $LOG)"

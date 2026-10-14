@@ -9,7 +9,9 @@ LD := ld
 
 # D9a: ARCH_CFLAGS dipakai juga untuk BearSSL (harus sama: tanpa SSE, mcmodel=kernel).
 ARCH_CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -m64 -march=x86-64 -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=kernel
-CFLAGS := $(ARCH_CFLAGS) -Wall -Wextra -I$(KERNEL_DIR) -I$(LIMINE_INC) -c
+# D9b: kernel/tls.c memakai header BearSSL; string.h dari kernel/compat.
+CFLAGS := $(ARCH_CFLAGS) -Wall -Wextra -I$(KERNEL_DIR) -I$(LIMINE_INC) \
+          -I$(KERNEL_DIR)/compat -Ithird_party/bearssl/inc -c
 
 ifeq ($(PROD),1)
 CFLAGS += -DBMAHOS_PROD
@@ -99,8 +101,8 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 	ar rcs $@ $(BEARSSL_OBJS)
 	@echo ">> BearSSL: $(words $(BEARSSL_OBJS)) objek -> $@"
 
-$(KERNEL_ELF): $(OBJS) linker.ld
-	$(LD) $(LDFLAGS) $(OBJS) -o $(KERNEL_ELF)
+$(KERNEL_ELF): $(OBJS) $(BEARSSL_LIB) linker.ld
+	$(LD) $(LDFLAGS) $(OBJS) $(BEARSSL_LIB) -o $(KERNEL_ELF)
 
 iso: $(KERNEL_ELF)
 	@mkdir -p $(ISO_ROOT)/boot
@@ -130,11 +132,13 @@ HOST_CC     ?= clang
 HOST_BUILD  := $(BUILD_DIR)/host
 HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
-               -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host
+               -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host -Ithird_party/bearssl/inc
 HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
-host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c   # C3c: timer retransmisi
+host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
+                     $(KERNEL_DIR)/tls.c   # C3c: timer retransmisi, D9b: TLS 7780
+host_libs_net      = $(HOST_BEARSSL_LIB)   # '=': didefinisikan di bawah
 host_deps_net     := $(KERNEL_DIR)/net.c   # di-#include oleh test_net.c (akses fungsi static)
 host_srcs_auth    := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/audit.c $(KERNEL_DIR)/kprintf.c
 host_deps_auth    := $(KERNEL_DIR)/auth.c  # di-#include oleh test_auth.c
@@ -174,9 +178,9 @@ $(HOST_BUILD)/bearssl_test_crypto: $(BEARSSL_DIR)/test/test_crypto.c $(HOST_BEAR
 	$(HOST_CC) $(HOST_BEARSSL_CFLAGS) $< $(HOST_BEARSSL_LIB) -o $@
 
 .SECONDEXPANSION:
-$(HOST_BUILD)/test_%: tests/host/test_%.c tests/host/stubs.c tests/host/test.h tests/host/drbg_vectors.h $(HDRS) $$(host_srcs_$$*) $$(host_deps_$$*)
+$(HOST_BUILD)/test_%: tests/host/test_%.c tests/host/stubs.c tests/host/test.h tests/host/drbg_vectors.h tests/host/tls_test_keys.h $(HDRS) $$(host_srcs_$$*) $$(host_deps_$$*) $$(host_libs_$$*)
 	@mkdir -p $(HOST_BUILD)
-	$(HOST_CC) $(HOST_CFLAGS) tests/host/test_$*.c tests/host/stubs.c $(host_srcs_$*) -o $@
+	$(HOST_CC) $(HOST_CFLAGS) tests/host/test_$*.c tests/host/stubs.c $(host_srcs_$*) $(host_libs_$*) -o $@
 
 host-test: $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS)) $(HOST_BUILD)/bearssl_test_crypto
 	@fail=0; for t in $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS)); do $$t || fail=1; done; \

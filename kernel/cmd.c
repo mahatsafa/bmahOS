@@ -92,7 +92,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     if (len == 0) {
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
-        cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks config\n");
+        cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks config tls\n");
         cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti set\n");
         cmd_puts("berprivilege: pping reboot audit (audit gagal)\n");
         cmd_puts("kirim CHAL, lalu <nonce> <perintah> <hmac>\n");
@@ -348,6 +348,14 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts(" byte, termap: ");
         cmd_putdec(kheap_mapped_end - (uint64_t)KHEAP_START);
         cmd_puts(" byte\n");
+    } else if (net_cmd_is(cmd, len, "tls")) {
+        // D9: status TLS 7780, pin sertifikat, counter sesi.
+        tls_status();
+        cmd_puts("stack_net: terpakai_maks=");
+        cmd_putdec(net_stack_used());
+        cmd_puts(" dari ");
+        cmd_putdec(net_stack_size());
+        cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "tasks")) {
         for (size_t i = 0; i < task_count; i++) {
             cmd_puts("slot ");

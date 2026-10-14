@@ -708,6 +708,12 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
 // terakhir; batas diam TCP 30 s tidak berlaku untuknya selama antrean kirim
 // kosong. Byte yang menetes tanpa perintah utuh tidak memperpanjang sesi.
 #define TCP_CLI_MAX         2
+// D9: port 7780 = protokol baris yang sama di dalam TLS 1.2 (kernel/tls.c).
+// Hanya dibuka bila tls_load berhasil (selain itu SYN -> RST). Maks
+// TLS_MAX_SESS TCB 7780 (keadaan apa pun), aturan penggusuran sama dengan 7779.
+// Banner dikirim setelah handshake TLS selesai; batas login 10 s dihitung
+// sejak ESTABLISHED TCP (termasuk handshake). Error TLS -> RST.
+#define NET_TCP_TLS_PORT    7780
 #define TCP_CLI_IDLE        ((uint64_t)g_cli_idle_s * 100)  // tick (D7: cli_idle)
 enum { TCP_APP_ECHO = 0, TCP_APP_CLI };
 
@@ -750,7 +756,12 @@ typedef struct {
     int reboot_after;   // D2: reboot setelah keluaran di-ACK
     uint32_t out_len, out_pos;   // D2: keluaran out[out_pos..out_len) belum diantre
     uint8_t out[TCP_CLI_OUT_MAX];
+    int tls;            // D9: slot TLS + 1 (0 = teks polos)
+    int tls_banner;     // D9: handshake selesai, banner sudah dikirim
+    int tls_closing;    // D9: close_notify kita sudah diantre
 } tcp_tcb_t;
+
+#define TCB_CHAN(t)  ((t)->tls ? AUDIT_TLS : AUDIT_TCP)
 
 static tcp_tcb_t g_tcbs[TCP_MAX_CONN];
 // D2: reboot diminta lewat CLI; batas waktunya global (bukan di TCB) supaya
@@ -1098,9 +1109,19 @@ static void net_tcp_rtx_progress(tcp_tcb_t *t)
     }
 }
 
+// D9: slot TLS dilepas (dan dihapus) setiap kali TCB menjadi CLOSED.
+static void net_tcp_tls_release(tcp_tcb_t *t)
+{
+    if (t->tls) {
+        tls_free(t->tls - 1);
+        t->tls = 0;
+    }
+}
+
 static void net_tcp_close(tcp_tcb_t *t, const char *why)
 {
     ktimer_cancel(TCB_TIMER(t));
+    net_tcp_tls_release(t);
     t->state = TCP_CLOSED;
     net_tcp_log(why);
 }
@@ -1144,22 +1165,42 @@ static void net_tcp_rtx_fire(void *arg)
 
 // ---- D1: CLI port 7779 (login) ----
 // D9b-1: satu pintu keluaran CLI. Return jumlah byte yang masuk antrean.
+// D9: sesi TLS menulis plaintext ke engine (jadi record; dipindah ke antrean
+// TCP oleh net_tcp_tls_pump).
 static uint32_t net_tcp_cli_write(tcp_tcb_t *t, const volatile uint8_t *d,
                                   uint32_t len)
 {
+    if (t->tls) {
+        return tls_app_write(t->tls - 1, d, len);
+    }
     return net_tcp_queue(t, d, len);
 }
 
 // Ruang antrean untuk balasan CLI (byte).
 static uint32_t net_tcp_cli_space(const tcp_tcb_t *t)
 {
+    if (t->tls) {
+        return tls_app_space(t->tls - 1);
+    }
     return TCP_BUF_SIZE - t->buf_count;
 }
 
 // Keluaran CLI sudah habis terkirim dan di-ACK (syarat FIN close_after/reboot).
+// D9: juga tanpa record TLS menunggu, dan close_notify sudah diantre bila
+// menutup (kecuali handshake belum selesai: langsung FIN).
 static int net_tcp_cli_flushed(const tcp_tcb_t *t)
 {
-    return t->buf_count == 0 && t->out_pos == t->out_len;
+    if (t->buf_count != 0 || t->out_pos != t->out_len) {
+        return 0;
+    }
+    if (!t->tls) {
+        return 1;
+    }
+
+    uint32_t pending;
+
+    (void)tls_rec_out(t->tls - 1, &pending);
+    return pending == 0 && (!t->close_after || t->tls_closing || !t->tls_banner);
 }
 
 static void net_tcp_cli_reply(tcp_tcb_t *t, const char *s)
@@ -1204,7 +1245,7 @@ static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
 
     if (rc != 0) {
         g_cli_cmd_fail++;
-        audit_record(AUDIT_CMD_FAIL, AUDIT_TCP, t->ip, t->rport, t->role, rc, 0, 0);
+        audit_record(AUDIT_CMD_FAIL, TCB_CHAN(t), t->ip, t->rport, t->role, rc, 0, 0);
         net_tcp_cli_reply(t, rc == 1 ? "ERR: auth nonaktif\n" :
                           rc == 2 ? "ERR: format: <perintah> <hmac-hex64>\n" :
                           "ERR: hmac salah\n");
@@ -1217,7 +1258,7 @@ static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
     g_cli_cmd_ok++;
     audit_record(net_cmd_is(t->line, clen, "exit") ||
                  auth_cmd_allowed(t->role, t->line, clen) ? AUDIT_CMD : AUDIT_CMD_ROLE,
-                 AUDIT_TCP, t->ip, t->rport, t->role, 0, t->line, clen);
+                 TCB_CHAN(t), t->ip, t->rport, t->role, 0, t->line, clen);
 
     uint32_t n;
     int reboot = 0;
@@ -1268,7 +1309,7 @@ static void net_tcp_cli_line(tcp_tcb_t *t)
         t->role = role;
         t->cli_last = timer_ticks;
         g_cli_login_ok++;
-        audit_record(AUDIT_LOGIN, AUDIT_TCP, t->ip, t->rport, role, 0, 0, 0);
+        audit_record(AUDIT_LOGIN, TCB_CHAN(t), t->ip, t->rport, role, 0, 0, 0);
         if (role == AUTH_ROLE_ADMIN) {
             net_tcp_cli_reply(t, "OK login\n");
             net_tcp_log("CLI login OK");
@@ -1280,7 +1321,7 @@ static void net_tcp_cli_line(tcp_tcb_t *t)
         return;
     }
     g_cli_login_fail++;
-    audit_record(AUDIT_LOGIN_FAIL, AUDIT_TCP, t->ip, t->rport, AUTH_ROLE_NONE, rc, 0, 0);
+    audit_record(AUDIT_LOGIN_FAIL, TCB_CHAN(t), t->ip, t->rport, AUTH_ROLE_NONE, rc, 0, 0);
     net_tcp_cli_reply(t, rc == 1 ? "ERR: auth nonaktif\n" : "ERR: login gagal\n");
     t->close_after = 1;
     net_tcp_log("CLI login gagal, koneksi ditutup");
@@ -1312,7 +1353,7 @@ static uint32_t net_tcp_cli_rx(tcp_tcb_t *t, const volatile uint8_t *d,
             t->line[t->line_len++] = c;
         } else {
             g_cli_line_long++;
-            audit_record(AUDIT_LINE_LONG, AUDIT_TCP, t->ip, t->rport, t->role, 0, 0, 0);
+            audit_record(AUDIT_LINE_LONG, TCB_CHAN(t), t->ip, t->rport, t->role, 0, 0, 0);
             net_tcp_cli_reply(t, "ERR: baris terlalu panjang\n");
             t->close_after = 1;
             net_tcp_log("CLI baris terlalu panjang, koneksi ditutup");
@@ -1321,16 +1362,98 @@ static uint32_t net_tcp_cli_rx(tcp_tcb_t *t, const volatile uint8_t *d,
     return i;
 }
 
+// D9: pindahkan data antara engine TLS dan TCB: record keluar -> antrean
+// TCP (sebanyak ruang), banner setelah handshake, keluaran CLI tersisa ->
+// engine, plaintext masuk -> parser baris CLI, close_notify saat close_after.
+// Return 0 bila TCB ditutup (error TLS -> RST).
+static int net_tcp_tls_pump(tcp_tcb_t *t)
+{
+    int s = t->tls - 1;
+
+    if (t->state != TCP_ESTABLISHED && t->state != TCP_CLOSE_WAIT) {
+        return 1;
+    }
+    for (int round = 0; round < 16; round++) {
+        int moved = 0;
+        uint32_t len;
+        const uint8_t *p = tls_rec_out(s, &len);
+
+        if (len > 0) {
+            uint32_t n = net_tcp_queue(t, p, len);
+
+            tls_rec_out_ack(s, n);
+            moved |= n > 0;
+        }
+
+        int st = tls_state(s);
+
+        if (st < 0) {
+            kprintf("D9: TLS gagal err=%d, koneksi diputus (RST)\r\n", tls_last_error(s));
+            net_tcp_tcb_send(t, t->snd_nxt, TCP_RST | TCP_ACK, 0);
+            net_tcp_close(t, "TLS gagal (RST)");
+            return 0;
+        }
+        if (st > 0) {
+            // Peer mengirim close_notify: tutup juga (FIN setelah antrean habis).
+            t->close_after = 1;
+            t->tls_closing = 1;
+            t->out_len = t->out_pos = 0;
+            return 1;
+        }
+        if (!tls_ready(s)) {
+            return 1;   // handshake masih berjalan
+        }
+        if (!t->tls_banner) {
+            if (tls_app_space(s) < TCP_CLI_REPLY_MAX) {
+                continue;   // record handshake terakhir belum diambil
+            }
+            t->tls_banner = 1;
+            kprintf("D9: TLS handshake OK suite=%x\r\n", (unsigned)tls_suite(s));
+            net_tcp_cli_banner(t);
+            moved = 1;
+        }
+        if (t->out_pos < t->out_len) {
+            uint32_t before = t->out_pos;
+
+            net_tcp_cli_drain(t);
+            moved |= t->out_pos != before;
+        }
+        p = tls_app_in(s, &len);
+        if (len > 0) {
+            uint32_t c = net_tcp_cli_rx(t, p, len);
+
+            tls_app_in_ack(s, c);
+            moved |= c > 0;
+        }
+        if (t->close_after && !t->tls_closing && t->out_pos == t->out_len) {
+            tls_close(s);
+            t->tls_closing = 1;
+            moved = 1;
+        }
+        if (!moved) {
+            break;
+        }
+    }
+    return 1;
+}
+
 static void net_tcp_tick_one(tcp_tcb_t *t)
 {
     if (t->state == TCP_CLOSED) {
         return;
     }
+    // D9: antrean TLS bisa bergerak tanpa segmen masuk (ruang TCB bebas).
+    if (t->tls) {
+        if (!net_tcp_tls_pump(t)) {
+            return;
+        }
+        net_tcp_output(t);
+    }
     // D1: login CLI harus selesai dalam TCP_LOGIN_TIMEOUT sejak ESTABLISHED.
     if (t->app == TCP_APP_CLI && t->state == TCP_ESTABLISHED && !t->cli_authed &&
         !t->close_after && timer_ticks - t->opened > TCP_LOGIN_TIMEOUT) {
         g_cli_login_timeout++;
-        audit_record(AUDIT_LOGIN_TIMEOUT, AUDIT_TCP, t->ip, t->rport, AUTH_ROLE_NONE, 0,
+        audit_record(AUDIT_LOGIN_TIMEOUT, TCB_CHAN(t), t->ip, t->rport, AUTH_ROLE_NONE, 0,
                      0, 0);
         net_tcp_cli_reply(t, "ERR: login timeout\n");
         t->close_after = 1;
@@ -1342,7 +1465,7 @@ static void net_tcp_tick_one(tcp_tcb_t *t)
     if (t->app == TCP_APP_CLI && t->state == TCP_ESTABLISHED && t->cli_authed &&
         !t->close_after && timer_ticks - t->cli_last > TCP_CLI_IDLE) {
         g_cli_idle_timeout++;
-        audit_record(AUDIT_IDLE, AUDIT_TCP, t->ip, t->rport, t->role, 0, 0, 0);
+        audit_record(AUDIT_IDLE, TCB_CHAN(t), t->ip, t->rport, t->role, 0, 0, 0);
         t->out_len = t->out_pos = 0;
         net_tcp_cli_reply(t, "ERR: sesi idle\n");
         t->close_after = 1;
@@ -1462,7 +1585,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             net_tcp_log("ESTABLISHED");
             if (t->app == TCP_APP_CLI) {
                 t->opened = timer_ticks;
-                net_tcp_cli_banner(t);
+                if (!t->tls) {
+                    net_tcp_cli_banner(t);   // D9: TLS: setelah handshake
+                }
             }
         }
 
@@ -1503,7 +1628,11 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         if (seq_le(t->snd_una, ack)) {
             t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
         }
-        if (t->app == TCP_APP_CLI && t->out_pos < t->out_len) {
+        if (t->tls) {
+            if (!net_tcp_tls_pump(t)) {
+                return 1;
+            }
+        } else if (t->app == TCP_APP_CLI && t->out_pos < t->out_len) {
             net_tcp_cli_drain(t);
         }
 
@@ -1518,7 +1647,13 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
 
         // C3d: data baru setelah FIN peer melanggar protokol; data setelah FIN
         // kita tidak punya pembaca (echo sudah menutup). Keduanya: RST.
-        if (t->state != TCP_ESTABLISHED && dlen > 0) {
+        // D9: kecuali record TLS (close_notify balasan peer) setelah close_notify
+        // + FIN kita: di-ACK lalu dibuang.
+        if (t->tls && t->tls_closing && dlen > 0 &&
+            (t->state == TCP_FIN_WAIT_1 || t->state == TCP_FIN_WAIT_2)) {
+            n = dlen;
+            t->rcv_nxt += n;
+        } else if (t->state != TCP_ESTABLISHED && dlen > 0) {
             net_tcp_tcb_send(t, t->snd_nxt, TCP_RST | TCP_ACK, 0);
             g_tcp_rst_state++;
             net_tcp_close(t, "data di keadaan penutupan, RST");
@@ -1528,7 +1663,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         if (t->state == TCP_ESTABLISHED && dlen > 0) {
             // Echo: data masuk langsung jadi data kirim, hanya sebanyak ruang
             // buffer (= jendela yang kita iklankan).
-            if (t->app == TCP_APP_CLI) {
+            if (t->tls) {
+                n = tls_feed(t->tls - 1, buf + r + doff, dlen);   // D9: record
+            } else if (t->app == TCP_APP_CLI) {
                 n = net_tcp_cli_rx(t, buf + r + doff, dlen);
             } else {
                 n = net_tcp_queue(t, buf + r + doff, dlen);
@@ -1537,6 +1674,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             g_tcp_rx_bytes += n;
             if (n > 0) {
                 t->last = timer_ticks;   // C5b: kemajuan
+            }
+            if (t->tls && !net_tcp_tls_pump(t)) {
+                return 1;
             }
         }
 
@@ -1575,7 +1715,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         return 1;
     }
 
-    if (((dport == NET_TCP_ECHO_PORT && g_net_echo) || dport == NET_TCP_CLI_PORT) &&
+    if (((dport == NET_TCP_ECHO_PORT && g_net_echo) || dport == NET_TCP_CLI_PORT ||
+         (dport == NET_TCP_TLS_PORT && tls_enabled())) &&
         (flags & TCP_SYN) &&
         !(flags & (TCP_ACK | TCP_RST))) {
         uint32_t same_ip = 0, cli_n = 0;
@@ -1601,7 +1742,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
                 (victim == 0 || e->last < victim->last)) {
                 victim = e;
             }
-            if (e->app == TCP_APP_CLI) {
+            if (e->app == TCP_APP_CLI && e->lport == dport) {   // D9: per port
                 cli_n++;
                 if (e->state == TCP_SYN_RCVD &&
                     (cli_victim == 0 || e->last < cli_victim->last)) {
@@ -1616,7 +1757,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             return 0;
         }
         // D4: sesi CLI penuh: hanya SYN_RCVD CLI yang boleh digusur.
-        if (dport == NET_TCP_CLI_PORT && cli_n >= TCP_CLI_MAX) {
+        if (dport != NET_TCP_ECHO_PORT &&
+            cli_n >= (dport == NET_TCP_TLS_PORT ? TLS_MAX_SESS : TCP_CLI_MAX)) {
             if (cli_victim == 0) {
                 g_cli_sess_full++;
                 return 0;
@@ -1641,9 +1783,24 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         // serial (banjir SYN tidak boleh membebani UART, lihat B4b).
         if (t == 0) {
             ktimer_cancel(TCB_TIMER(victim));
+            net_tcp_tls_release(victim);
             victim->state = TCP_CLOSED;
             g_tcp_synrcvd_evicted++;
             t = victim;
+        }
+
+        // D9: slot TLS (pool = batas TCB 7780, jadi penuh hanya bila ada bug).
+        int tls_slot = -1;
+
+        if (dport == NET_TCP_TLS_PORT) {
+            tls_slot = tls_open();
+            if (tls_slot == -3) {
+                net_tcp_log("SYN 7780 dibuang: entropi belum cukup");
+                return 1;
+            }
+            if (tls_slot < 0) {
+                return 0;
+            }
         }
 
         for (int i = 0; i < 6; i++) {
@@ -1667,7 +1824,10 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         t->rto = TCP_RTO_INIT;
         t->retries = 0;
         t->fin_sent = 0;
-        t->app = dport == NET_TCP_CLI_PORT ? TCP_APP_CLI : TCP_APP_ECHO;
+        t->app = dport == NET_TCP_ECHO_PORT ? TCP_APP_ECHO : TCP_APP_CLI;
+        t->tls = tls_slot + 1;
+        t->tls_banner = 0;
+        t->tls_closing = 0;
         t->cli_authed = 0;
         t->role = AUTH_ROLE_NONE;
         t->cli_last = 0;

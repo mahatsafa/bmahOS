@@ -17,6 +17,7 @@
 
 static const char *const g_fs_protected[] = {
     "KEY     TXT", "KEYRO   TXT", "PROG    BIN",
+    "TLSKEY  DER", "TLSCERT DER",   // D9
 };
 
 static const char *const g_fs_wprotected[] = {

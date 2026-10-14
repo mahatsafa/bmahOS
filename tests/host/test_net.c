@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include "test.h"
 #include "net.c"
+#include "bearssl.h"
+#include "tls_test_keys.h"
 
 // ---- stub driver/memori untuk net.c ----
 uint8_t g_e1000_mac[6] = { 0x00, 0x0c, 0x29, 0x86, 0xef, 0x48 };
@@ -2014,6 +2016,430 @@ static void test_config_vals(void)
     timer_ticks += 100;
 }
 
+// ---- D9: TLS port 7780 (kernel/tls.c + BearSSL) ----
+
+// Stub fat32_read_name: hanya TLSKEY.DER / TLSCERT.DER dari g_fk/g_fc.
+static const uint8_t *g_fk, *g_fc;
+static uint32_t g_fk_len, g_fc_len;
+
+int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *out_size)
+{
+    const uint8_t *d = 0;
+    uint32_t n = 0;
+    if (memcmp(name83, "TLSKEY  DER", 11) == 0) {
+        d = g_fk;
+        n = g_fk_len;
+    } else if (memcmp(name83, "TLSCERT DER", 11) == 0) {
+        d = g_fc;
+        n = g_fc_len;
+    }
+    if (d == 0) {
+        return FAT32_ERR_NOENT;
+    }
+    if (n > max) {
+        return FAT32_ERR_TOOBIG;
+    }
+    memcpy(out, d, n);
+    *out_size = n;
+    return FAT32_OK;
+}
+
+// Stub cmd_puts (tls_status) ke buffer.
+static char g_cmdbuf[2048];
+static size_t g_cmdbuf_len;
+
+void cmd_puts(const char *s)
+{
+    size_t n = strlen(s);
+    if (g_cmdbuf_len + n < sizeof(g_cmdbuf)) {
+        memcpy(g_cmdbuf + g_cmdbuf_len, s, n + 1);
+        g_cmdbuf_len += n;
+    }
+}
+
+static void tls_files(const uint8_t *k, uint32_t kl, const uint8_t *ce, uint32_t cl)
+{
+    g_fk = k;
+    g_fk_len = kl;
+    g_fc = ce;
+    g_fc_len = cl;
+    serial_capture_reset();
+    tls_load();
+}
+
+// ---- klien TCP+TLS tiruan ----
+static uint32_t g_rnxt;              // byte server berikutnya yang diharapkan
+static uint8_t g_inbox[65536];       // byte TCP dari server belum masuk engine klien
+static size_t g_inbox_len;
+static uint8_t g_raw[65536];         // semua byte TCP dari server (cek plaintext)
+static size_t g_raw_len;
+static int g_rst_seen, g_fin_seen;
+static char g_app[8192];             // plaintext yang diterima klien
+static size_t g_app_len;
+
+static br_ssl_client_context g_cc;
+static br_x509_minimal_context g_xm;
+static br_x509_knownkey_context g_xk;
+static uint8_t g_cbuf[BR_SSL_BUFSIZE_BIDI];
+static uint8_t g_kq[65];
+static br_ec_public_key g_kpub;
+
+// Proses frame keluaran server dari rx terakhir: ACK -> g_pseq, data/FIN
+// dalam urutan -> inbox, lalu ACK balik (memicu segmen berikutnya).
+static void srv_collect(void)
+{
+    static uint8_t f[200];
+    for (int round = 0; round < 200; round++) {
+        int fresh = 0;
+        int n = g_tx_n < TX_MAX ? g_tx_n : TX_MAX;
+        for (int i = 0; i < n; i++) {
+            struct seg s = tx_seg(i);
+            if (s.flags & F_RST) {
+                g_rst_seen = 1;
+                continue;
+            }
+            if ((s.flags & F_ACK) && (int32_t)(s.ack - g_pseq) > 0) {
+                g_pseq = s.ack;
+            }
+            if (s.len > 0 && s.seq == g_rnxt) {
+                if (g_inbox_len + s.len <= sizeof(g_inbox) &&
+                    g_raw_len + s.len <= sizeof(g_raw)) {
+                    memcpy(g_inbox + g_inbox_len, s.data, s.len);
+                    memcpy(g_raw + g_raw_len, s.data, s.len);
+                    g_inbox_len += s.len;
+                    g_raw_len += s.len;
+                    g_rnxt += s.len;
+                    fresh = 1;
+                }
+            }
+            if ((s.flags & F_FIN) && s.seq + s.len == g_rnxt && !g_fin_seen) {
+                g_fin_seen = 1;
+                g_rnxt++;
+                fresh = 1;
+            }
+        }
+        if (!fresh) {
+            return;
+        }
+        rx_now(f, mk_tcp_w(f, g_pseq, g_rnxt, F_ACK, 0, 0, 4096));
+    }
+}
+
+// Kirim n byte ke server; return byte yang di-ACK.
+static uint32_t srv_send(const uint8_t *d, size_t n)
+{
+    static uint8_t f[1700];
+    uint32_t before = g_pseq;
+    rx_now(f, mk_tcp_w(f, g_pseq, g_rnxt, F_ACK | 0x08, d, n, 4096));
+    srv_collect();
+    return g_pseq - before;
+}
+
+// Jalankan engine klien sampai tidak ada kemajuan.
+static void cl_run(void)
+{
+    br_ssl_engine_context *e = &g_cc.eng;
+    for (int it = 0; it < 500; it++) {
+        int prog = 0;
+        size_t len;
+        unsigned char *b;
+        if (g_rst_seen) {
+            return;
+        }
+        b = br_ssl_engine_sendrec_buf(e, &len);
+        if (b && len) {
+            uint32_t acc = srv_send(b, len > 536 ? 536 : len);
+            br_ssl_engine_sendrec_ack(e, acc);
+            prog |= acc > 0;
+        }
+        if (g_inbox_len) {
+            b = br_ssl_engine_recvrec_buf(e, &len);
+            if (b && len) {
+                size_t m = len < g_inbox_len ? len : g_inbox_len;
+                memcpy(b, g_inbox, m);
+                memmove(g_inbox, g_inbox + m, g_inbox_len - m);
+                g_inbox_len -= m;
+                br_ssl_engine_recvrec_ack(e, m);
+                prog = 1;
+            }
+        }
+        b = br_ssl_engine_recvapp_buf(e, &len);
+        if (b && len) {
+            size_t m = len < sizeof(g_app) - 1 - g_app_len ? len : sizeof(g_app) - 1 - g_app_len;
+            memcpy(g_app + g_app_len, b, m);
+            g_app_len += m;
+            g_app[g_app_len] = 0;
+            br_ssl_engine_recvapp_ack(e, len);
+            prog = 1;
+        }
+        if (!prog) {
+            return;
+        }
+    }
+}
+
+// Kirim plaintext dari klien.
+static void cl_write(const char *s)
+{
+    br_ssl_engine_context *e = &g_cc.eng;
+    size_t n = strlen(s), off = 0;
+    while (off < n) {
+        size_t len;
+        unsigned char *b = br_ssl_engine_sendapp_buf(e, &len);
+        if (!b) {
+            cl_run();
+            if (!br_ssl_engine_sendapp_buf(e, &len)) {
+                return;
+            }
+            continue;
+        }
+        size_t m = n - off < len ? n - off : len;
+        memcpy(b, s + off, m);
+        br_ssl_engine_sendapp_ack(e, m);
+        off += m;
+    }
+    br_ssl_engine_flush(e, 0);
+    cl_run();
+}
+
+// Kunci publik sertifikat (pin) untuk klien.
+static void cl_pin(const uint8_t *cert, size_t n)
+{
+    br_x509_decoder_context dc;
+    br_x509_decoder_init(&dc, 0, 0);
+    br_x509_decoder_push(&dc, cert, n);
+    br_x509_pkey *pk = br_x509_decoder_get_pkey(&dc);
+    memcpy(g_kq, pk->key.ec.q, pk->key.ec.qlen);
+    g_kpub.curve = pk->key.ec.curve;
+    g_kpub.q = g_kq;
+    g_kpub.qlen = pk->key.ec.qlen;
+}
+
+// TCP ke 7780 + klien TLS dengan satu suite; pin = sertifikat `pin`.
+static void tls_connect(uint16_t suite, const uint8_t *pin, size_t pin_len)
+{
+    static const uint8_t seed[32] = { 7, 7, 7 };
+    uint16_t suites[1] = { suite };
+    g_wport = 7780;
+    tcp_open(30000, 31000, 4096);
+    g_rnxt = g_iss + 1;
+    g_inbox_len = g_raw_len = g_app_len = 0;
+    g_app[0] = 0;
+    g_rst_seen = g_fin_seen = 0;
+    cl_pin(pin, pin_len);
+    br_ssl_client_init_full(&g_cc, &g_xm, 0, 0);
+    br_x509_knownkey_init_ec(&g_xk, &g_kpub, BR_KEYTYPE_KEYX | BR_KEYTYPE_SIGN);
+    br_ssl_engine_set_x509(&g_cc.eng, &g_xk.vtable);
+    br_ssl_engine_set_suites(&g_cc.eng, suites, 1);
+    br_ssl_engine_set_buffer(&g_cc.eng, g_cbuf, sizeof(g_cbuf), 1);
+    br_ssl_engine_inject_entropy(&g_cc.eng, seed, sizeof(seed));
+    br_ssl_client_reset(&g_cc, 0, 0);
+    cl_run();
+}
+
+static int raw_has(const char *s)
+{
+    size_t n = strlen(s);
+    for (size_t i = 0; i + n <= g_raw_len; i++) {
+        if (memcmp(g_raw + i, s, n) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Banner "bmahOS login\nnonce: <32 hex>\n" diterima lewat TLS.
+static int tls_banner_ok(void)
+{
+    return g_app_len == BLEN && memcmp(g_app, "bmahOS login\nnonce: ", 20) == 0 &&
+           g_app[BLEN - 1] == '\n';
+}
+
+static void test_tls_load(void)
+{
+    static uint8_t f[200];
+    uint8_t junk[100];
+
+    // Tanpa file: nonaktif, SYN 7780 -> RST, 7779 tetap.
+    tls_files(0, 0, 0, 0);
+    CHECK(!tls_enabled() && strstr(g_serial_cap, "TLS: nonaktif (TLSKEY.DER tidak ada)"));
+    tcp_reset();
+    rx(f, mk_tcp(f, 4000, 7780, 1000, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && g_tcbs[0].state == TCP_CLOSED);
+
+    // Kunci ada, sertifikat tidak.
+    tls_files(T_KEYA, sizeof(T_KEYA), 0, 0);
+    CHECK(!tls_enabled() && strstr(g_serial_cap, "TLSCERT.DER tidak ada"));
+
+    // Kunci dan sertifikat beda pasangan.
+    tls_files(T_KEYA, sizeof(T_KEYA), T_CERTB, sizeof(T_CERTB));
+    CHECK(!tls_enabled() && strstr(g_serial_cap, "tidak cocok dengan TLSKEY.DER"));
+
+    // Kunci bukan DER EC.
+    tls_files(T_CERTA, sizeof(T_CERTA), T_CERTA, sizeof(T_CERTA));
+    CHECK(!tls_enabled() && strstr(g_serial_cap, "bukan kunci EC"));
+
+    // Sertifikat rusak.
+    memset(junk, 0x30, sizeof(junk));
+    tls_files(T_KEYA, sizeof(T_KEYA), junk, sizeof(junk));
+    CHECK(!tls_enabled() && strstr(g_serial_cap, "bukan sertifikat X.509"));
+
+    // Kunci terlalu besar (> 512 byte).
+    tls_files(g_raw, 600, T_CERTA, sizeof(T_CERTA));
+    CHECK(!tls_enabled() && strstr(g_serial_cap, "gagal dibaca/terlalu besar"));
+
+    // PKCS#8 juga diterima; pin = sha256 sertifikat.
+    tls_files(T_KEYA8, sizeof(T_KEYA8), T_CERTA, sizeof(T_CERTA));
+    CHECK(tls_enabled() && strstr(g_serial_cap, "TLS: aktif port 7780 pin=") &&
+          strstr(g_serial_cap, T_CERTA_PIN));
+
+    tls_files(T_KEYA, sizeof(T_KEYA), T_CERTA, sizeof(T_CERTA));
+    CHECK(tls_enabled());
+    g_cmdbuf_len = 0;
+    tls_status();
+    CHECK(strstr(g_cmdbuf, "tls: aktif port 7780\npin: ") && strstr(g_cmdbuf, T_CERTA_PIN) &&
+          strstr(g_cmdbuf, "sesi: aktif=0 maks=2"));
+}
+
+static void tcp_reset_tls(void)
+{
+    for (int k = 0; k < TCP_MAX_CONN; k++) {
+        net_tcp_tls_release(&g_tcbs[k]);
+    }
+    tcp_reset();
+}
+
+static void test_tls_session(uint16_t suite)
+{
+    uint64_t ok0 = g_tls_hs_ok, login0 = g_cli_login_ok;
+    br_ssl_session_parameters sp;
+    char want[2000];
+
+    tls_connect(suite, T_CERTA, sizeof(T_CERTA));
+    CHECK(g_tcbs[0].tls == 1 && g_tcbs[0].app == TCP_APP_CLI && tls_sess_active() == 1);
+    CHECK(tls_banner_ok() && !g_rst_seen && g_tls_hs_ok == ok0 + 1);
+    br_ssl_engine_get_session_parameters(&g_cc.eng, &sp);
+    CHECK(sp.cipher_suite == suite && tls_suite(0) == suite);
+    CHECK(strstr(g_serial_cap, suite == BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 ?
+                 "D9: TLS handshake OK suite=c02b" : "D9: TLS handshake OK suite=cca9"));
+
+    // Login + perintah lewat TLS; nonce banner = nonce yang dipakai login.
+    g_app_len = 0;
+    char line[80];
+    memcpy(line, "login ", 6);
+    memset(line + 6, 'a', 64);
+    memcpy(line + 70, "\n", 2);
+    cl_write(line);
+    CHECK(strcmp(g_app, "OK login\n") == 0 && g_cli_login_ok == login0 + 1);
+    CHECK(g_au.chan == AUDIT_TLS);
+    g_app_len = 0;
+    cl_write(cmd_line("ping", 1));
+    CHECK(strcmp(g_app, "ping\nEND 1\n") == 0);
+
+    // Keluaran besar (1300 + END) lewat beberapa record.
+    g_app_len = 0;
+    cl_write(cmd_line("big", 2));
+    for (int i = 0; i < 1300; i++) {
+        want[i] = (char)('a' + i % 26);
+    }
+    memcpy(want + 1300, "END 2\n", 7);
+    CHECK(g_app_len == 1306 && memcmp(g_app, want, 1306) == 0);
+
+    // Tidak ada plaintext di kabel.
+    CHECK(!raw_has("bmahOS login") && !raw_has("nonce:") && !raw_has("OK login") &&
+          !raw_has("END 1") && !raw_has("abcdefghij"));
+
+    // exit: bye + close_notify + FIN; balasan close_notify klien dibuang, bukan RST.
+    uint64_t rst0 = g_tcp_rst_state;
+    g_app_len = 0;
+    cl_write(cmd_line("exit", 3));
+    CHECK(strcmp(g_app, "bye\nEND 3\n") == 0);
+    CHECK(g_fin_seen && !g_rst_seen);
+    CHECK(br_ssl_engine_current_state(&g_cc.eng) == BR_SSL_CLOSED &&
+          br_ssl_engine_last_error(&g_cc.eng) == BR_ERR_OK);
+    cl_run();
+    CHECK(g_tcp_rst_state == rst0 && !g_rst_seen);
+    CHECK(g_tcbs[0].state == TCP_FIN_WAIT_2 || g_tcbs[0].state == TCP_TIME_WAIT);
+    CHECK(g_tx_bad == 0);
+    tcp_reset_tls();
+    CHECK(tls_sess_active() == 0);
+}
+
+static void test_tls_fail(void)
+{
+    static uint8_t f[200];
+    uint64_t fail0 = g_tls_fail;
+
+    // Pin salah: klien menolak tanda tangan server -> alert -> server RST.
+    tls_connect(BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, T_CERTB, sizeof(T_CERTB));
+    CHECK(br_ssl_engine_last_error(&g_cc.eng) != BR_ERR_OK && g_app_len == 0);
+    {
+        // Klien BearSSL berhenti tanpa alert; OpenSSL/SChannel mengirim alert
+        // fatal (handshake_failure) lalu menutup: tiru itu.
+        static const uint8_t alert[7] = { 0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28 };
+        srv_send(alert, sizeof(alert));
+    }
+    CHECK(g_rst_seen && g_tcbs[0].state == TCP_CLOSED && tls_sess_active() == 0);
+    CHECK(g_tls_fail == fail0 + 1 && g_app_len == 0);
+    tcp_reset_tls();
+
+    // Sampah (bukan record TLS) -> RST, slot dibebaskan.
+    g_wport = 7780;
+    tcp_open(40000, 41000, 4096);
+    g_rnxt = g_iss + 1;
+    g_rst_seen = 0;
+    srv_send((const uint8_t *)"GET / HTTP/1.0\r\n\r\n", 18);
+    CHECK(g_rst_seen && g_tcbs[0].state == TCP_CLOSED && tls_sess_active() == 0);
+    CHECK(g_tls_fail == fail0 + 2 && strstr(g_serial_cap, "D9: TLS gagal err="));
+    tcp_reset_tls();
+
+    // Login timeout selama handshake belum mulai: FIN langsung (tanpa TLS close).
+    g_wport = 7780;
+    tcp_open(42000, 43000, 4096);
+    g_rnxt = g_iss + 1;
+    g_fin_seen = 0;
+    for (int i = 0; i < 1100 && !g_fin_seen; i++) {
+        step();
+        srv_collect();
+    }
+    CHECK(g_fin_seen && g_tcbs[0].state == TCP_FIN_WAIT_2);
+    tcp_reset_tls();
+
+    // Entropi belum cukup: SYN 7780 dibuang tanpa slot.
+    g_entropy_ok = 0;
+    rx(f, mk_tcp(f, 4000, 7780, 1000, 0, F_SYN, ""));
+    g_entropy_ok = 1;
+    CHECK(g_tx_n == 0 && tls_sess_active() == 0 && g_tcbs[0].state == TCP_CLOSED);
+}
+
+static void test_tls_limit(void)
+{
+    static uint8_t f[200];
+    uint64_t full0 = g_cli_sess_full, ev0 = g_tcp_synrcvd_evicted;
+
+    tcp_reset_tls();
+    g_from_port = 7780;
+    // Sesi 1 dari .1 (ESTABLISHED, belum handshake TLS).
+    g_wport = 7780;
+    tcp_open(50000, 51000, 4096);
+    // Sesi 2 SYN_RCVD dari .77, lalu .78 menggusurnya (slot TLS dipindah).
+    CHECK(syn_from(f, 77, 5000, 100, 52000));
+    CHECK(tls_sess_active() == 2);
+    CHECK(syn_from(f, 78, 5001, 200, 53000));
+    CHECK(tls_sess_active() == 2 && g_tcp_synrcvd_evicted == ev0 + 1);
+    rx(f, mk_tcp_from(f, 78, 5001, 201, 53001, F_ACK, ""));
+    // Dua TCB 7780 ESTABLISHED: SYN berikutnya -> RST, tanpa slot baru.
+    rx(f, mk_tcp_from(f, 79, 5002, 300, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && g_cli_sess_full == full0 + 1);
+    CHECK(tls_sess_active() == 2);
+    // 7779 tidak terpengaruh sesi 7780.
+    g_from_port = 7779;
+    CHECK(syn_from(f, 80, 5003, 400, 54000));
+    g_from_port = 7;
+    tcp_reset_tls();
+    CHECK(tls_sess_active() == 0);
+}
+
 int main(void)
 {
     test_checksum();
@@ -2033,6 +2459,11 @@ int main(void)
     test_tcp_session();
     test_tcp_audit();
     test_config_vals();
+    test_tls_load();
+    test_tls_session(BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256);
+    test_tls_session(BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256);
+    test_tls_fail();
+    test_tls_limit();
     test_limits();
     build_templates();
     test_truncation();

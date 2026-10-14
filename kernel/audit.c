@@ -40,7 +40,7 @@ static uint32_t audit_fmt(const audit_ent_t *e, char *buf)
     static const char *const roles[] = { "none", "admin", "ro" };
     size_t n = ksnprintf(buf, AUDIT_LINE_MAX, "#%lu t=%lu %u.%u.%u.%u:%u %s %s %s",
                          e->seq, e->tick, e->ip[0], e->ip[1], e->ip[2], e->ip[3],
-                         e->port, e->chan == AUDIT_UDP ? "udp" : "tcp",
+                         e->port, e->chan == AUDIT_UDP ? "udp" : e->chan == AUDIT_TLS ? "tls" : "tcp",
                          e->role <= AUTH_ROLE_RO ? roles[e->role] : "?",
                          g_audit_ev[e->ev]);
 

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <string.h>   // D9b: kernel/compat/string.h (implementasi kernel/klib.c)
 
 // ---- Port I/O ----
 // F1.7: di uji host (BMAHOS_HOST_TEST, user mode) port I/O akan fault,
@@ -377,6 +378,30 @@ uint32_t fat32_free_hint(void);
 int fscmd_execute(const volatile uint8_t *cmd, uint32_t len);
 const char *fscmd_strerror(int rc);
 
+// ---- tls.c (D9: TLS 1.2 BearSSL, port 7780) ----
+#define TLS_MAX_SESS 2   // = batas TCB port 7780; tiap TCB 7780 memegang satu slot
+void tls_load(void);
+int tls_enabled(void);
+int tls_open(void);      // slot, -1 penuh, -2 nonaktif, -3 entropi, -4 engine
+void tls_free(int s);
+uint32_t tls_feed(int s, const volatile uint8_t *d, uint32_t len);
+const uint8_t *tls_app_in(int s, uint32_t *len);
+void tls_app_in_ack(int s, uint32_t n);
+uint32_t tls_app_space(int s);
+uint32_t tls_app_write(int s, const volatile uint8_t *d, uint32_t len);
+const uint8_t *tls_rec_out(int s, uint32_t *len);
+void tls_rec_out_ack(int s, uint32_t n);
+int tls_ready(int s);
+int tls_state(int s);    // 0 jalan, 1 ditutup baik-baik, -1 error
+int tls_last_error(int s);
+void tls_close(int s);
+uint16_t tls_suite(int s);
+int tls_sess_active(void);
+void tls_status(void);
+extern uint64_t g_tls_hs_ok, g_tls_fail, g_tls_full, g_tls_noentropy;
+uint64_t net_stack_used(void);   // kernel.c: puncak pemakaian stack net task (byte)
+uint64_t net_stack_size(void);
+
 // ---- config.c (D7: CONFIG.CFG) ----
 #define CFG_CLI_IDLE_DEF 300   // detik
 extern uint32_t g_cli_idle_s;     // net.c: idle sesi CLI login (detik)
@@ -516,7 +541,7 @@ void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len);
 
 // ---- audit.c (D5: audit log di RAM, dua ring) ----
 // Urutan enum = indeks nama di audit.c; mulai AUDIT_LOGIN_FAIL = ring gagal.
-enum { AUDIT_TCP = 0, AUDIT_UDP };
+enum { AUDIT_TCP = 0, AUDIT_UDP, AUDIT_TLS };
 enum { AUDIT_LOGIN = 0, AUDIT_CMD, AUDIT_CMD_ROLE, AUDIT_IDLE,
        AUDIT_LOGIN_FAIL, AUDIT_LOGIN_TIMEOUT, AUDIT_LINE_LONG, AUDIT_CMD_FAIL };
 void audit_record(int ev, int chan, const volatile uint8_t *ip, uint16_t port,
