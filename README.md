@@ -44,6 +44,9 @@ Belum pernah diuji di hardware asli.
 - Echo TCP port 7: 1 MB bolak-balik dengan SHA-256 sama di `make test` (`tests/tcp-echo.py`)
 - Login TCP port 7779 (D1): banner + nonce per koneksi, `login <hmac>`; format di `PROTOCOL.md`,
   diuji `tests/tcp-login.py`. Shell (D2): tiap perintah `<perintah> <hmac>` dengan nomor urut per koneksi
+- CLI lewat TLS 1.2 port 7780 (D9, BearSSL di `third_party/bearssl`, lihat `3RDPARTY.md`): protokol baris
+  7779 yang sama, AES-128-GCM / ChaCha20-Poly1305, sertifikat self-signed di-pin klien; 7779/UDP bisa
+  dimatikan/dibatasi lewat `CONFIG.CFG` (`cli_plain`, `udp_admin`)
 - Diagnosis RX: `metrics` menampilkan `rx_missed` (register MPC), `rx_nobuf` (RNBC), dan
   `rx_overrun_irq` (interrupt RXO) untuk membedakan paket hilang di ring RX bmahOS dari yang hilang di luar
 
@@ -184,6 +187,11 @@ PowerShell (Windows): `client/bmtcp.ps1`, kunci `%USERPROFILE%\.bmahos\key.txt`.
     bmt metrics    # keluaran sampai END <n>
     bmtx           # exit + tutup
 
+TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 pin=...` dan perintah `tls`).
+
+    python client/bmctl.py --tls --pin tlspin.txt --key ~/bmahos-key.txt uptime
+    bmtls          # PowerShell, pin dari %USERPROFILE%\.bmahos\tlspin.txt; lalu bmt/bmtx seperti biasa
+
 ## Hardware target (hasil pemeriksaan dari Linux di HP Stream)
 
 - CPU: Intel Celeron N2840
@@ -220,7 +228,8 @@ PowerShell (Windows): `client/bmtcp.ps1`, kunci `%USERPROFILE%\.bmahos\key.txt`.
 - Hanya driver E1000 (device ID `0x100F` 82545EM dan `0x100E` 82540EM yang sudah diuji); belum ada
   driver untuk NIC hardware target
 - Hanya controller AHCI pertama yang dipakai
-- TCP masih minimal: maks 4 koneksi (port 7 echo + 7779 CLI), maks 2 per IP sumber, kirim stop-and-wait, retransmisi dengan RTO tetap
+- TLS hanya 1.2 (BearSSL tanpa TLS 1.3), handshake dihitung di net task; maks 2 sesi TLS
+- TCP masih minimal: maks 4 koneksi (port 7 echo + 7779 CLI + 7780 TLS), maks 2 per IP sumber, kirim stop-and-wait, retransmisi dengan RTO tetap
   1 detik lalu eksponensial (maks 8 detik, 5 kali, lalu RST), tanpa pengukuran RTT. Penutupan FIN dua arah:
   klien menutup -> bmahOS membalas FIN setelah echo habis (port langsung bebas); koneksi diam 30 detik ditutup
   dengan FIN, TIME_WAIT hanya 2 detik (bukan 2*MSL) dan selama itu memakai satu slot. Belum ada persist timer

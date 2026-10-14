@@ -25,7 +25,7 @@ Menjawab empat pertanyaan: apa yang dilindungi, dari siapa, lewat jalur mana, da
 | ID | Penyerang | Kemampuan yang diasumsikan | Dalam cakupan? |
 |---|---|---|---|
 | A1 | Penyerang jaringan tanpa autentikasi | Mengirim paket apa saja ke port terbuka, termasuk paket rusak, banjir, dan IP palsu | **Ya** |
-| A2 | Penyerang di jalur (on-path) | Mengintip, mengulang (replay), dan mengubah paket di LAN | **Ya** (replay dan modifikasi); intip: TLS port 7780 di D9 (keputusan D8), UDP 7778 dan TCP 7779 tetap teks polos |
+| A2 | Penyerang di jalur (on-path) | Mengintip, mengulang (replay), dan mengubah paket di LAN | **Ya** (replay dan modifikasi); intip: TLS 1.2 port 7780 (D9); UDP 7778 dan TCP 7779 teks polos (bisa dibatasi/dimatikan lewat `udp_admin`/`cli_plain`) |
 | A3 | Pengguna sah berperan rendah | Punya sesi login, mencoba melampaui perannya | **Ya** (D4: kunci read-only, daftar putih perintah) |
 | A4 | Program user-space yang salah atau jahat | Memanggil syscall dengan argumen buruk | **Ya** |
 | A5 | Penyedia data tak tepercaya | Image disk berisi FAT32/ELF yang dirancang jahat | **Ya** (parser harus tahan) |
@@ -39,7 +39,7 @@ Menjawab empat pertanyaan: apa yang dilindungi, dari siapa, lewat jalur mana, da
 Jaringan (tidak tepercaya)
    │  frame Ethernet
    ▼
-Driver NIC ──► ARP / IPv4 / ICMP / UDP / TCP ──► Protokol perintah (UDP 7778, login TCP 7779 sejak D1)
+Driver NIC ──► ARP / IPv4 / ICMP / UDP / TCP ──► Protokol perintah (UDP 7778, TCP 7779 sejak D1, TLS 7780 sejak D9)
                                                        │
                                             ┌──────────┴──────────┐
                                             ▼                     ▼
@@ -57,6 +57,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda, retransmisi terbatas (5x lalu RST, C3c), setiap keadaan penutupan punya batas waktu (C3d), batas 2000 segmen/s per koneksi dan 10 ACK duplikat/s (C4), tabel 4 TCB, maks 2 per IP, SYN_RCVD tertua digusur saat penuh (C5a), timeout hanya diperpanjang kemajuan, bukan ACK duplikat/keepalive/SYN ulang/RST salah (C5b) |
 | Protokol perintah | Replay, penebakan nonce, banjir CHAL | HMAC-SHA256, nonce sekali pakai, tabel nonce 16 slot, maks 4 per IP, batas laju per IP dan global |
 | Login + shell TCP 7779 (D1, D2) | Replay bukti login/perintah, tebak HMAC, sesi menggantung, baris raksasa, sisip segmen setelah login, keluaran besar menahan memori | Nonce per koneksi dari DRBG, pesan "<nonce> tcp-login" dan "<nonce> tcp-cmd <n> <perintah>" berbeda dari UDP dan satu sama lain, 1 percobaan login per koneksi lalu FIN, login maks 10 s, baris maks 128 byte, perbandingan ct_memeq; D2: tiap perintah ditandatangani dengan nomor urut per koneksi (perintah sisipan/diulang/diubah -> ERR lalu FIN), keluaran maks 1432 byte per koneksi (statis), baris berikut tidak dibaca sampai keluaran habis; D4: peran dari kunci (KEYRO.TXT = read-only, daftar putih perintah, perintah ditandatangani kunci peran), maks 2 koneksi 7779, sesi login ditutup 300 s tanpa perintah sah. Balasan tidak ditandatangani dan teks polos (D8) |
+| TLS 7780 (D9, BearSSL) | Parser record/handshake (ClientHello, alert), sertifikat palsu, downgrade, banjir handshake (CPU), kebocoran kunci sesi | Pustaka teruji (BearSSL, constant-time, tanpa alokasi), versi dipatok + test_crypto upstream di host-test; hanya TLS 1.2 dan 2 suite AEAD ECDHE (forward secrecy), tanpa renegosiasi/resumption; klien mem-pin sha256 sertifikat; maks 2 TCB 7780, slot statis dihapus saat lepas; error -> RST; login HMAC tetap di dalam TLS. Belum: batas laju handshake per IP selain batas SYN umum |
 | Nonce | Nonce dapat ditebak melemahkan challenge-response | Modul entropi + HMAC-DRBG (F1.8); menolak jika entropi belum cukup |
 | Parser FAT32 | Struktur disk rusak | D6: validasi BPB lengkap (512 B/sektor, SPC 1/2/4/8, NumFATs 1..2, reserved > 0, area data dan FAT cukup untuk jumlah cluster, RootCluster sah), setiap nomor cluster dicek 2..max, rantai melingkar dideteksi, poll AHCI ber-timeout, kode error bukan halt |
 | Tulis FAT32 (D6, D7) | Perintah tulis/hapus/ganti nama merusak volume, menimpa atau menghapus kunci/program boot, crash di tengah tulis | Hanya admin (HMAC), hanya root dir, nama 8.3, KEY.TXT/KEYRO.TXT/PROG.BIN ditolak untuk semua perintah (juga sebagai nama tujuan `ganti`), CONFIG.CFG/.TMP hanya lewat `set`, file maks 4096 byte, entri ber-LFN ditolak, semua cek sebelum tulis pertama, urutan data -> FAT -> dir -> bebaskan lama -> FSInfo dengan flush; hapus: entri dulu lalu rantai; ganti isi atomik lewat file sementara + satu tulis sektor (uji crash di setiap tulisan, `make host-test`), error I/O -> baca saja |
@@ -73,10 +74,10 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Keaslian perintah (hanya pemegang kunci yang bisa memerintah) | Ada: HMAC-SHA256 + nonce | Pertahankan |
 | Anti-replay | Ada: nonce sekali pakai | Uji adversarial (R7) |
 | Ketahanan terhadap banjir paket | Sebagian: batas laju, batas nonce, boot aman tanpa NIC | C5, firewall (P4) |
-| Kerahasiaan balasan | **Tidak ada** (teks polos); D8 memutuskan TLS 1.2 BearSSL di port 7780 | D9 |
+| Kerahasiaan balasan | Ada lewat TLS 1.2 port 7780 (D9); UDP 7778 dan TCP 7779 tetap teks polos kecuali dimatikan (`cli_plain=0`, `udp_admin=0` = UDP hanya baca) | Matikan 7779 setelah klien pindah |
 | Isolasi user/kernel | Ada: user mode, NX | R6, SMEP/SMAP bila CPU mendukung |
 | Entropi nonce | Ada (F1.8): kolam SHA-256 + HMAC-DRBG, tolak sebelum 256 bit; rdseed/rdrand dipercaya | Nilai ulang jitter di perangkat keras asli (H0) |
-| Otorisasi berbasis peran | Ada (D4): admin/read-only per kunci, hanya TCP 7779 | Kunci per pengguna (D7) |
+| Otorisasi berbasis peran | Ada (D4): admin/read-only per kunci, TCP 7779 dan TLS 7780 | Kunci per pengguna |
 | Audit | Ada (D5): ring RAM (ok 16, gagal 8; banjir gagal tidak menimpa ring ok), IP:port + peran + perintah + tick, juga ke serial; baca `audit` hanya admin | Waktu nyata (P3), persisten (R4) |
 | Integritas update | Belum ada OTA | P7 |
 
@@ -87,7 +88,9 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    10 ACK/s, dan data hanya diterima bila nomor urutnya tepat.
 2. Banjir CHAL dari 16 IP palsu atau lebih masih dapat menggusur nonce sah (denial of service ringan,
    bukan pembobolan autentikasi).
-3. Balasan perintah berupa teks polos: penyerang di jalur bisa membaca, tetapi tidak bisa memalsukan perintah.
+3. Balasan perintah di UDP 7778 dan TCP 7779 berupa teks polos: penyerang di jalur bisa membaca, tetapi tidak
+   bisa memalsukan perintah. TLS 7780 (D9) merahasiakannya; kedua jalur lama tetap aktif sampai pengguna
+   mengatur `cli_plain=0`/`udp_admin=0`.
 4. Tabel TCP 4 koneksi, maks 2 per IP (C5a): klien dari 2 IP atau lebih yang tetap aktif bisa memenuhi tabel
    (koneksi tanpa kemajuan ditutup setelah 30 s, C5b; peer yang mengirim 1 byte tiap < 30 s tetap bisa
    menahan slot karena belum ada batas umur koneksi). Banjir SYN dari banyak IP palsu hanya menggusur SYN_RCVD, tetapi
@@ -107,6 +110,11 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    memperpanjang sesi idle (maks 1 jam). Siapa pun yang bisa menulis disk secara langsung bisa mengubah
    CONFIG.CFG dalam rentang yang sah (disk tidak ditandatangani). Urutan tulis mengandalkan FLUSH CACHE perangkat;
    perangkat yang mengabaikan flush bisa mengubah urutan. Crash meninggalkan lost cluster sampai fsck.
+
+10. TLS 7780 (D9): hanya TLS 1.2 (tanpa TLS 1.3); sertifikat self-signed di-pin (ganti kunci = semua klien
+   mengganti pin); kunci privat TLS tersimpan polos di disk (seperti KEY.TXT); handshake (ECDHE + ECDSA)
+   dihitung sinkron di net task, jadi banjir handshake memperlambat semua jaringan (dibatasi 2 TCB 7780 dan
+   batas SYN per IP); pengaman `cli_plain` membuat penulis disk bisa menyalakan 7779 dengan menghapus file TLS.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

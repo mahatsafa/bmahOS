@@ -541,6 +541,15 @@ static int priv_try_handle(volatile uint8_t *cmd, uint32_t len,
 
     if (prc == 0) {
         g_priv_ok++;
+        // D9: udp_admin=0: balasan UDP teks polos, jadi hanya perintah daftar
+        // baca (g_ro_cmds); sisanya lewat TLS 7780.
+        if (!g_udp_admin && !auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)pc, pcl)) {
+            audit_record(AUDIT_CMD_ROLE, AUDIT_UDP, src_ip, src_port, AUTH_ROLE_ADMIN, 0,
+                         pc, pcl);
+            g_cmd_len = 0;
+            cmd_puts("ERR: udp_admin=0: hanya perintah baca lewat UDP (pakai TLS 7780)\n");
+            return 1;
+        }
         audit_record(AUDIT_CMD, AUDIT_UDP, src_ip, src_port, AUTH_ROLE_ADMIN, 0,
                      pc, pcl);
         priv_cmd_execute(pc, pcl);

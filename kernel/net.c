@@ -7,6 +7,8 @@ const uint8_t g_net_ip[4] = {192, 168, 50, 200};
 uint32_t g_cli_idle_s = CFG_CLI_IDLE_DEF;
 uint32_t g_net_src_rate = NET_UDP_SRC_PER_SEC;
 uint32_t g_net_echo = 1;
+uint32_t g_cli_plain = 1;   // D9: CONFIG.CFG cli_plain
+uint32_t g_udp_admin = 1;   // D9: CONFIG.CFG udp_admin (dipakai auth.c)
 uint32_t g_net_arp_replies_sent = 0;
 uint64_t g_net_tx_buf_phys = 0;
 
@@ -1715,7 +1717,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         return 1;
     }
 
-    if (((dport == NET_TCP_ECHO_PORT && g_net_echo) || dport == NET_TCP_CLI_PORT ||
+    if (((dport == NET_TCP_ECHO_PORT && g_net_echo) ||
+         (dport == NET_TCP_CLI_PORT && g_cli_plain) ||
          (dport == NET_TCP_TLS_PORT && tls_enabled())) &&
         (flags & TCP_SYN) &&
         !(flags & (TCP_ACK | TCP_RST))) {

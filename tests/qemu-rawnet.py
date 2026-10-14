@@ -200,7 +200,8 @@ def test_config(net, cli):
     langsung (lalu dikembalikan supaya uji berikutnya tidak terpengaruh)."""
     r = cli.cmd("config")
     check("D7: setelah reboot config = sumber=disk cli_idle=600 (dari boot pertama)",
-          r == "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=1\n", repr(r))
+          r == "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=1\n"
+          "cli_plain=1\nudp_admin=1\n", repr(r))
     src = bytes([192, 168, 50, 13])
     r = cli.cmd("set echo 0")
     e = net.request(src, 47000, ECHO_PORT, b"halo", timeout=1.5)
@@ -226,7 +227,8 @@ def test_config(net, cli):
     check("D7: set udp_rate 5 -> banjir 15 dibalas 5..10, lalu kembali 20",
           r == "OK udp_rate=5 (tersimpan)\n" and 5 <= n <= 10 and
           r2 == "OK udp_rate=20 (tersimpan)\n" and
-          r3 == "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=1\n",
+          r3 == "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=1\n"
+          "cli_plain=1\nudp_admin=1\n",
           repr((r, n, r2, r3)))
 
 

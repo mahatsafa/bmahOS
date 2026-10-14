@@ -11,6 +11,14 @@
 uint32_t g_cli_idle_s = CFG_CLI_IDLE_DEF;
 uint32_t g_net_src_rate = NET_UDP_SRC_PER_SEC;
 uint32_t g_net_echo = 1;
+uint32_t g_cli_plain = 1;
+uint32_t g_udp_admin = 1;
+static int g_tls_on = 1;
+
+int tls_enabled(void)
+{
+    return g_tls_on;
+}
 
 static char g_out[CMD_OUT_MAX + 1];
 uint32_t g_cmd_len = 0;
@@ -188,17 +196,21 @@ static void test_load(void)
     config_load();
     CHECK(g_net_echo == 1 && g_cli_idle_s == 300 && g_net_src_rate == 20);
     CHECK(strstr(g_serial_cap,
-                 "CONFIG: sumber=bawaan (tidak ada file) cli_idle=300 udp_rate=20 echo=1\r\n"));
+                 "CONFIG: sumber=bawaan (tidak ada file) cli_idle=300 udp_rate=20 echo=1 "
+                 "cli_plain=1 udp_admin=1\r\n"));
     CHECK_STR(run("config"),
-              "config: sumber=bawaan (tidak ada file)\ncli_idle=300\nudp_rate=20\necho=1\n");
+              "config: sumber=bawaan (tidak ada file)\ncli_idle=300\nudp_rate=20\necho=1\n"
+              "cli_plain=1\nudp_admin=1\n");
 
     // file sah
     set_file("cli_idle=600\necho=0\n");
     serial_capture_reset();
     config_load();
     CHECK(g_cli_idle_s == 600 && g_net_echo == 0 && g_net_src_rate == 20);
-    CHECK(strstr(g_serial_cap, "CONFIG: sumber=disk cli_idle=600 udp_rate=20 echo=0\r\n"));
-    CHECK_STR(run("config"), "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=0\n");
+    CHECK(strstr(g_serial_cap, "CONFIG: sumber=disk cli_idle=600 udp_rate=20 echo=0 "
+                               "cli_plain=1 udp_admin=1\r\n"));
+    CHECK_STR(run("config"), "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=0\n"
+              "cli_plain=1\nudp_admin=1\n");
 
     // file rusak -> SEMUA bawaan (juga kunci yang sah di baris sebelumnya)
     set_file("cli_idle=600\necho=0\nudp_rate=500\n");
@@ -206,7 +218,7 @@ static void test_load(void)
     config_load();
     CHECK(g_cli_idle_s == 300 && g_net_echo == 1 && g_net_src_rate == 20);
     CHECK(strstr(g_serial_cap, "CONFIG: sumber=bawaan (ditolak baris 3: nilai di luar rentang) "
-                               "cli_idle=300 udp_rate=20 echo=1\r\n"));
+                               "cli_idle=300 udp_rate=20 echo=1 cli_plain=1 udp_admin=1\r\n"));
     CHECK(strncmp(run("config"), "config: sumber=bawaan (ditolak baris 3: nilai di luar rentang)\n"
                   "cli_idle=300\n", 76) == 0);
 
@@ -241,11 +253,12 @@ static void test_set(void)
     CHECK(g_net_echo == 0);
     CHECK(g_file_len > 0 &&
           strcmp(g_file, "# bmahOS CONFIG.CFG (ditulis oleh perintah set)\n"
-                         "cli_idle=300\nudp_rate=20\necho=0\n") == 0);
+                         "cli_idle=300\nudp_rate=20\necho=0\ncli_plain=1\nudp_admin=1\n") == 0);
     CHECK_STR(run("set cli_idle 3600"), "OK cli_idle=3600 (tersimpan)\n");
     CHECK_STR(run("set udp_rate 1"), "OK udp_rate=1 (tersimpan)\n");
     CHECK(g_cli_idle_s == 3600 && g_net_src_rate == 1);
-    CHECK_STR(run("config"), "config: sumber=disk\ncli_idle=3600\nudp_rate=1\necho=0\n");
+    CHECK_STR(run("config"), "config: sumber=disk\ncli_idle=3600\nudp_rate=1\necho=0\n"
+              "cli_plain=1\nudp_admin=1\n");
 
     // file yang ditulis set terbaca ulang identik
     g_net_echo = 1;
@@ -259,7 +272,8 @@ static void test_set(void)
     CHECK(g_writes == 5);
 
     // salah: tidak menulis, tidak mengubah
-    CHECK_STR(run("set nama x"), "ERR: config: kunci tak dikenal (cli_idle udp_rate echo)\n");
+    CHECK_STR(run("set nama x"),
+              "ERR: config: kunci tak dikenal (cli_idle udp_rate echo cli_plain udp_admin)\n");
     CHECK_STR(run("set echo 2"), "ERR: config: format: set echo 0..1|-\n");
     CHECK_STR(run("set cli_idle 29"), "ERR: config: format: set cli_idle 30..3600|-\n");
     CHECK_STR(run("set cli_idle"), "ERR: config: format: set cli_idle 30..3600|-\n");
@@ -290,10 +304,55 @@ static void test_set(void)
     CHECK(strncmp(run("config"), "config: sumber=disk\n", 20) == 0);
 }
 
+// D9: cli_plain/udp_admin dan pengaman jalur admin terakhir.
+static void test_plain_admin(void)
+{
+    uint32_t v[CFG_NKEYS], line;
+    const char *why;
+
+    CHECK(parse("cli_plain=0\nudp_admin=0\n", v, &line, &why) && v[3] == 0 && v[4] == 0);
+    CHECK(rejected("cli_plain=2\n", 1, "nilai di luar rentang"));
+    CHECK(rejected("udp_admin=-1\n", 1, "nilai bukan angka desimal"));
+
+    g_tls_on = 1;
+    set_file(NULL);
+    config_load();
+    g_writes = 0;
+    CHECK_STR(run("set cli_plain 0"), "OK cli_plain=0 (tersimpan)\n");
+    CHECK_STR(run("set udp_admin 0"), "OK udp_admin=0 (tersimpan)\n");
+    CHECK(g_cli_plain == 0 && g_udp_admin == 0 && g_writes == 2);
+    CHECK(strstr(g_file, "echo=1\ncli_plain=0\nudp_admin=0\n"));
+
+    // TLS hilang (file dihapus saat VM mati): boot memaksa cli_plain=1.
+    g_tls_on = 0;
+    serial_capture_reset();
+    config_load();
+    CHECK(g_cli_plain == 1 && g_udp_admin == 0);
+    CHECK(strstr(g_serial_cap, "CONFIG: TLS nonaktif, cli_plain dipaksa 1") &&
+          strstr(g_serial_cap, "sumber=disk cli_idle=300 udp_rate=20 echo=1 cli_plain=1 "
+                               "udp_admin=0\r\n"));
+
+    // Tanpa TLS, set yang menutup jalur terakhir ditolak, tanpa tulis.
+    g_writes = 0;
+    CHECK_STR(run("set cli_plain 0"),
+              "ERR: config: TLS nonaktif, cli_plain=0 + udp_admin=0 menutup semua jalur admin\n");
+    CHECK(g_cli_plain == 1 && g_writes == 0);
+    CHECK_STR(run("set udp_admin 1"), "OK udp_admin=1 (tersimpan)\n");
+    CHECK_STR(run("set cli_plain 0"), "OK cli_plain=0 (tersimpan)\n");
+    CHECK_STR(run("set udp_admin 0"),
+              "ERR: config: TLS nonaktif, cli_plain=0 + udp_admin=0 menutup semua jalur admin\n");
+    CHECK(g_cli_plain == 0 && g_udp_admin == 1);
+    CHECK_STR(run("set cli_plain -"), "OK cli_plain=1 (tersimpan)\n");
+    g_tls_on = 1;
+    set_file(NULL);
+    config_load();
+}
+
 int main(void)
 {
     test_parse();
     test_load();
     test_set();
+    test_plain_admin();
     return test_done("config");
 }

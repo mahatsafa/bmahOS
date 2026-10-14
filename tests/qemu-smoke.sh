@@ -292,6 +292,7 @@ S_OUT="$($BMS --key "$KEY" uptime 2>&1)"; S_RC=$?
 check "D9c: bmctl --tls tanpa pin -> rc 2" \
     '[ "$S_RC" -eq 2 ] && echo "$S_OUT" | grep -q "butuh --pin"'
 
+
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
 
 # D3: bmctl.py --tcp (sekali jalan, interaktif lewat pipa, kunci salah). Jeda
@@ -378,6 +379,28 @@ CF_OUT="$($BMT --key "$ROKEY" config "set echo 0" 2>&1)"
 check "D7: read-only: config boleh, set -> ERR peran read-only" \
     'echo "$CF_OUT" | grep -q "^config: sumber=disk$" && echo "$CF_OUT" | grep -q "^cli_idle=600$" && echo "$CF_OUT" | grep -q "^ERR: peran read-only$"'
 
+# D9d: cli_plain=0 (7779 RST) dan udp_admin=0 (UDP hanya baca) diatur lewat
+# TLS, lalu dikembalikan ke bawaan untuk uji berikutnya.
+sleep 2.5
+D_OUT="$($BMS --pin "$WORK/tlspin.txt" --key "$KEY" "set cli_plain 0" "set udp_admin 0" 2>&1)"
+sleep 2.5
+P_OUT="$($BMT --key "$KEY" uptime 2>&1)"; P_RC=$?
+echo "info  D9d 7779: rc=$P_RC $P_OUT"
+sleep 1.2
+U_PP="$($BM pping 2>&1)"
+U_UP="$($BM uptime 2>&1)"
+sleep 2.5
+R_OUT="$($BMS --pin "$WORK/tlspin.txt" --key "$KEY" "set cli_plain -" "set udp_admin -" \
+    config 2>&1)"
+check "D9d: set cli_plain 0 + udp_admin 0 lewat TLS tersimpan" \
+    'echo "$D_OUT" | grep -q "^OK cli_plain=0 (tersimpan)$" && echo "$D_OUT" | grep -q "^OK udp_admin=0 (tersimpan)$"'
+check "D9d: cli_plain=0 -> bmctl --tcp 7779 gagal terhubung (rc 2)" \
+    '[ "$P_RC" -eq 2 ] && ! echo "$P_OUT" | grep -q "^uptime"'
+check "D9d: udp_admin=0 -> UDP pping ERR, UDP uptime jalan" \
+    '[ "$U_PP" = "ERR: udp_admin=0: hanya perintah baca lewat UDP (pakai TLS 7780)" ] && echo "$U_UP" | grep -q "^uptime: "'
+check "D9d: dikembalikan lewat TLS: cli_plain=1 udp_admin=1" \
+    'echo "$R_OUT" | grep -q "^cli_plain=1$" && echo "$R_OUT" | grep -q "^udp_admin=1$"'
+
 # Replay: datagram yang sama dikirim dua kali, yang kedua harus ditolak.
 # Argumen: mode (nonce|counter) dan perintah. Keluaran: "<balasan1>|<balasan2>".
 replay() {
@@ -442,7 +465,7 @@ check "D6: fsck.fat -n bersih setelah tulis (FAT, dir, FSInfo)" \
     'fsck.fat -n "$DISK" >"$WORK/fsck.out" 2>&1'
 check "D6: mtype dari host = isi yang ditulis kernel; KEY.TXT tidak berubah" \
     'mtype -i "$DISK" ::CATATAN.TXT | cmp -s - "$WORK/catatan.want" && mtype -i "$DISK" ::PANJANG.TXT | cmp -s - "$WORK/panjang.want" && mtype -i "$DISK" ::KEY.TXT | cmp -s - "$KEY"'
-printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\n' \
+printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\ncli_plain=1\nudp_admin=1\n' \
     > "$WORK/config.want"
 check "D7: mtype CONFIG.CFG kanonik; CONFIG.TMP/HAPUS.TXT/GANTI.TXT tidak ada; GANTI2.TXT ada" \
     'mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1 && ! mtype -i "$DISK" ::HAPUS.TXT >/dev/null 2>&1 && ! mtype -i "$DISK" ::GANTI.TXT >/dev/null 2>&1 && [ "$(mtype -i "$DISK" ::GANTI2.TXT)" = "isi ganti" ]'

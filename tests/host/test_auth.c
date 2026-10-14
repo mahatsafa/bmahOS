@@ -18,6 +18,7 @@ uint64_t g_chal_issued = 0;
 uint64_t g_chal_noentropy = 0;
 uint64_t g_chal_ip_recycled = 0;
 uint64_t g_priv_ok = 0;
+uint32_t g_udp_admin = 1;   // D9d: net.c
 uint64_t g_priv_denied[6];
 
 // Salinan perilaku cmd.c (buffer balasan + pencocokan nama perintah).
@@ -791,6 +792,34 @@ static void test_audit(void)
           9 && memcmp(out, "cfg-stub\n", 9) == 0);
 }
 
+// D9d: udp_admin=0 -> UDP hanya daftar baca; pping/reboot/set ERR (audit cmd-peran).
+static void test_udp_admin(void)
+{
+    char m[400], nh[33];
+    const char *r;
+
+    memset(g_priv_nonces, 0, sizeof(g_priv_nonces));
+    g_udp_admin = 0;
+    r = handle("CHAL");
+    memcpy(nh, r + 7, 32);
+    nh[32] = 0;
+    sign(m, nh, "pping");
+    CHECK_STR(handle(m), "ERR: udp_admin=0: hanya perintah baca lewat UDP (pakai TLS 7780)\n");
+    r = handle("CHAL");
+    memcpy(nh, r + 7, 32);
+    sign(m, nh, "set udp_admin 1");
+    CHECK_STR(handle(m), "ERR: udp_admin=0: hanya perintah baca lewat UDP (pakai TLS 7780)\n");
+    r = handle("CHAL");
+    memcpy(nh, r + 7, 32);
+    sign(m, nh, "uptime");
+    CHECK_STR(handle(m), "exec\n");
+    r = handle("CHAL");
+    memcpy(nh, r + 7, 32);
+    sign(m, nh, "tls");
+    CHECK_STR(handle(m), "exec\n");
+    g_udp_admin = 1;
+}
+
 int main(void)
 {
     test_load_key();
@@ -802,5 +831,6 @@ int main(void)
     test_tcp_cmd();
     test_tcp_role();
     test_audit();
+    test_udp_admin();
     return test_done("auth");
 }

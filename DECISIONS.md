@@ -186,3 +186,41 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   VM mati; `tulis`/`hapus`/`ganti` jarak jauh tetap menolak nama kunci. Ganti kunci jarak jauh baru masuk akal setelah
   D9 (rahasia tidak pernah lewat jalur teks polos) dan diputuskan nanti.
 - Tanpa uji `make test` baru di D8 (tahap dokumen saja; aturan "jumlah cek naik" berlaku lagi di D9).
+
+## 2026-10-14 (D9 TLS port 7780; rencana disetujui pengguna)
+- **BearSSL master `7bea48e` (2026-04-06), bukan rilis v0.6 (2018)**: perbaikan sesudah v0.6 mengenai profil
+  kita (carry P-256 m64 2020, overflow decode kunci privat 2019, panjang record 2026). Di-vendor tanpa
+  perubahan di `third_party/bearssl` (src, inc, LICENSE, test_crypto.c), sha256 dan manifest di `3RDPARTY.md`.
+- **Build**: semua `src/*.c` -> `libbearssl.a` dengan flag arsitektur kernel + `-O2` (kode kernel sendiri
+  tetap tanpa `-O`, cek ct_memeq bergantung padanya). SSE2/AES-NI/POWER8/RDRAND, RNG dan waktu OS dimatikan
+  lewat `-D`; `BR_INT128=1`. `make test` menuntut tanpa register xmm/ymm/zmm dan simbol luar hanya
+  mem*/strlen (implementasi `kernel/klib.c`, header `kernel/compat/string.h`). `make host-test` menjalankan
+  `test_crypto` upstream (ASan/UBSan, tanpa `-fsanitize=function,alignment` karena vtable BearSSL dan akses
+  tak sejajar x86 memang disengaja) untuk implementasi profil.
+- **Implementasi dipilih eksplisit**, bukan `*_default_*` (yang memilih SSE/AES-NI saat runtime):
+  `aes_ct64` + `ghash_ctmul64`, `chacha20_ct` + `poly1305_ctmulq`, `ec_p256_m64`, ECDSA i31, SHA-256 saja.
+  AES-GCM wajib karena SChannel Windows tidak punya ChaCha20.
+- **Memori**: pool statis `TLS_MAX_SESS` = 2 slot (konteks 4128 + buffer masuk 16709, wajib karena klien
+  tidak mengirim max_fragment_length, + keluar 1109 byte, record keluar <= 1024 byte plaintext), ~22 KB per
+  slot. Slot dipegang TCB 7780 sejak SYN sampai CLOSED (juga saat digusur); karena batas TCB 7780 = jumlah
+  slot, pool tidak bisa habis selama aturan itu berlaku. Slot dihapus (memset) saat dilepas.
+- **Stack net task 8 -> 32 KB**, diisi pola 0xA5; puncak terukur di QEMU 4,5 KB (handshake ECDHE + ECDSA).
+  `make test` menuntut < 24 KB. Handshake memblok net task (perhitungan kurva sinkron di dalam
+  `recvrec_ack`); diterima, dicatat di THREAT_MODEL.
+- **Integrasi net.c**: satu pintu keluaran CLI (`net_tcp_cli_write/space/flushed`, refactor D9b-1) yang
+  untuk sesi TLS menulis ke engine; `net_tcp_tls_pump` memindah record keluar ke antrean TCP dan plaintext
+  masuk ke parser baris yang sama. Byte TCP hanya di-ACK sebanyak yang diterima engine. Banner setelah
+  handshake. Error engine -> RST; `exit`/login gagal -> `close_notify` lalu FIN; `close_notify` balasan
+  klien di FIN_WAIT_1/2 di-ACK dan dibuang (dulu: data setelah FIN kita = RST).
+- **Identitas**: kunci privat diperiksa cocok dengan sertifikat saat boot; tidak cocok/rusak/tidak ada ->
+  TLS nonaktif (port 7780 RST), port lain jalan terus. Buffer baca kunci dihapus setelah dekode.
+- **Klien Python (`ssl`)**: `CERT_NONE` + pin sha256 sertifikat sebelum data aplikasi. Tanda tangan
+  ServerKeyExchange tetap diverifikasi OpenSSL dengan kunci di sertifikat yang di-pin, jadi pin = identitas.
+  PowerShell: `SslStream` dengan callback pin (sha256 `GetRawCertData`).
+- **Nasib 7779 dan UDP 7778**: tetap ada, diatur lewat CONFIG.CFG `cli_plain` (0 = SYN 7779 RST) dan
+  `udp_admin` (0 = UDP hanya daftar perintah baca). Bawaan 1 (tidak mengubah perilaku/uji lama); pengguna
+  mematikannya sendiri setelah klien pindah ke TLS. Pengaman: tanpa TLS aktif keduanya tidak boleh 0
+  bersamaan (`set` menolak, boot memaksa `cli_plain=1`): kehilangan file TLS tidak boleh mengunci admin.
+  Akibat: penyerang yang bisa menulis disk bisa menyalakan lagi 7779 dengan menghapus file TLS; penulis disk
+  sudah di luar cakupan (THREAT_MODEL 8).
+- Ganti kunci HMAC jarak jauh lewat TLS: belum (tetap pertanyaan terbuka).

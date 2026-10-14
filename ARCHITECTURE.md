@@ -42,6 +42,8 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `entropy.c` | kolam entropi (jitter TSC dari IRQ timer/E1000 dan RX, rdseed/rdrand), HMAC-DRBG SP 800-90A, `entropy_get` (0 = belum cukup, pemanggil menolak), self-test CAVP | crypto, cpufeat |
 | `auth.c` | kunci dari `KEY.TXT`, nonce (tabel 16 slot, isi dari `entropy_get`), verifikasi HMAC, perintah berprivilege, reboot, pintu UDP 7778 | crypto, entropy, fat32, cmd |
 | `config.c` | D7: `CONFIG.CFG` (parser gagal tertutup, `config_load` saat boot, perintah `config`/`set`, tulis lewat `fat32_replace_name`); nilai runtime `g_cli_idle_s`/`g_net_src_rate`/`g_net_echo` ada di net.c | fat32, fscmd, cmd, kprintf |
+| `tls.c` | D9: server TLS 1.2 BearSSL untuk CLI 7780 (`tls_load` identitas TLSKEY/TLSCERT.DER, pool 2 sesi statis, pembungkus engine untuk net.c, perintah `tls`) | BearSSL, fat32, entropy, cmd, kprintf |
+| `klib.c` | D9: `memcpy`/`memmove`/`memset`/`memcmp`/`strlen` (dibutuhkan BearSSL; header `kernel/compat/string.h`) | - |
 | `audit.c` | D5: audit log di RAM (ring ok 16 + ring gagal 8, entri IP:port, peran, kejadian, kode, perintah, tick), baris `AUDIT` ke UART tanpa ring log, `audit_dump` untuk perintah `audit` | kprintf, serial, cmd |
 | `cmd.c` | isi perintah baca (`help uptime mem log irq stats metrics mac ip tasks`) dan pengirim balasan | net, sched, log |
 | `gdt.S`, `interrupt.S`, `task.S` | muat GDT/TSS, stub ISR/IRQ, `context_switch`, `enter_usermode` | — |

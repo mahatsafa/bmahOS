@@ -4,7 +4,7 @@ Dokumen ini mencatat format paket/baris yang diterima bmahOS (IP 192.168.50.200)
 Kunci bersama: isi KEY.TXT di disk (16..64 byte, spasi/CR/LF di akhir dibuang).
 Semua HMAC = HMAC-SHA256 dengan kunci itu, ditulis 64 hex huruf kecil.
 D4: KEYRO.TXT (opsional, aturan sama, harus beda dari KEY.TXT) = kunci peran read-only,
-hanya untuk TCP 7779.
+hanya untuk TCP 7779 dan TLS 7780.
 
 ## UDP 7778: perintah (Net-18A, B2)
 
@@ -81,6 +81,44 @@ server -> END <n>
 - Metrics: `cli_cmd_ok`, `cli_cmd_fail`, `cli_login_ro`, `cli_role_denied`, `cli_sess_full`,
   `cli_idle_timeout`.
 
+## TCP 7780: CLI lewat TLS 1.2 (D9)
+
+Isi aplikasi = protokol baris TCP 7779 di atas, persis sama (banner, nonce, `login <hmac>`, perintah
+bertanda tangan nomor urut, `END <n>`, `exit`), di dalam TLS. Login HMAC tetap wajib: TLS hanya
+mengautentikasi server dan merahasiakan isi.
+
+- TLS 1.2 saja (BearSSL tidak punya TLS 1.3; klien TLS 1.3-saja ditolak). Suite:
+  `ECDHE-ECDSA-AES128-GCM-SHA256` (0xC02B) dan `ECDHE-ECDSA-CHACHA20-POLY1305` (0xCCA9), kurva P-256.
+  Tanpa resumption, renegosiasi, sertifikat klien.
+- Identitas server: `TLSKEY.DER` (kunci EC P-256, DER SEC1 atau PKCS#8) dan `TLSCERT.DER` (sertifikat
+  self-signed DER) di root disk, dimuat saat boot; kunci publik sertifikat harus cocok dengan kunci privat.
+  Serial: `TLS: aktif port 7780 pin=<sha256 sertifikat>` atau `TLS: nonaktif (<alasan>)`; nonaktif -> SYN
+  7780 dibalas RST. Kedua file dilindungi dari `baca`/`tulis`/`hapus`/`ganti`.
+- Klien WAJIB mem-pin sha256 sertifikat (DER) dan membandingkannya sebelum mengirim byte aplikasi apa pun;
+  verifikasi CA tidak dipakai. Pin juga terlihat lewat perintah `tls`.
+- Maks 2 TCB port 7780 (terpisah dari 2 sesi 7779), aturan penggusuran SYN_RCVD sama. Batas login 10 s
+  dihitung sejak TCP ESTABLISHED (termasuk handshake). Error TLS (alert, record rusak, teks polos) -> RST.
+  `exit`/penutupan server: `close_notify` lalu FIN; `close_notify` balasan klien dibuang (bukan RST).
+- Entropi belum siap -> SYN 7780 dibuang (seperti port 7). DRBG engine di-seed 32 byte dari `entropy_get`
+  per sesi.
+- Perintah `tls` (admin dan read-only, juga lewat UDP): `tls: aktif port 7780`, `pin: <64 hex>`,
+  `sesi: aktif= maks= ok= gagal= penuh= tanpa_entropi= err_terakhir=<kode BR_ERR_*>`,
+  `stack_net: terpakai_maks=<byte> dari 32768`.
+
+Membuat identitas (di mesin dev, kunci privat tidak pernah lewat jaringan):
+
+```
+openssl ecparam -name prime256v1 -genkey -noout -outform DER -out TLSKEY.DER
+openssl req -new -x509 -key TLSKEY.DER -keyform DER -days 3650 -subj /CN=bmahOS \
+    -outform DER -out TLSCERT.DER
+sha256sum TLSCERT.DER        # = pin klien
+```
+
+Klien: `client/bmctl.py --tls --pin <64 hex | file> --key KEY` (port 7780 atau `BMAHOS_TLS_PORT`, pin juga
+dari `BMAHOS_TLS_PIN`; pin beda -> kode keluar 2 tanpa login) dan `client/bmtcp.ps1` `bmtls` (SslStream, pin
+dari `$BmPinFile`, default `%USERPROFILE%\.bmahos\tlspin.txt`). Uji: `tests/tls-login.py`, pcap di `make test`
+(`tests/pcap-check.py`: payload 7780 tanpa teks polos).
+
 ## Audit log (D5)
 
 Perintah `audit` dan `audit gagal` (hanya admin: UDP 7778 jalur nonce atau sesi TCP admin;
@@ -88,7 +126,7 @@ peran read-only -> `ERR: peran read-only`). Keluaran: header lalu entri tertua -
 
 ```
 audit ok: total=<n> tampil=<k> ditimpa=<n-k>
-#<urut> t=<tick> <ip>:<port> <tcp|udp> <none|admin|ro> <kejadian>[ kode=<c>][ <perintah>]
+#<urut> t=<tick> <ip>:<port> <tcp|udp|tls> <none|admin|ro> <kejadian>[ kode=<c>][ <perintah>]
 ```
 
 - `#<urut>` naik terus untuk kedua ring sejak boot; `t` = tick (100/s) sejak boot.
@@ -143,7 +181,7 @@ Hanya root directory (cluster root pertama), nama 8.3 `A-Z 0-9 _ -` (huruf kecil
 ## Konfigurasi persisten (D7)
 
 File `CONFIG.CFG` di root FAT32, dibaca sekali saat boot (serial: `CONFIG: sumber=... cli_idle=..
-udp_rate=.. echo=..`). Teks ASCII, satu `kunci=nilai` per baris (LF; CR di akhir baris dibuang), baris
+udp_rate=.. echo=.. cli_plain=.. udp_admin=..`). Teks ASCII, satu `kunci=nilai` per baris (LF; CR di akhir baris dibuang), baris
 kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 
 | Kunci | Rentang | Default | Arti |
@@ -151,6 +189,13 @@ kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 | `cli_idle` | 30..3600 | 300 | detik sesi CLI login tanpa perintah sah sebelum ditutup |
 | `udp_rate` | 1..100 | 20 | datagram (dan SYN/segmen di luar koneksi) per detik per IP sumber |
 | `echo` | 0..1 | 1 | 0: UDP 7777 dibuang tanpa balasan, SYN ke TCP port 7 dibalas RST |
+| `cli_plain` | 0..1 | 1 | D9: 0: SYN ke CLI teks polos TCP 7779 dibalas RST (sesi yang sudah ada jalan terus) |
+| `udp_admin` | 0..1 | 1 | D9: 0: UDP 7778 hanya perintah daftar baca (seperti peran read-only); lainnya `ERR: udp_admin=0: hanya perintah baca lewat UDP (pakai TLS 7780)` |
+
+- D9 pengaman: tanpa TLS aktif, `cli_plain=0` + `udp_admin=0` bersamaan menutup semua jalur admin jaringan.
+  `set` yang menghasilkan kombinasi itu ditolak (`ERR: config: TLS nonaktif, ...`); file di disk dengan
+  kombinasi itu (TLS hilang setelah ditulis) -> `cli_plain` dipaksa 1 saat boot (serial
+  `CONFIG: TLS nonaktif, cli_plain dipaksa 1 (jalur admin terakhir)`).
 
 - **Gagal tertutup**: satu baris salah (kunci tak dikenal, bukan `kunci=nilai`, kunci ganda, nilai bukan angka
   atau di luar rentang, byte bukan ASCII tercetak) atau file > 512 byte -> SELURUH file ditolak dan semua
@@ -170,3 +215,4 @@ kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 
 Klien: `client/bmctl.py --tcp` (sekali jalan atau interaktif) dan `client/bmtcp.ps1`
 (PowerShell: `bmtcp`, `bmt <perintah>`, `bmtx`); uji: `tests/tcp-login.py HOST PORT KEYFILE [ROKEYFILE]`.
+TLS 7780 (D9): `bmctl.py --tls --pin ...`, PowerShell `bmtls`; lihat bagian TCP 7780.

@@ -2435,6 +2435,11 @@ static void test_tls_limit(void)
     // 7779 tidak terpengaruh sesi 7780.
     g_from_port = 7779;
     CHECK(syn_from(f, 80, 5003, 400, 54000));
+    // D9d: cli_plain=0 -> SYN 7779 dibalas RST, 7780 tetap menerima.
+    g_cli_plain = 0;
+    rx(f, mk_tcp_from(f, 81, 5004, 500, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK));
+    g_cli_plain = 1;
     g_from_port = 7;
     tcp_reset_tls();
     CHECK(tls_sess_active() == 0);

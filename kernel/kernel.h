@@ -407,6 +407,8 @@ uint64_t net_stack_size(void);
 extern uint32_t g_cli_idle_s;     // net.c: idle sesi CLI login (detik)
 extern uint32_t g_net_src_rate;   // net.c: batas datagram/s per IP sumber
 extern uint32_t g_net_echo;       // net.c: 1 = echo TCP 7 + UDP 7777 aktif
+extern uint32_t g_cli_plain;      // net.c (D9): 1 = CLI teks polos TCP 7779 aktif
+extern uint32_t g_udp_admin;      // net.c (D9): 0 = UDP 7778 hanya perintah baca
 int config_parse(const uint8_t *b, uint32_t len, uint32_t *out, uint32_t *bad_line,
                  const char **why);
 void config_load(void);

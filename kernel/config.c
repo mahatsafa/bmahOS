@@ -12,7 +12,9 @@
 // Nilai di RAM hanya berubah bila file berhasil ditulis.
 
 #define CFG_FILE_MAX 512
-#define CFG_NKEYS    3
+#define CFG_NKEYS    5
+#define CFG_K_CLI_PLAIN 3
+#define CFG_K_UDP_ADMIN 4
 
 typedef struct {
     const char *key;
@@ -24,7 +26,18 @@ static const cfg_key_t g_cfg_keys[CFG_NKEYS] = {
     { "cli_idle", 30, 3600, CFG_CLI_IDLE_DEF, &g_cli_idle_s },       // detik, sesi CLI login
     { "udp_rate", 1, 100, NET_UDP_SRC_PER_SEC, &g_net_src_rate },    // datagram/s per IP
     { "echo", 0, 1, 1, &g_net_echo },                                // TCP 7 + UDP 7777
+    { "cli_plain", 0, 1, 1, &g_cli_plain },                          // D9: CLI TCP 7779
+    { "udp_admin", 0, 1, 1, &g_udp_admin },                          // D9: UDP selain baca
 };
+
+// D9: tanpa TLS aktif, cli_plain=0 + udp_admin=0 menutup semua jalur admin
+// jaringan (perbaikan hanya lewat disk saat VM mati). `set` menolaknya;
+// file di disk yang berisi kombinasi itu (TLS hilang setelah ditulis) ->
+// cli_plain dipaksa 1 saat boot.
+static int cfg_admin_lockout(const uint32_t *v)
+{
+    return !tls_enabled() && v[CFG_K_CLI_PLAIN] == 0 && v[CFG_K_UDP_ADMIN] == 0;
+}
 
 enum { CFG_SRC_DEFAULT_NOFILE, CFG_SRC_DEFAULT_NODISK, CFG_SRC_DEFAULT_IO,
        CFG_SRC_REJECTED, CFG_SRC_DISK };
@@ -226,13 +239,18 @@ void config_load(void)
         }
     }
 
+    if (cfg_admin_lockout(v)) {
+        v[CFG_K_CLI_PLAIN] = 1;
+        serial_write("CONFIG: TLS nonaktif, cli_plain dipaksa 1 (jalur admin terakhir)\r\n");
+    }
     cfg_apply(v);
 
-    char src[96], line[192];
+    char src[96], line[224];
 
     cfg_src_str(src, sizeof(src));
-    ksnprintf(line, sizeof(line), "CONFIG: sumber=%s cli_idle=%u udp_rate=%u echo=%u\r\n",
-              src, g_cli_idle_s, g_net_src_rate, g_net_echo);
+    ksnprintf(line, sizeof(line), "CONFIG: sumber=%s cli_idle=%u udp_rate=%u echo=%u "
+              "cli_plain=%u udp_admin=%u\r\n", src, g_cli_idle_s, g_net_src_rate, g_net_echo,
+              g_cli_plain, g_udp_admin);
     serial_write(line);
 }
 
@@ -264,7 +282,7 @@ static void cfg_set(const uint8_t *c, uint32_t n)
     int k = cfg_find(c, sp);
 
     if (k < 0) {
-        cmd_puts("ERR: config: kunci tak dikenal (cli_idle udp_rate echo)\n");
+        cmd_puts("ERR: config: kunci tak dikenal (cli_idle udp_rate echo cli_plain udp_admin)\n");
         return;
     }
 
@@ -286,6 +304,11 @@ static void cfg_set(const uint8_t *c, uint32_t n)
 
     for (int j = 0; j < CFG_NKEYS; j++) {
         nv[j] = j == k ? v : *g_cfg_keys[j].var;
+    }
+
+    if (cfg_admin_lockout(nv)) {
+        cmd_puts("ERR: config: TLS nonaktif, cli_plain=0 + udp_admin=0 menutup semua jalur admin\n");
+        return;
     }
 
     len += (uint32_t)ksnprintf((char *)g_cfg_buf, sizeof(g_cfg_buf),
