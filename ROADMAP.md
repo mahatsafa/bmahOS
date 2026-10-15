@@ -193,8 +193,11 @@ Linux, dan klien Python.
   Hasil: baris ring log + dump panic (tanpa register umum, tanpa AUDIT) lewat UDP 6665 ke
   192.168.50.<netcon_host>:<netcon_port>, bawaan mati; antrean statis 4 KB, maks 20 datagram/s, MAC dari ARP.
   make test 174 -> 183, PROD 164 -> 171.
-- [ ] **R3** Registry metrik (satu tempat semua counter) dan perintah `bmctl metrics`: CPU, memori, uptime,
+- [x] **R3** (2026-10-15, 4f44f85 R3-1, bfcc2fb R3-2; VMware lulus) Registry metrik (satu tempat semua counter) dan perintah `bmctl metrics`: CPU, memori, uptime,
   statistik jaringan, jumlah koneksi.
+  Hasil: tabel `g_metrics` di `kernel/metrics.c` (97 kunci), `metrics [awalan] [mulai]` berhalaman (maks 1400 byte,
+  `metrics_lanjut=<i>`), `cpu_busy_pct`/`cpu_idle_ticks`, sesi CLI/TLS, netcon, FAT32 tulis; `bmctl.py metrics`
+  dan `bmmetrics` mengikuti halaman. make test 183 -> 191, PROD 171 -> 180.
 - [ ] **R4** Log persisten berbentuk ring buffer di penyimpanan.
 - [ ] **R5** Watchdog: perangkat lunak dulu. "Tepukan" dari task sehat, **bukan** dari interrupt timer.
   Watchdog perangkat keras menyusul setelah target perangkat keras diketahui.
