@@ -48,6 +48,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `klib.c` | D9: `memcpy`/`memmove`/`memset`/`memcmp`/`strlen` (dibutuhkan BearSSL; header `kernel/compat/string.h`) | - |
 | `audit.c` | D5: audit log di RAM (ring ok 16 + ring gagal 8, entri IP:port, peran, kejadian, kode, perintah, tick), baris `AUDIT` ke UART tanpa ring log, `audit_dump` untuk perintah `audit` | kprintf, serial, cmd |
 | `cmd.c` | isi perintah baca (`help uptime mem log irq stats metrics mac ip tasks`) dan pengirim balasan | net, sched, log |
+| `metrics.c` | R3: registry metrik (tabel `g_metrics` nama -> pointer/getter, satu-satunya daftar kunci `metrics`), halaman + awalan, beban CPU per tick (`metrics_cpu_tick` dari `irq_handler`) | cmd, net, pmm, e1000, tls, netcon, audit, fat32 |
 | `gdt.S`, `interrupt.S`, `task.S` | muat GDT/TSS, stub ISR/IRQ, `context_switch`, `enter_usermode` | — |
 
 ## 3. Urutan boot (`kmain`)

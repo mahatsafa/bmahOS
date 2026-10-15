@@ -28,7 +28,7 @@ typedef struct {
 static audit_ent_t g_audit_ok[AUDIT_OK_MAX];
 static audit_ent_t g_audit_fail[AUDIT_FAIL_MAX];
 static uint64_t g_audit_ok_n, g_audit_fail_n;   // total sejak boot per ring
-static uint64_t g_audit_seq;
+uint64_t g_audit_seq;   // R3: metrics audit_seq
 
 static const char *const g_audit_ev[] = {
     "login", "cmd", "tolak-peran", "idle",

@@ -133,8 +133,11 @@ Perintah baca: `help`, `ping`, `uptime`, `mem`, `log`, `irq`, `stats`, `metrics`
 Perintah berprivilege: `pping` (balas `ppong`, untuk uji), `reboot` (balasan dikirim dulu, lalu reset).
 
 `metrics` mengembalikan semua counter dalam format stabil untuk skrip, satu `kunci=nilai` per baris
-(uptime, memori, frame RX per jenis, `rx_missed`/`rx_nobuf`/`rx_overrun_irq`, TX ok/gagal, ARP/ICMP/UDP,
-autentikasi, jalur nonce).
+(uptime, CPU, memori, frame RX per jenis, `rx_missed`/`rx_nobuf`/`rx_overrun_irq`, TX ok/gagal, ARP/ICMP/UDP,
+TCP, sesi CLI/TLS, autentikasi, jalur nonce, netcon, FAT32 tulis, audit). Semua kunci terdaftar di satu tabel
+(`kernel/metrics.c`, R3). Keluaran dibagi halaman (maks 1400 byte): halaman yang belum habis diakhiri
+`metrics_lanjut=<i>`, lanjutkan dengan `metrics <i>`; `metrics tcp_` hanya kunci berawalan `tcp_`.
+`bmctl.py metrics` dan `bmmetrics` (bmtcp.ps1) mengambil semua halaman otomatis.
 
 ### Catatan uji banjir di VMware
 
@@ -193,6 +196,7 @@ PowerShell (Windows): `client/bmtcp.ps1`, kunci `%USERPROFILE%\.bmahos\key.txt`.
     . .\client\bmtcp.ps1
     bmtcp          # OK login
     bmt metrics    # keluaran sampai END <n>
+    bmmetrics      # R3: semua halaman metrics (bmmetrics tcp_ = awalan)
     bmtx           # exit + tutup
 
 TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 pin=...` dan perintah `tls`).

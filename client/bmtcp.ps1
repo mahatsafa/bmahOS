@@ -9,6 +9,7 @@
 #         bmtcp "10.0.0.5"   alamat lain
 #         bmt uptime         perintah bertanda tangan, cetak keluaran sampai END <n>
 #         bmtx               exit lalu tutup koneksi
+#         bmmetrics [awalan] R3: semua halaman metrics (ikuti metrics_lanjut=)
 #         bmtls              D9: sama dengan bmtcp lewat TLS 1.2 port 7780; pin
 #                            (sha256 sertifikat, 64 hex) dari $BmPinFile (default
 #                            $env:USERPROFILE\.bmahos\tlspin.txt). Beda -> ditutup.
@@ -94,6 +95,24 @@ function bmt($c) {
     if ($line -eq $endl) { return }
     $line
   }
+}
+
+# R3: metrics dibagi halaman; baris terakhir "metrics_lanjut=<i>" berarti
+# masih ada kunci, lanjut dengan "metrics [awalan] <i>".
+function bmmetrics($awalan = "") {
+  $base = "metrics"
+  if ($awalan) { $base = "metrics $awalan" }
+  $cmd = $base
+  for ($pg = 0; $pg -lt 20; $pg++) {
+    $lines = @(bmt $cmd)
+    $last = ""
+    if ($lines.Count -gt 0) { $last = $lines[$lines.Count - 1] }
+    if ($last -notmatch '^metrics_lanjut=(\d+)$') { $lines; return }
+    $nx = $Matches[1]
+    if ($lines.Count -gt 1) { $lines[0..($lines.Count - 2)] }
+    $cmd = "$base $nx"
+  }
+  "bmmetrics: halaman terlalu banyak"
 }
 
 function bmtx {

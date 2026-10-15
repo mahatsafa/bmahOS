@@ -156,6 +156,7 @@ void irq_handler(struct exception_context *context)
 
     if (irq_num == 0) {
         timer_ticks++;
+        metrics_cpu_tick(current_index == g_idle_index);   // R3
         entropy_event(ENTROPY_SRC_TIMER, 0);
         net_rx_tick_wake();
     }

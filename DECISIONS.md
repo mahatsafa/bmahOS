@@ -272,3 +272,15 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   dan netcon.
 - **Status**: perintah `netcon` (admin + read-only), bukan kunci `metrics` (metrics dekat batas 1400 byte;
   registry = R3).
+
+## 2026-10-15 (R3 registry metrik; rencana disetujui pengguna)
+- **Satu tabel** `g_metrics` (metrics.c): nama + pointer u64/u32 atau getter. Counter tetap didefinisikan di
+  modul pemiliknya (tanpa makro X/abstraksi lain). R3-1 = refactor dengan keluaran sama byte per byte.
+- **Halaman, bukan buffer lebih besar**: batas 1400 byte tetap (muat satu datagram UDP). Halaman yang belum
+  habis diakhiri `metrics_lanjut=<i>`; tidak ada lagi pemotongan diam-diam. Kunci lama tetap di depan
+  (skrip lama yang hanya membaca halaman 1 tetap mendapat 78 kunci lama).
+- **Filter = awalan nama**, bukan grup bernama (tanpa tabel grup terpisah).
+- **CPU**: sampel per tick timer (task terinterupsi = idle atau bukan), jendela 1 s. Tanpa akuntansi per task.
+- **Kunci baru**: uptime_s, cpu_*, mem_total_kb, heap_mapped, stack_net_used, cli/tls_sess_active, tls_*,
+  netcon_* (dulu sengaja ditunda di R2), fat_wr_ok/fail, audit_seq. Read-only boleh `metrics` + argumen
+  (sudah boleh `metrics` sebelumnya; tidak ada rahasia di counter).

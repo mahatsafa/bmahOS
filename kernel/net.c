@@ -823,6 +823,27 @@ int net_tcp_conn_active(void)
     return n;
 }
 
+// R3: jumlah TCB bukan CLOSED dengan port lokal tertentu (metrics).
+static int net_tcp_port_active(uint16_t port)
+{
+    int n = 0;
+
+    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+        n += g_tcbs[k].state != TCP_CLOSED && g_tcbs[k].lport == port;
+    }
+    return n;
+}
+
+int net_tcp_cli_active(void)
+{
+    return net_tcp_port_active(NET_TCP_CLI_PORT);
+}
+
+int net_tcp_tls_active(void)
+{
+    return net_tcp_port_active(NET_TCP_TLS_PORT);
+}
+
 static inline int seq_lt(uint32_t a, uint32_t b)
 {
     return (int32_t)(a - b) < 0;

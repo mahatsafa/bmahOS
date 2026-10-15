@@ -32,7 +32,7 @@ volatile int g_netcon_hold = 0;
 static char g_nc_ring[NETCON_RING];
 static uint32_t g_nc_head, g_nc_tail;   // terus naik; terisi = head - tail
 static uint64_t g_nc_lost_pending;      // baris dibuang yang belum dilaporkan
-static uint64_t g_nc_lost, g_nc_sent, g_nc_arp, g_nc_tx_fail;
+uint64_t g_nc_lost, g_nc_sent, g_nc_arp, g_nc_tx_fail;   // R3: metrics netcon_*
 static uint8_t g_nc_mac[6];
 static int g_nc_mac_ok;
 static uint32_t g_nc_cur_on, g_nc_cur_host;

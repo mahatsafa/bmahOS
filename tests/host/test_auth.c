@@ -725,6 +725,14 @@ static void test_tcp_role(void)
         all &= strcmp(g_exec, okc[i]) == 0 && rb == 0;
     }
     CHECK(all && g_cli_role_denied == d0 + 4);
+    // R3: metrics dengan argumen boleh untuk ro; nama lain berawalan "metrics" tidak.
+    CHECK(auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"metrics tcp_", 12));
+    CHECK(auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"metrics 40", 10));
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"metricsx", 8));
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"metrics ", 8));
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"metric tcp_", 11));
+    auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"metrics cpu_", 12, out, sizeof(out), &rb);
+    CHECK(strcmp(g_exec, "metrics cpu_") == 0 && g_cli_role_denied == d0 + 4);
     g_disk_rokey = NULL;
     load_key(KEY);
 }

@@ -72,7 +72,8 @@ server -> END <n>
 - Satu perintah salah = koneksi ditutup (fail closed); login ulang di koneksi baru.
 - Balasan tidak ditandatangani dan teks polos (keaslian balasan dan kerahasiaan: D8).
 - hmac perintah memakai kunci peran sesi (admin: KEY.TXT, ro: KEYRO.TXT).
-- Peran read-only hanya boleh: `help ping uptime mem log irq stats metrics mac ip tasks exit`.
+- Peran read-only hanya boleh: `help ping uptime mem log irq stats metrics mac ip tasks exit`
+  (`metrics` dengan argumen juga, R3).
 - D4: sesi yang sudah login ditutup 300 detik setelah login/perintah sah terakhir
   (`ERR: sesi idle`, lalu FIN); byte tanpa LF tidak memperpanjang. Batas diam TCP 30 detik
   tidak berlaku untuk sesi login.
@@ -236,3 +237,22 @@ register umum dump panic), maks 160 karakter.
   `netcon: mac=<mac|belum> arp=N`, `netcon: terkirim=N antre=<byte> dibuang=<baris> tx_gagal=N`
   (tanpa NIC: `netcon: NIC tidak ada`).
 - Penerima: `nc -ul 6666` (Linux), atau UdpClient PowerShell; firewall Windows perlu izin UDP masuk.
+
+## Perintah `metrics` (R3)
+
+    metrics [awalan] [mulai]
+
+- Keluaran: satu `kunci=nilai` per baris (nilai desimal tanpa tanda), urutan tetap = urutan
+  tabel `g_metrics` di `kernel/metrics.c`. Kunci baru selalu ditambah di akhir; nama kunci
+  `[a-z0-9_]`, maks 32 byte.
+- Halaman: baris ditulis utuh selama muat di 1400 byte. Kalau masih ada kunci, baris terakhir
+  `metrics_lanjut=<i>`; kirim `metrics [awalan] <i>` untuk halaman berikutnya. Halaman tanpa
+  baris itu = halaman terakhir. Tidak pernah terpotong di tengah baris.
+- `awalan` (opsional, `[a-z0-9_]` 1..32 byte, tidak diawali digit): hanya kunci yang namanya
+  diawali teks itu, mis. `metrics tcp_`, `metrics cpu_`.
+- `mulai` (opsional, desimal): indeks tabel tempat mulai (dari `metrics_lanjut`).
+- Argumen salah (spasi ganda, huruf besar, `mulai` >= jumlah kunci, urutan terbalik):
+  `ERR: metrics [awalan] [mulai]`. Tidak ada kunci yang cocok: `ERR: metrics: tidak ada kunci yang cocok`.
+- Jalur UDP: tiap halaman = CHAL + perintah sendiri (ingat batas 20 datagram/s per IP).
+- Kunci CPU: `cpu_idle_ticks` (tick timer saat task idle berjalan), `cpu_busy_pct` (persen tick
+  bukan-idle di jendela 100 tick terakhir yang lengkap; build dev ~100 karena task uji).

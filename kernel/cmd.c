@@ -230,8 +230,9 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts(" ring=");
         cmd_putdec(E1000_RX_RING_SIZE);
         cmd_putc('\n');
-    } else if (net_cmd_is(cmd, len, "metrics")) {
-        metrics_dump();   // R3: registry di metrics.c
+    } else if (net_cmd_is(cmd, len, "metrics") ||
+               (len > 8 && net_cmd_is(cmd, 8, "metrics "))) {
+        metrics_execute(cmd + 7, len - 7);   // R3: registry + halaman di metrics.c
     } else if (net_cmd_is(cmd, len, "mem")) {
         // Hitung frame bebas dengan scan bitmap. Tidak dikunci terhadap
         // pmm_alloc() task lain, jadi angkanya perkiraan sesaat.

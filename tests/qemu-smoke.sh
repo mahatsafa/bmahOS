@@ -226,6 +226,33 @@ HZ=$(python3 -c "print(round(($U1 - $U0) / ($T1 - $T0)))" 2>/dev/null || echo 0)
 echo "info  laju tick: $HZ tick/s"
 check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115 ]'
 
+# R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
+# bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
+R3_N=97
+sleep 1.2
+R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
+R3_ALL="$($BM metrics)"
+check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
+    '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir audit_seq" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^audit_seq="'
+r3v() { echo "$R3_ALL" | sed -n "s/^$1=//p"; }
+echo "info  R3: cpu_busy_pct=$(r3v cpu_busy_pct) cpu_idle_ticks=$(r3v cpu_idle_ticks) uptime_ticks=$(r3v uptime_ticks) mem_total_kb=$(r3v mem_total_kb) mem_free_kb=$(r3v mem_free_kb) stack_net_used=$(r3v stack_net_used)"
+check "R3: cpu_busy_pct 0..100, mem_free_kb < mem_total_kb, uptime_s ~ uptime_ticks/100, heap_used <= heap_mapped" \
+    '[ "$(r3v cpu_busy_pct)" -le 100 ] && [ "$(r3v mem_free_kb)" -lt "$(r3v mem_total_kb)" ] && [ "$(r3v uptime_s)" -ge $(( $(r3v uptime_ticks) / 100 )) ] && [ "$(r3v uptime_s)" -le $(( $(r3v uptime_ticks) / 100 + 5 )) ] && [ "$(r3v heap_used)" -le "$(r3v heap_mapped)" ]'
+if grep -q "PROD: task uji dilewati" "$LOG"; then
+    check "R3: PROD: task idle terukur (cpu_idle_ticks > separuh uptime_ticks)" \
+        '[ $(( $(r3v cpu_idle_ticks) * 2 )) -gt "$(r3v uptime_ticks)" ]'
+fi
+check "R3: kunci baru: stack_net_used > 0, tls_hs_ok dan netcon_sent ada" \
+    '[ "$(r3v stack_net_used)" -gt 0 ] && [ -n "$(r3v tls_hs_ok)" ] && [ -n "$(r3v netcon_sent)" ]'
+sleep 1.2
+R3_TCP="$($BM "metrics tcp_")"
+check "R3: metrics tcp_ (awalan): 20 kunci, semua tcp_" \
+    '[ "$(echo "$R3_TCP" | grep -c "^tcp_[a-z_]*=[0-9]*$")" -eq 20 ] && [ "$(echo "$R3_TCP" | wc -l)" -eq 20 ]'
+check "R3: metrics argumen salah -> ERR, awalan tanpa kunci -> ERR" \
+    '$BM "metrics TCP" | grep -q "^ERR: metrics \[awalan\] \[mulai\]$" && $BM "metrics zzz" | grep -q "^ERR: metrics: tidak ada kunci yang cocok$"'
+
 # C4: echo TCP 1 MB lewat slirp (klien TCP Linux sungguhan), hash harus sama.
 ECHO_OUT="$(python3 "$ROOT/tests/tcp-echo.py" 127.0.0.1 "$TPORT" --size 1048576 --timeout 300 2>&1)"
 ECHO_RC=$?
@@ -298,6 +325,10 @@ check "D9c: bmctl --tls pin salah -> rc 2, tanpa login" \
 S_OUT="$($BMS --key "$KEY" uptime 2>&1)"; S_RC=$?
 check "D9c: bmctl --tls tanpa pin -> rc 2" \
     '[ "$S_RC" -eq 2 ] && echo "$S_OUT" | grep -q "butuh --pin"'
+sleep 2.5
+S_OUT="$($BMS --pin "$WORK/tlspin.txt" --key "$ROKEY" metrics "metrics cpu_" 2>&1)"; S_RC=$?
+check "R3: bmctl --tls kunci read-only: metrics lengkap ($R3_N kunci) + metrics cpu_, rc 0" \
+    '[ "$S_RC" -eq 0 ] && [ "$(echo "$S_OUT" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $(( R3_N + 2 )) ] && [ "$(echo "$S_OUT" | grep -c "^cpu_busy_pct=")" -eq 2 ] && [ "$(echo "$S_OUT" | grep -c "^tls_sess_active=1$")" -eq 1 ] && ! echo "$S_OUT" | grep -q "^metrics_lanjut=" && echo "$S_OUT" | grep -q "^bye$"'
 
 
 python3 -c 'import secrets; print("x" + secrets.token_hex(16), end="")' > "$WORK/bad.txt"
@@ -309,6 +340,8 @@ sleep 2.5
 T_OUT="$($BMT --key "$KEY" uptime pping metrics 2>&1)"; T_RC=$?
 check "D3: bmctl --tcp uptime pping metrics (satu sesi, rc 0)" \
     '[ "$T_RC" -eq 0 ] && echo "$T_OUT" | grep -q "^uptime: " && echo "$T_OUT" | grep -q "^ppong$" && echo "$T_OUT" | grep -q "^ktimer_cancelled=" && echo "$T_OUT" | grep -q "^bye$"'
+check "R3: bmctl --tcp metrics semua halaman: $R3_N kunci, cli_sess_active=1" \
+    '[ "$(echo "$T_OUT" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && echo "$T_OUT" | grep -q "^cli_sess_active=1$" && ! echo "$T_OUT" | grep -q "^metrics_lanjut="'
 sleep 2.5
 T_OUT="$(printf 'ping\n\nhelp\n' | $BMT --key "$KEY" 2>&1)"; T_RC=$?
 check "D3: bmctl --tcp interaktif (stdin pipa, EOF -> exit)" \

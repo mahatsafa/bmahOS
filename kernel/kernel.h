@@ -577,7 +577,14 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len);
 const char *cmd_out(void);
 
 // ---- metrics.c (R3: registry metrik) ----
-void metrics_dump(void);
+void metrics_execute(const volatile uint8_t *args, uint32_t len);
+void metrics_cpu_tick(int idle);
+extern uint64_t g_cpu_idle_ticks;
+extern uint32_t g_cpu_busy_pct;
+int net_tcp_cli_active(void);   // net.c: TCB port 7779 / 7780 bukan CLOSED
+int net_tcp_tls_active(void);
+extern uint64_t g_nc_lost, g_nc_sent, g_nc_arp, g_nc_tx_fail;   // netcon.c
+extern uint64_t g_audit_seq;    // audit.c: nomor urut entri terakhir
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----

@@ -199,11 +199,20 @@ class Client:
         return r.decode(errors="replace") if r is not None else None
 
     def metrics(self):
-        r = self.cmd("metrics")
-        if r is None or "=" not in r:
-            return None
-        return {k: int(v) for k, v in
-                (l.split("=", 1) for l in r.strip().splitlines() if "=" in l)}
+        """R3: semua halaman (ikuti metrics_lanjut=<i>) digabung."""
+        out = {}
+        nxt = None
+        for _ in range(10):
+            r = self.cmd("metrics" if nxt is None else "metrics %d" % nxt)
+            if r is None or "=" not in r:
+                return None
+            kv = {k: int(v) for k, v in
+                  (l.split("=", 1) for l in r.strip().splitlines() if "=" in l)}
+            nxt = kv.pop("metrics_lanjut", None)
+            out.update(kv)
+            if nxt is None:
+                return out
+        return None
 
 
 def test_fs_persist(net, cli):

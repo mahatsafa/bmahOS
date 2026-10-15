@@ -135,7 +135,7 @@ HOST_BUILD  := $(BUILD_DIR)/host
 HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host -Ithird_party/bearssl/inc
-HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config panic
+HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config panic metrics
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
@@ -156,6 +156,8 @@ host_srcs_config  := $(KERNEL_DIR)/kprintf.c
 host_deps_config  := $(KERNEL_DIR)/config.c    # di-#include oleh test_config.c
 host_srcs_panic   := $(KERNEL_DIR)/kprintf.c
 host_deps_panic   := $(KERNEL_DIR)/panic.c     # R1: di-#include oleh test_panic.c
+host_srcs_metrics := $(KERNEL_DIR)/kprintf.c
+host_deps_metrics := $(KERNEL_DIR)/metrics.c   # R3: di-#include oleh test_metrics.c
 
 # D9a: BearSSL versi host (clang + ASan/UBSan) dan test_crypto upstream untuk
 # implementasi yang dipakai profil TLS D9. -fno-sanitize=function: vtable BearSSL

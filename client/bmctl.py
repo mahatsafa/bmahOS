@@ -6,6 +6,7 @@ Hanya pustaka standar Python 3, jalan di Windows dan Linux.
 Contoh:
     python bmctl.py --key ~/bmahos-key.txt uptime
     python bmctl.py --key key.txt metrics
+    python bmctl.py --key key.txt "metrics tcp_"   (R3: hanya kunci berawalan tcp_)
     python bmctl.py --key key.txt pping
     python bmctl.py --key key.txt reboot
     python bmctl.py --tcp --key key.txt uptime metrics   (satu sesi TCP)
@@ -57,6 +58,31 @@ CMD_MAX = 64   # panjang perintah maks di shell TCP (kernel/auth.c)
 READ_CMDS = ("help", "ping", "uptime", "mem", "log", "irq", "stats",
              "metrics", "mac", "ip", "tasks")
 PRIV_CMDS = ("pping", "reboot")
+
+# R3: `metrics [awalan]` (tanpa mulai) diambil semua halamannya: kernel
+# mengakhiri halaman yang belum habis dengan "metrics_lanjut=<indeks>".
+METRICS_RE = re.compile(r"metrics(?: [a-z_][a-z0-9_]*)?")
+METRICS_NEXT = "metrics_lanjut="
+METRICS_MAX_PAGES = 20
+
+
+def metrics_pages(cmd, run1):
+    """run1(perintah) -> (baris, ok). Perintah selain metrics [awalan] lewat
+    apa adanya; metrics diulang dengan indeks lanjut, baris lanjut dibuang."""
+    if not METRICS_RE.fullmatch(cmd):
+        return run1(cmd)
+    out = []
+    nxt = None
+    for _ in range(METRICS_MAX_PAGES):
+        lines, ok = run1(cmd if nxt is None else "%s %d" % (cmd, nxt))
+        if not ok or not lines or not lines[-1].startswith(METRICS_NEXT):
+            return out + lines, ok
+        n = int(lines[-1][len(METRICS_NEXT):])
+        if nxt is not None and n <= nxt:
+            return out + ["bmctl: metrics_lanjut tidak maju"], False
+        out += lines[:-1]
+        nxt = n
+    return out + ["bmctl: halaman metrics terlalu banyak"], False
 
 
 def load_key(path):
@@ -231,7 +257,7 @@ def run_tcp(args):
                         continue
             else:
                 cmd = next(cmds, "exit")
-            out, ok = sess.command(cmd)
+            out, ok = metrics_pages(cmd, sess.command)
             for line in out:
                 sys.stdout.write(line + "\n")
             sys.stdout.flush()
@@ -269,17 +295,21 @@ def run(args):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(args.timeout)
 
-    try:
+    def one(cmd):
+        """Satu perintah UDP (CHAL baru tiap perintah) -> (baris, ok)."""
         if args.counter:
             counter = int(time.time() * 1000)
-            reply = exchange(sock, addr, sign(key, "%d %s" % (counter, args.command)))
+            reply = exchange(sock, addr, sign(key, "%d %s" % (counter, cmd)))
         else:
             reply = exchange(sock, addr, "CHAL")
             if not reply.startswith("nonce: "):
-                sys.stdout.write(reply)
-                return 1
+                return reply.rstrip("\n").split("\n"), False
             nonce = reply[len("nonce: "):].strip()
-            reply = exchange(sock, addr, sign(key, "%s %s" % (nonce, args.command)))
+            reply = exchange(sock, addr, sign(key, "%s %s" % (nonce, cmd)))
+        return reply.rstrip("\n").split("\n"), not reply.startswith("ERR")
+
+    try:
+        out, ok = metrics_pages(args.command, one)
     except socket.timeout:
         sys.stderr.write("bmctl: tidak ada balasan dari %s:%d (%.1f s)\n"
                          % (args.host, args.port, args.timeout))
@@ -287,8 +317,8 @@ def run(args):
     finally:
         sock.close()
 
-    sys.stdout.write(reply if reply.endswith("\n") else reply + "\n")
-    return 1 if reply.startswith("ERR") else 0
+    sys.stdout.write("".join(line + "\n" for line in out))
+    return 0 if ok else 1
 
 
 def main():

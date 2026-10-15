@@ -693,6 +693,8 @@ int auth_cmd_allowed(int role, const uint8_t *cmd, uint32_t len)
     for (uint32_t i = 0; i < sizeof(g_ro_cmds) / sizeof(g_ro_cmds[0]); i++) {
         allowed |= net_cmd_is(cmd, len, g_ro_cmds[i]);
     }
+    // R3: metrics dengan argumen (awalan/mulai) juga baca saja.
+    allowed |= len > 8 && net_cmd_is(cmd, 8, "metrics ");
     return allowed;
 }
 
