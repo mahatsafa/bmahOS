@@ -575,6 +575,9 @@ void cmd_puts(const char *s);
 int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name);
 void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len);
 const char *cmd_out(void);
+
+// ---- metrics.c (R3: registry metrik) ----
+void metrics_dump(void);
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----

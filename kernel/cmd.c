@@ -65,15 +65,6 @@ int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name)
     return i == len;
 }
 
-// Net-19: satu baris "kunci=nilai" untuk perintah metrics
-static void cmd_kv(const char *k, uint64_t v)
-{
-    cmd_puts(k);
-    cmd_putc('=');
-    cmd_putdec(v);
-    cmd_putc('\n');
-}
-
 static const char *cmd_status_name(task_status_t s)
 {
     switch (s) {
@@ -240,94 +231,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(E1000_RX_RING_SIZE);
         cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "metrics")) {
-        // Format stabil untuk skrip: satu kunci=nilai per baris.
-        uint64_t free_frames = 0;
-
-        for (uint64_t f = 0; f < PMM_MAX_FRAMES; f++) {
-            if (!pmm_bitmap_test(f)) {
-                free_frames++;
-            }
-        }
-
-        cmd_kv("uptime_ticks", timer_ticks);
-        cmd_kv("mem_free_kb", free_frames * PMM_PAGE_SIZE / 1024ULL);
-        cmd_kv("heap_used", (uint64_t)kheap_current - (uint64_t)KHEAP_START);
-        cmd_kv("tasks", task_count);
-        cmd_kv("log_total", g_log_total);
-        cmd_kv("rx_frames", g_net_rx_frames);
-        cmd_kv("rx_err", g_net_rx_errors);
-        cmd_kv("rx_irq", g_e1000_irq_count);
-        e1000_stats_poll();
-        cmd_kv("rx_missed", g_e1000_mpc);
-        cmd_kv("rx_nobuf", g_e1000_rnbc);
-        cmd_kv("rx_overrun_irq", (g_e1000_irq_icr_or >> 6) & 1u);
-        cmd_kv("rx_arp", g_net_rx_arp);
-        cmd_kv("rx_ipv4", g_net_rx_ipv4);
-        cmd_kv("rx_other", g_net_rx_other);
-        cmd_kv("tx_ok", g_net_tx_ok);
-        cmd_kv("tx_fail", g_net_tx_fail);
-        cmd_kv("arp_reply", g_net_arp_replies_sent);
-        cmd_kv("icmp_reply", g_net_icmp_replies_sent);
-        cmd_kv("udp_echo", g_net_udp_echo_count);
-        cmd_kv("udp_dropped", g_net_udp_dropped);
-        cmd_kv("udp_src_dropped", g_net_udp_src_dropped);
-        cmd_kv("log_serial_muted", g_net_log_muted);
-        cmd_kv("udp_badsum", g_net_udp_badsum);
-        cmd_kv("tcp_rx", g_tcp_rx);
-        cmd_kv("tcp_badsum", g_tcp_badsum);
-        cmd_kv("tcp_rst_sent", g_tcp_rst_sent);
-        cmd_kv("tcp_conn_open", g_tcp_conn_open);
-        cmd_kv("tcp_dropped_busy", g_tcp_busy);
-        cmd_kv("tcp_rx_bytes", g_tcp_rx_bytes);
-        cmd_kv("tcp_timeout", g_tcp_timeouts);
-        cmd_kv("tcp_noentropy", g_tcp_noentropy);
-        cmd_kv("tcp_tx_bytes", g_tcp_tx_bytes);
-        cmd_kv("tcp_acked_bytes", g_tcp_acked_bytes);
-        cmd_kv("tcp_retx", g_tcp_retx);
-        cmd_kv("tcp_retx_giveup", g_tcp_retx_giveup);
-        cmd_kv("tcp_close_ok", g_tcp_close_ok);
-        cmd_kv("tcp_rst_state", g_tcp_rst_state);
-        cmd_kv("tcp_conn_dropped", g_tcp_conn_dropped);
-        cmd_kv("tcp_dupack_limited", g_tcp_dupack_limited);
-        cmd_kv("tcp_state", (uint64_t)net_tcp_state());
-        cmd_kv("tcp_src_full", g_tcp_src_full);
-        cmd_kv("tcp_synrcvd_evicted", g_tcp_synrcvd_evicted);
-        cmd_kv("tcp_conn_active", (uint64_t)net_tcp_conn_active());
-        cmd_kv("cli_login_ok", g_cli_login_ok);
-        cmd_kv("cli_login_fail", g_cli_login_fail);
-        cmd_kv("cli_login_timeout", g_cli_login_timeout);
-        cmd_kv("cli_line_long", g_cli_line_long);
-        cmd_kv("cli_cmd_ok", g_cli_cmd_ok);
-        cmd_kv("cli_cmd_fail", g_cli_cmd_fail);
-        cmd_kv("cli_login_ro", g_cli_login_ro);
-        cmd_kv("cli_sess_full", g_cli_sess_full);
-        cmd_kv("cli_idle_timeout", g_cli_idle_timeout);
-        cmd_kv("cli_role_denied", g_cli_role_denied);
-        cmd_kv("entropy_ready", (uint64_t)g_entropy_ready);
-        cmd_kv("entropy_ready_tick", g_entropy_ready_tick);
-        cmd_kv("entropy_events", g_entropy_events);
-        cmd_kv("entropy_hw_bits", g_entropy_hw_bits);
-        cmd_kv("entropy_jitter_bits", g_entropy_jitter_bits);
-        cmd_kv("entropy_denied", g_entropy_denied);
-        cmd_kv("drbg_reseeds", g_drbg_reseeds);
-        cmd_kv("ktimer_fired", g_ktimer_fired);
-        cmd_kv("ktimer_cancelled", g_ktimer_cancelled);
-        cmd_kv("ktimer_late_max", g_ktimer_late_max);
-        cmd_kv("auth_ok", g_auth_ok);
-        cmd_kv("auth_nonaktif", g_auth_denied[1]);
-        cmd_kv("auth_format", g_auth_denied[2]);
-        cmd_kv("auth_hmac", g_auth_denied[3]);
-        cmd_kv("auth_replay", g_auth_denied[4]);
-        cmd_kv("auth_counter_off", g_auth_ctr_off);
-        cmd_kv("priv_chal", g_chal_issued);
-        cmd_kv("chal_noentropy", g_chal_noentropy);
-        cmd_kv("chal_ip_recycled", g_chal_ip_recycled);
-        cmd_kv("priv_ok", g_priv_ok);
-        cmd_kv("priv_nonaktif", g_priv_denied[1]);
-        cmd_kv("priv_format", g_priv_denied[2]);
-        cmd_kv("priv_nonce", g_priv_denied[3]);
-        cmd_kv("priv_kedaluwarsa", g_priv_denied[4]);
-        cmd_kv("priv_hmac", g_priv_denied[5]);
+        metrics_dump();   // R3: registry di metrics.c
     } else if (net_cmd_is(cmd, len, "mem")) {
         // Hitung frame bebas dengan scan bitmap. Tidak dikunci terhadap
         // pmm_alloc() task lain, jadi angkanya perkiraan sesaat.
