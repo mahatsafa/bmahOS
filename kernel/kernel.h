@@ -411,6 +411,21 @@ extern uint32_t g_cli_plain;      // net.c (D9): 1 = CLI teks polos TCP 7779 akt
 extern uint32_t g_udp_admin;      // net.c (D9): 0 = UDP 7778 hanya perintah baca
 int config_parse(const uint8_t *b, uint32_t len, uint32_t *out, uint32_t *bad_line,
                  const char **why);
+
+// ---- netcon.c (R2: netconsole UDP) ----
+#define NETCON_HOST_DEF  1      // tujuan 192.168.50.<host>
+#define NETCON_PORT_DEF  6666
+#define NETCON_SRC_PORT  6665
+extern uint32_t g_netcon_on;      // config netcon (0/1, bawaan 0)
+extern uint32_t g_netcon_host;    // config netcon_host (1..254)
+extern uint32_t g_netcon_port;    // config netcon_port (1024..65535)
+extern volatile int g_netcon_hold; // 1 = baris log tidak diantre (panic: register umum)
+void netcon_line(const char *s, uint32_t n);
+void netcon_init(void);
+void netcon_poll(void);
+void netcon_arp_seen(const volatile uint8_t *buf);
+void netcon_panic_flush(void);
+void netcon_status(void);
 void config_load(void);
 int config_execute(const volatile uint8_t *cmd, uint32_t len);
 

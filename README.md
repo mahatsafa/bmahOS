@@ -33,6 +33,8 @@ Belum pernah diuji di hardware asli.
 - Storage: AHCI (baca/tulis blok, flush, poll ber-timeout), FAT32 (baca file; D6: tulis file teks
   <= 4096 byte di root directory lewat perintah admin `ls`/`baca`/`tulis`/`tambah`, D7: `hapus`/`ganti`,
   urutan tulis aman saat crash, lihat `PROTOCOL.md`), `spawn()` program dari disk
+- Netconsole UDP (R2): baris log (juga dump panic) ke 192.168.50.x:port lewat UDP, bawaan mati
+  (`set netcon 1`, `netcon_host`, `netcon_port`), status `netcon`; format di `PROTOCOL.md`
 - Konfigurasi persisten (D7): `CONFIG.CFG` (`cli_idle`, `udp_rate`, `echo`), perintah `config` dan
   `set` (admin), ditulis atomik lewat file sementara; file rusak -> seluruhnya ditolak, default dipakai
 - Jaringan (NIC Intel 82545EM / E1000 emulasi VMware): TX/RX ring, ARP, IPv4, ICMP echo, UDP
@@ -237,6 +239,8 @@ TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 
 - Panic: exception dari user mode juga me-reboot seluruh sistem (belum mematikan task saja, R6); dump
   hanya ke serial dan ring log RAM (hilang saat reboot, persisten di R4); trace berisi alamat mentah
 - TLS hanya 1.2 (BearSSL tanpa TLS 1.3), handshake dihitung di net task; maks 2 sesi TLS
+- Netconsole: teks polos tanpa autentikasi, MAC tujuan dari ARP (bisa dipalsukan di LAN), satu tujuan,
+  hanya di subnet sendiri; antrean 4 KB (baris dibuang saat penuh), maks 20 datagram/detik
 - TCP masih minimal: maks 4 koneksi (port 7 echo + 7779 CLI + 7780 TLS), maks 2 per IP sumber, kirim stop-and-wait, retransmisi dengan RTO tetap
   1 detik lalu eksponensial (maks 8 detik, 5 kali, lalu RST), tanpa pengukuran RTT. Penutupan FIN dua arah:
   klien menutup -> bmahOS membalas FIN setelah echo habis (port langsung bebas); koneksi diam 30 detik ditutup

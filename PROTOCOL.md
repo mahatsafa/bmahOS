@@ -181,7 +181,7 @@ Hanya root directory (cluster root pertama), nama 8.3 `A-Z 0-9 _ -` (huruf kecil
 ## Konfigurasi persisten (D7)
 
 File `CONFIG.CFG` di root FAT32, dibaca sekali saat boot (serial: `CONFIG: sumber=... cli_idle=..
-udp_rate=.. echo=.. cli_plain=.. udp_admin=..`). Teks ASCII, satu `kunci=nilai` per baris (LF; CR di akhir baris dibuang), baris
+udp_rate=.. echo=.. cli_plain=.. udp_admin=.. netcon=.. netcon_host=.. netcon_port=..`). Teks ASCII, satu `kunci=nilai` per baris (LF; CR di akhir baris dibuang), baris
 kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 
 | Kunci | Rentang | Default | Arti |
@@ -191,6 +191,9 @@ kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 | `echo` | 0..1 | 1 | 0: UDP 7777 dibuang tanpa balasan, SYN ke TCP port 7 dibalas RST |
 | `cli_plain` | 0..1 | 1 | D9: 0: SYN ke CLI teks polos TCP 7779 dibalas RST (sesi yang sudah ada jalan terus) |
 | `udp_admin` | 0..1 | 1 | D9: 0: UDP 7778 hanya perintah daftar baca (seperti peran read-only); lainnya `ERR: udp_admin=0: hanya perintah baca lewat UDP (pakai TLS 7780)` |
+| `netcon` | 0..1 | 0 | R2: 1: baris log dikirim lewat UDP (lihat Netconsole) |
+| `netcon_host` | 1..254 | 1 | R2: tujuan 192.168.50.`netcon_host` |
+| `netcon_port` | 1024..65535 | 6666 | R2: port UDP tujuan |
 
 - D9 pengaman: tanpa TLS aktif, `cli_plain=0` + `udp_admin=0` bersamaan menutup semua jalur admin jaringan.
   `set` yang menghasilkan kombinasi itu ditolak (`ERR: config: TLS nonaktif, ...`); file di disk dengan
@@ -216,3 +219,20 @@ kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 Klien: `client/bmctl.py --tcp` (sekali jalan atau interaktif) dan `client/bmtcp.ps1`
 (PowerShell: `bmtcp`, `bmt <perintah>`, `bmtx`); uji: `tests/tcp-login.py HOST PORT KEYFILE [ROKEYFILE]`.
 TLS 7780 (D9): `bmctl.py --tls --pin ...`, PowerShell `bmtls`; lihat bagian TCP 7780.
+
+## Netconsole UDP (R2)
+
+Bila `netcon=1`: datagram UDP dari 192.168.50.200:6665 ke 192.168.50.`netcon_host`:`netcon_port`
+(bawaan .1:6666). Payload = satu atau lebih baris log utuh, masing-masing diakhiri LF, maks 1024 byte;
+tanpa header/nomor urut. Baris = yang masuk ring `log` (tanpa `schedule(): switch`, tanpa `AUDIT`, tanpa
+register umum dump panic), maks 160 karakter.
+- MAC tujuan dari ARP: bmahOS mengirim ARP request ke tujuan maks 1x/detik sampai ada ARP dari IP itu.
+  Sebelum itu baris ditahan di antrean (4 KB).
+- Maks 20 datagram/detik. Antrean penuh -> baris baru dibuang; datagram berikutnya diawali
+  `netcon: N baris dibuang`.
+- Panic: antrean dikirim langsung di awal panic dan setelah dump (sebelum reboot otomatis).
+- `set` berlaku langsung; `netcon_host` berubah -> ARP ulang; `netcon=0` -> antrean dikosongkan.
+- Perintah `netcon` (admin + read-only): `netcon: aktif=.. tujuan=IP:port port_sumber=6665`,
+  `netcon: mac=<mac|belum> arp=N`, `netcon: terkirim=N antre=<byte> dibuang=<baris> tx_gagal=N`
+  (tanpa NIC: `netcon: NIC tidak ada`).
+- Penerima: `nc -ul 6666` (Linux), atau UdpClient PowerShell; firewall Windows perlu izin UDP masuk.

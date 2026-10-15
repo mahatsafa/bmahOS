@@ -23,6 +23,7 @@ PORT="${BMTEST_PORT:-17778}"
 TPORT="${BMTEST_TCP_PORT:-17007}"   # C4: echo TCP port 7
 CPORT="${BMTEST_CLI_PORT:-17779}"   # D1: CLI TCP port 7779
 SPORT="${BMTEST_TLS_PORT:-17780}"   # D9: CLI TLS port 7780
+NCPORT="${BMTEST_NETCON_PORT:-17666}"   # R2: penerima netconsole (slirp .1 -> 127.0.0.1)
 BOOT_TIMEOUT="${BMTEST_BOOT_TIMEOUT:-180}"
 
 PASS=0
@@ -407,6 +408,30 @@ check "D9d: udp_admin=0 -> UDP pping ERR, UDP uptime jalan" \
 check "D9d: dikembalikan lewat TLS: cli_plain=1 udp_admin=1" \
     'echo "$R_OUT" | grep -q "^cli_plain=1$" && echo "$R_OUT" | grep -q "^udp_admin=1$"'
 
+# R2: netconsole ke 192.168.50.1:$NCPORT (slirp -> 127.0.0.1), lalu dikembalikan
+# ke bawaan (netcon=0) supaya CONFIG.CFG kanonik dan boot kedua tidak terpengaruh.
+NCLOG="$WORK/netcon1.bin"
+: > "$NCLOG"
+python3 "$ROOT/tests/netcon-listen.py" "$NCPORT" "$NCLOG" 30 &
+NCPID=$!
+sleep 2.5
+NC_ON="$($BMS --pin "$WORK/tlspin.txt" --key "$KEY" "set netcon_port $NCPORT" "set netcon 1" \
+    2>&1)"
+sleep 3
+NC_ST="$($BMS --pin "$WORK/tlspin.txt" --key "$KEY" netcon "set netcon -" "set netcon_port -" \
+    2>&1)"
+sleep 1
+kill "$NCPID" 2>/dev/null
+wait "$NCPID" 2>/dev/null
+echo "$NC_ST" | sed "s/^/info  R2: /"
+echo "info  R2: diterima $(wc -c < "$NCLOG") byte netconsole"
+check "R2: serial: netcon siap (bawaan nonaktif, tujuan .1:6666)" \
+    'grep -aq "R2: netcon siap aktif=0 tujuan=192.168.50.1:6666" "$LOG"'
+check "R2: set netcon lewat TLS, status aktif + MAC slirp, kembali ke bawaan" \
+    'echo "$NC_ON" | grep -q "^OK netcon=1 (tersimpan)$" && echo "$NC_ST" | grep -q "^netcon: aktif=1 tujuan=192.168.50.1:$NCPORT port_sumber=6665$" && echo "$NC_ST" | grep -q "^netcon: mac=[0-9a-f:]\{17\} arp=[1-9]" && echo "$NC_ST" | grep -q "^OK netcon=0 (tersimpan)$" && echo "$NC_ST" | grep -q "^OK netcon_port=6666 (tersimpan)$"'
+check "R2: penerima UDP host dapat baris log (MAC tujuan, TLS handshake)" \
+    'grep -aq "^R2: netcon MAC tujuan 192.168.50.1 = [0-9a-f:]\{17\}$" "$NCLOG" && grep -aq "^D9: TLS handshake OK" "$NCLOG"'
+
 # Replay: datagram yang sama dikirim dua kali, yang kedua harus ditolak.
 # Argumen: mode (nonce|counter) dan perintah. Keluaran: "<balasan1>|<balasan2>".
 replay() {
@@ -471,7 +496,7 @@ check "D6: fsck.fat -n bersih setelah tulis (FAT, dir, FSInfo)" \
     'fsck.fat -n "$DISK" >"$WORK/fsck.out" 2>&1'
 check "D6: mtype dari host = isi yang ditulis kernel; KEY.TXT tidak berubah" \
     'mtype -i "$DISK" ::CATATAN.TXT | cmp -s - "$WORK/catatan.want" && mtype -i "$DISK" ::PANJANG.TXT | cmp -s - "$WORK/panjang.want" && mtype -i "$DISK" ::KEY.TXT | cmp -s - "$KEY"'
-printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\ncli_plain=1\nudp_admin=1\n' \
+printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\ncli_plain=1\nudp_admin=1\nnetcon=0\nnetcon_host=1\nnetcon_port=6666\n' \
     > "$WORK/config.want"
 check "D7: mtype CONFIG.CFG kanonik; CONFIG.TMP/HAPUS.TXT/GANTI.TXT tidak ada; GANTI2.TXT ada" \
     'mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1 && ! mtype -i "$DISK" ::HAPUS.TXT >/dev/null 2>&1 && ! mtype -i "$DISK" ::GANTI.TXT >/dev/null 2>&1 && [ "$(mtype -i "$DISK" ::GANTI2.TXT)" = "isi ganti" ]'
@@ -550,10 +575,22 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     }
     PANIC_REPLY=""
     PANIC_WAIT=""
+    # R2: netcon=1 tersimpan di disk -> berlaku juga setelah tiap reboot.
+    PNCLOG="$WORK/netcon-panic.bin"
+    : > "$PNCLOG"
+    python3 "$ROOT/tests/netcon-listen.py" "$NCPORT" "$PNCLOG" 600 &
+    PNCPID=$!
+    if wait_n "Entropi: siap" 1 && wait_n "net task dimulai" 1; then
+        sleep 1
+        PNC_SET="$($BM "set netcon_port $NCPORT" 2>&1)"
+        sleep 1.2
+        PNC_SET="$PNC_SET $($BM "set netcon 1" 2>&1)"
+    fi
     i=0
     for kind in pf df assert; do
         i=$((i + 1))
         wait_n "Entropi: siap" "$i" || break
+        wait_n "net task dimulai" "$i" || break
         sleep 1
         PANIC_REPLY="$PANIC_REPLY$($BM "panic $kind" 2>&1)
 "
@@ -565,6 +602,9 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     wait_n "PCI-1: E1000 di" 4
     kill "$PQPID" 2>/dev/null
     wait "$PQPID" 2>/dev/null
+    kill "$PNCPID" 2>/dev/null
+    wait "$PNCPID" 2>/dev/null
+    echo "info  R2: netconsole panic $(wc -c < "$PNCLOG") byte, set: $PNC_SET"
     tr -d '\r' < "$PLOG" > "$WORK/serial-panic.txt"
     "$ROOT/tools/symbolize.sh" "$PLOG" > "$WORK/panic-sym.txt" 2>&1 || true
     echo "balasan:"; echo "$PANIC_REPLY"
@@ -595,6 +635,10 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         done
     }
     check "R1: reboot setelah ~10 s (3x 9..13 s)" 'panic_wait_ok $PANIC_WAIT'
+    check "R2: set netcon 1 lewat UDP sebelum panic" \
+        'echo "$PNC_SET" | grep -q "OK netcon_port=$NCPORT (tersimpan)" && echo "$PNC_SET" | grep -q "OK netcon=1 (tersimpan)"'
+    check "R2: dump panic pf/df/assert lewat netconsole (3x), tanpa register umum" \
+        'grep -aq "^PANIC: exception #PF page fault (vektor 14) error=0x2" "$PNCLOG" && grep -aq "^PANIC: exception #DF double fault (vektor 8)" "$PNCLOG" && grep -aq "^PANIC: ASSERT gagal: g_panic_test_kind != 3" "$PNCLOG" && [ "$(grep -ac "^PANIC: reboot otomatis dalam 10 detik$" "$PNCLOG")" -eq 3 ] && [ "$(grep -ac "^PANIC: trace #0 " "$PNCLOG")" -eq 2 ] && grep -aq "^PANIC: RIP=" "$PNCLOG" && ! grep -aqE "^PANIC: (RAX|RSI|R9|R13)=" "$PNCLOG"'
     check "R1: tanpa panic bersarang / PIT macet" \
         '! grep -qE "fault di dalam panic handler|PIT tidak berjalan|PANIC-UJI" "$P"'
 fi

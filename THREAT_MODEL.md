@@ -62,6 +62,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Parser FAT32 | Struktur disk rusak | D6: validasi BPB lengkap (512 B/sektor, SPC 1/2/4/8, NumFATs 1..2, reserved > 0, area data dan FAT cukup untuk jumlah cluster, RootCluster sah), setiap nomor cluster dicek 2..max, rantai melingkar dideteksi, poll AHCI ber-timeout, kode error bukan halt |
 | Tulis FAT32 (D6, D7) | Perintah tulis/hapus/ganti nama merusak volume, menimpa atau menghapus kunci/program boot, crash di tengah tulis | Hanya admin (HMAC), hanya root dir, nama 8.3, KEY.TXT/KEYRO.TXT/PROG.BIN ditolak untuk semua perintah (juga sebagai nama tujuan `ganti`), CONFIG.CFG/.TMP hanya lewat `set`, file maks 4096 byte, entri ber-LFN ditolak, semua cek sebelum tulis pertama, urutan data -> FAT -> dir -> bebaskan lama -> FSInfo dengan flush; hapus: entri dulu lalu rantai; ganti isi atomik lewat file sementara + satu tulis sektor (uji crash di setiap tulisan, `make host-test`), error I/O -> baca saja |
 | Konfigurasi persisten (D7) | File CONFIG.CFG rusak/dimanipulasi lewat disk, nilai yang melemahkan batas, crash saat `set` | Parser ketat: satu baris salah -> seluruh file ditolak, semua default (= nilai sebelum D7); rentang dibatasi (udp_rate maks 100 = batas global, cli_idle 30..3600); IP tidak bisa diatur; `set` hanya admin, tercatat di audit; tulis atomik lewat file sementara; nilai RAM berubah hanya bila tersimpan |
+| Netconsole UDP (R2) | Log polos di LAN, tujuan dibelokkan lewat ARP palsu, banjir log | Bawaan mati; hanya baris ring log (tanpa AUDIT, tanpa register umum panic, tanpa teks perintah/kunci); tujuan hanya di /24 sendiri; antrean statis 4 KB, maks 20 datagram/s, penuh -> baris dibuang + penanda; tidak ada data masuk yang diproses selain ARP dari IP tujuan |
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |
 | Syscall | Pointer jahat dari user mode | Validasi pointer (R6) |
 | Klien DHCP/DNS/NTP | Balasan palsu | Validasi ID transaksi, batas ukuran, jangan percaya buta (P3) |
@@ -120,6 +121,11 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    program di disk; mematikan task saja = R6). Dump register di serial bisa memuat sisa nilai rahasia di
    register (serial = akses fisik/hypervisor, di luar cakupan penyerang jaringan). Perintah uji `panic`
    hanya ada di build dev dan hanya untuk admin.
+
+12. Netconsole (R2, bila `netcon=1`): isi log (IP klien, port, kode tolak, alamat kernel di trace panic)
+   terlihat oleh siapa pun di LAN. MAC tujuan dipelajari dari ARP tanpa autentikasi: penyerang di LAN bisa
+   membelokkan log ke dirinya (yang toh bisa ia sadap) atau membuatnya hilang. Netconsole bukan saluran
+   tepercaya untuk audit.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

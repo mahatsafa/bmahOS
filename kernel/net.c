@@ -90,6 +90,8 @@ static void net_handle_arp(volatile uint8_t *buf)
         return;
     }
 
+    netcon_arp_seen(buf);   // R2: MAC tujuan netconsole
+
     if (oper == 1 && net_ip_equal(buf + 38, g_net_ip)) {
         uint64_t lf = irq_save();
         serial_write("Net-5: ARP request untuk IP kita dari ");

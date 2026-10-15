@@ -125,6 +125,8 @@ void panic_begin(void)
             __asm__ volatile("hlt");
         }
     }
+
+    netcon_panic_flush();   // R2: kosongkan antrean dulu, ruang untuk dump
 }
 
 // rip != 0: frame #0 (RIP saat exception). rbp: awal rantai frame.
@@ -153,6 +155,7 @@ void panic_finish(uint64_t rip, uint64_t rbp)
 
     pit_init(100);
     kprintf("PANIC: reboot otomatis dalam %d detik\r\n", PANIC_REBOOT_S);
+    netcon_panic_flush();   // R2
 
     uint32_t periods = 0;
     uint32_t same = 0;
@@ -211,6 +214,7 @@ void panic_exception(struct exception_context *c)
             (void *)(uintptr_t)c->rsp, c->ss, on_ist ? "IST1" : "biasa");
     kprintf("PANIC: CR0=0x%lx CR2=%p CR3=0x%lx CR4=0x%lx\r\n",
             cr0, (void *)(uintptr_t)cr2, cr3, cr4);
+    g_netcon_hold = 1;   // R2: register umum (bisa berisi sisa rahasia) hanya ke serial
     kprintf("PANIC: RAX=%p RBX=%p RCX=%p RDX=%p\r\n",
             (void *)c->rax, (void *)c->rbx, (void *)c->rcx, (void *)c->rdx);
     kprintf("PANIC: RSI=%p RDI=%p RBP=%p R8=%p\r\n",
@@ -219,6 +223,7 @@ void panic_exception(struct exception_context *c)
             (void *)c->r9, (void *)c->r10, (void *)c->r11, (void *)c->r12);
     kprintf("PANIC: R13=%p R14=%p R15=%p\r\n",
             (void *)c->r13, (void *)c->r14, (void *)c->r15);
+    g_netcon_hold = 0;
 
     panic_finish(c->rip, c->rbp);
 }

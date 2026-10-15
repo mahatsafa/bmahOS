@@ -7,6 +7,8 @@
 #include "test.h"
 #include "../../kernel/config.c"
 
+#define NC_DEF "netcon=0\nnetcon_host=1\nnetcon_port=6666\n"
+
 // ---- stub kernel ----
 uint32_t g_cli_idle_s = CFG_CLI_IDLE_DEF;
 uint32_t g_net_src_rate = NET_UDP_SRC_PER_SEC;
@@ -197,10 +199,10 @@ static void test_load(void)
     CHECK(g_net_echo == 1 && g_cli_idle_s == 300 && g_net_src_rate == 20);
     CHECK(strstr(g_serial_cap,
                  "CONFIG: sumber=bawaan (tidak ada file) cli_idle=300 udp_rate=20 echo=1 "
-                 "cli_plain=1 udp_admin=1\r\n"));
+                 "cli_plain=1 udp_admin=1 netcon=0 netcon_host=1 netcon_port=6666\r\n"));
     CHECK_STR(run("config"),
               "config: sumber=bawaan (tidak ada file)\ncli_idle=300\nudp_rate=20\necho=1\n"
-              "cli_plain=1\nudp_admin=1\n");
+              "cli_plain=1\nudp_admin=1\n" NC_DEF);
 
     // file sah
     set_file("cli_idle=600\necho=0\n");
@@ -208,9 +210,10 @@ static void test_load(void)
     config_load();
     CHECK(g_cli_idle_s == 600 && g_net_echo == 0 && g_net_src_rate == 20);
     CHECK(strstr(g_serial_cap, "CONFIG: sumber=disk cli_idle=600 udp_rate=20 echo=0 "
-                               "cli_plain=1 udp_admin=1\r\n"));
+                               "cli_plain=1 udp_admin=1 netcon=0 netcon_host=1 "
+                               "netcon_port=6666\r\n"));
     CHECK_STR(run("config"), "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=0\n"
-              "cli_plain=1\nudp_admin=1\n");
+              "cli_plain=1\nudp_admin=1\n" NC_DEF);
 
     // file rusak -> SEMUA bawaan (juga kunci yang sah di baris sebelumnya)
     set_file("cli_idle=600\necho=0\nudp_rate=500\n");
@@ -218,7 +221,8 @@ static void test_load(void)
     config_load();
     CHECK(g_cli_idle_s == 300 && g_net_echo == 1 && g_net_src_rate == 20);
     CHECK(strstr(g_serial_cap, "CONFIG: sumber=bawaan (ditolak baris 3: nilai di luar rentang) "
-                               "cli_idle=300 udp_rate=20 echo=1 cli_plain=1 udp_admin=1\r\n"));
+                               "cli_idle=300 udp_rate=20 echo=1 cli_plain=1 udp_admin=1 "
+                               "netcon=0 netcon_host=1 netcon_port=6666\r\n"));
     CHECK(strncmp(run("config"), "config: sumber=bawaan (ditolak baris 3: nilai di luar rentang)\n"
                   "cli_idle=300\n", 76) == 0);
 
@@ -253,12 +257,13 @@ static void test_set(void)
     CHECK(g_net_echo == 0);
     CHECK(g_file_len > 0 &&
           strcmp(g_file, "# bmahOS CONFIG.CFG (ditulis oleh perintah set)\n"
-                         "cli_idle=300\nudp_rate=20\necho=0\ncli_plain=1\nudp_admin=1\n") == 0);
+                         "cli_idle=300\nudp_rate=20\necho=0\ncli_plain=1\nudp_admin=1\n"
+                         NC_DEF) == 0);
     CHECK_STR(run("set cli_idle 3600"), "OK cli_idle=3600 (tersimpan)\n");
     CHECK_STR(run("set udp_rate 1"), "OK udp_rate=1 (tersimpan)\n");
     CHECK(g_cli_idle_s == 3600 && g_net_src_rate == 1);
     CHECK_STR(run("config"), "config: sumber=disk\ncli_idle=3600\nudp_rate=1\necho=0\n"
-              "cli_plain=1\nudp_admin=1\n");
+              "cli_plain=1\nudp_admin=1\n" NC_DEF);
 
     // file yang ditulis set terbaca ulang identik
     g_net_echo = 1;
@@ -273,7 +278,8 @@ static void test_set(void)
 
     // salah: tidak menulis, tidak mengubah
     CHECK_STR(run("set nama x"),
-              "ERR: config: kunci tak dikenal (cli_idle udp_rate echo cli_plain udp_admin)\n");
+              "ERR: config: kunci tak dikenal (cli_idle udp_rate echo cli_plain udp_admin "
+              "netcon netcon_host netcon_port)\n");
     CHECK_STR(run("set echo 2"), "ERR: config: format: set echo 0..1|-\n");
     CHECK_STR(run("set cli_idle 29"), "ERR: config: format: set cli_idle 30..3600|-\n");
     CHECK_STR(run("set cli_idle"), "ERR: config: format: set cli_idle 30..3600|-\n");
@@ -304,6 +310,36 @@ static void test_set(void)
     CHECK(strncmp(run("config"), "config: sumber=disk\n", 20) == 0);
 }
 
+// R2: kunci netconsole.
+static void test_netcon_keys(void)
+{
+    uint32_t v[CFG_NKEYS], line;
+    const char *why;
+
+    CHECK(parse("netcon=1\nnetcon_host=254\nnetcon_port=65535\n", v, &line, &why) &&
+          v[5] == 1 && v[6] == 254 && v[7] == 65535);
+    CHECK(parse("netcon_port=1024\n", v, &line, &why) && v[5] == 0 && v[6] == 1 && v[7] == 1024);
+    CHECK(rejected("netcon=2\n", 1, "nilai di luar rentang"));
+    CHECK(rejected("netcon_host=0\n", 1, "nilai di luar rentang"));
+    CHECK(rejected("netcon_host=255\n", 1, "nilai di luar rentang"));
+    CHECK(rejected("netcon_port=1023\n", 1, "nilai di luar rentang"));
+    CHECK(rejected("netcon_port=65536\n", 1, "nilai di luar rentang"));
+    CHECK(rejected("netcon_port=123456\n", 1, "nilai bukan angka desimal"));
+
+    set_file(NULL);
+    config_load();
+    CHECK_STR(run("set netcon 1"), "OK netcon=1 (tersimpan)\n");
+    CHECK_STR(run("set netcon_host 7"), "OK netcon_host=7 (tersimpan)\n");
+    CHECK_STR(run("set netcon_port 17666"), "OK netcon_port=17666 (tersimpan)\n");
+    CHECK(g_netcon_on == 1 && g_netcon_host == 7 && g_netcon_port == 17666);
+    CHECK(strstr(g_file, "\nnetcon=1\nnetcon_host=7\nnetcon_port=17666\n") != NULL);
+    CHECK_STR(run("set netcon_host 255"), "ERR: config: format: set netcon_host 1..254|-\n");
+    CHECK_STR(run("set netcon -"), "OK netcon=0 (tersimpan)\n");
+    CHECK_STR(run("set netcon_host -"), "OK netcon_host=1 (tersimpan)\n");
+    CHECK_STR(run("set netcon_port -"), "OK netcon_port=6666 (tersimpan)\n");
+    CHECK(g_netcon_on == 0 && g_netcon_host == 1 && g_netcon_port == 6666);
+}
+
 // D9: cli_plain/udp_admin dan pengaman jalur admin terakhir.
 static void test_plain_admin(void)
 {
@@ -330,7 +366,7 @@ static void test_plain_admin(void)
     CHECK(g_cli_plain == 1 && g_udp_admin == 0);
     CHECK(strstr(g_serial_cap, "CONFIG: TLS nonaktif, cli_plain dipaksa 1") &&
           strstr(g_serial_cap, "sumber=disk cli_idle=300 udp_rate=20 echo=1 cli_plain=1 "
-                               "udp_admin=0\r\n"));
+                               "udp_admin=0 netcon=0 netcon_host=1 netcon_port=6666\r\n"));
 
     // Tanpa TLS, set yang menutup jalur terakhir ditolak, tanpa tulis.
     g_writes = 0;
@@ -354,5 +390,6 @@ int main(void)
     test_load();
     test_set();
     test_plain_admin();
+    test_netcon_keys();
     return test_done("config");
 }

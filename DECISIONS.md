@@ -249,3 +249,26 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   (UDP, TCP, TLS). Tidak di `g_ro_cmds`. Build PROD: kode tidak ada (`make test` mengecek).
 - **Di luar cakupan**: fault dari user mode tetap panic (dulu hang, kini reboot; mematikan task saja = R6),
   guard page stack (R6), dump persisten (R4).
+
+## 2026-10-15 (R2 netconsole UDP; rencana disetujui pengguna)
+- **Isi**: setiap baris yang masuk ring log `log` (baris `schedule(): switch` tetap disaring), termasuk dump
+  `PANIC:`. Baris `AUDIT` tidak (sama dengan `log`, D5). Register umum dump panic (RAX..R15) tidak
+  dikirim (`g_netcon_hold`), bisa memuat sisa rahasia; hanya serial. Teks perintah dan kunci memang tidak
+  pernah masuk log.
+- **Bawaan mati** (`netcon=0`): log teks polos ke LAN = pembocoran informasi, harus dinyalakan sengaja.
+- **Tujuan = oktet** `netcon_host` 1..254 di /24 sendiri (192.168.50.x) + `netcon_port` 1024..65535 (bawaan
+  .1:6666), port sumber 6665. Tanpa gateway memang tidak bisa keluar subnet. Tidak bertentangan dengan
+  "IP tidak bisa diatur" (D7): salah atur tidak membuat bmahOS tak terjangkau.
+- **MAC tujuan**: ARP request sendiri maks 1x/s sampai ARP (reply atau request) dari IP tujuan; disimpan
+  sampai host/netcon berubah. Belum ada cache ARP umum (cukup untuk satu tujuan).
+- **Tanpa heap**: antrean statis 4 KB (baris utuh) + satu halaman TX sendiri. Net task mengirim maks 1
+  datagram (<= 1024 byte, baris utuh) per putaran, maks 20 datagram/s. Antrean penuh -> baris BARU
+  dibuang (konteks awal tetap utuh), datagram berikutnya diawali `netcon: N baris dibuang`. Pengiriman
+  tidak menulis log (tanpa umpan balik).
+- **Panic**: antrean dikirim langsung (tanpa batas laju, maks 8 datagram) di awal panic dan setelah dump,
+  lewat halaman TX netcon sendiri (frame net task yang terpotong tidak ditimpa). Butuh MAC sudah diketahui;
+  panic bersarang hanya serial.
+- **Refactor terpisah (R2-1)**: `net_udp_build()` (Eth+IPv4+UDP+checksum) dipakai echo, balasan perintah,
+  dan netcon.
+- **Status**: perintah `netcon` (admin + read-only), bukan kunci `metrics` (metrics dekat batas 1400 byte;
+  registry = R3).

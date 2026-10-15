@@ -45,6 +45,18 @@ WEAK void serial_write_nolog(const char *s)
     }
 }
 
+// R2: netcon.c hanya di-#include oleh test_net.
+WEAK uint32_t g_netcon_on = 0;
+WEAK uint32_t g_netcon_host = NETCON_HOST_DEF;
+WEAK uint32_t g_netcon_port = NETCON_PORT_DEF;
+WEAK volatile int g_netcon_hold = 0;
+WEAK int g_netcon_flushes = 0;
+
+WEAK void netcon_panic_flush(void)
+{
+    g_netcon_flushes++;
+}
+
 // R1: kassert_fail (kprintf.c) memanggil panic.c.
 WEAK void panic_begin(void)
 {

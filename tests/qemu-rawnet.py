@@ -25,6 +25,8 @@ HOST_MAC = bytes.fromhex("020000000001")
 GUEST_IP = bytes([192, 168, 50, 200])
 CMD_PORT = 7778
 ECHO_PORT = 7777
+NC_DEF = "netcon=0\nnetcon_host=1\nnetcon_port=6666\n"
+NC_MAC = bytes.fromhex("020000000099")
 
 results = []
 
@@ -155,6 +157,22 @@ class Net:
             if limit is not None and len(out) >= limit:
                 return out
 
+    def collect(self, timeout, pred):
+        """Semua frame dari tamu yang memenuhi pred(frame) selama timeout detik."""
+        out = []
+        end = time.time() + timeout
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                return out
+            self.sock.settimeout(left)
+            try:
+                f = self.sock.recv(65536)
+            except socket.timeout:
+                return out
+            if pred(f):
+                out.append(f)
+
     def request(self, src_ip, sport, dport, payload, timeout=10.0):
         self.send(udp_frame(src_ip, sport, dport, payload))
         r = self.udp_replies(src_ip, sport, timeout, limit=1)
@@ -201,7 +219,7 @@ def test_config(net, cli):
     r = cli.cmd("config")
     check("D7: setelah reboot config = sumber=disk cli_idle=600 (dari boot pertama)",
           r == "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=1\n"
-          "cli_plain=1\nudp_admin=1\n", repr(r))
+          "cli_plain=1\nudp_admin=1\n" + NC_DEF, repr(r))
     src = bytes([192, 168, 50, 13])
     r = cli.cmd("set echo 0")
     e = net.request(src, 47000, ECHO_PORT, b"halo", timeout=1.5)
@@ -228,8 +246,75 @@ def test_config(net, cli):
           r == "OK udp_rate=5 (tersimpan)\n" and 5 <= n <= 10 and
           r2 == "OK udp_rate=20 (tersimpan)\n" and
           r3 == "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=1\n"
-          "cli_plain=1\nudp_admin=1\n",
+          "cli_plain=1\nudp_admin=1\n" + NC_DEF,
           repr((r, n, r2, r3)))
+
+
+def arp_frame(sender_mac, sender_ip, target_ip, oper):
+    eth = GUEST_MAC + sender_mac + b"\x08\x06"
+    arp = (struct.pack("!HHBBH", 1, 0x0800, 6, 4, oper) + sender_mac + sender_ip +
+           GUEST_MAC + target_ip)
+    return (eth + arp).ljust(60, b"\x00")
+
+
+def netcon_ok(f):
+    """Frame netconsole sah: MAC dari ARP, .200:6665 -> .1:6666, checksum IP+UDP."""
+    if f[0:6] != NC_MAC or f[26:30] != GUEST_IP:
+        return False
+    ulen = struct.unpack("!H", f[38:40])[0]
+    pseudo = f[26:34] + struct.pack("!BBH", 0, 17, ulen)
+    return (struct.unpack("!H", f[34:36])[0] == 6665 and csum16(f[14:34]) == 0 and
+            csum16(pseudo + f[34:34 + ulen]) == 0 and ulen - 8 <= 1024 and
+            f[34 + ulen - 1:34 + ulen] == b"\n")
+
+
+def test_netcon(net, cli):
+    """R2: set netcon 1 -> ARP request ke .1 tiap ~1 s, baris log ditahan (antrean
+    4 KB penuh -> dibuang) sampai ARP reply; lalu datagram 6665 -> .1:6666 ke MAC
+    hasil ARP, diawali penanda baris dibuang. set netcon - -> berhenti."""
+    host = bytes([192, 168, 50, 1])
+
+    def is_arp_req(f):
+        return (f[12:14] == b"\x08\x06" and f[0:6] == b"\xff" * 6 and
+                f[20:22] == b"\x00\x01" and f[28:32] == GUEST_IP and f[38:42] == host)
+
+    def is_nc(f):
+        return (len(f) >= 42 and f[12:14] == b"\x08\x00" and f[23] == 17 and
+                f[30:34] == host and f[36:38] == struct.pack("!H", 6666))
+
+    r = cli.cmd("set netcon 1")
+    arps = net.collect(3.5, is_arp_req)
+    check("R2: set netcon 1 -> ARP request ke 192.168.50.1 (2..5 dalam 3,5 s)",
+          r == "OK netcon=1 (tersimpan)\n" and 2 <= len(arps) <= 5, repr((r, len(arps))))
+
+    # Tanpa MAC baris log menumpuk; tiap perintah menulis beberapa baris.
+    st = ""
+    for i in range(80):
+        cli.cmd("uptime")
+        time.sleep(0.12)
+        if i % 10 == 9:
+            st = cli.cmd("netcon") or ""
+            if "netcon: terkirim=" in st and "dibuang=0 " not in st:
+                break
+    check("R2: tanpa MAC: mac=belum, antrean penuh -> baris dibuang",
+          "netcon: mac=belum arp=" in st and "dibuang=0 " not in st, repr(st))
+
+    net.send(arp_frame(NC_MAC, host, GUEST_IP, 2))
+    dg = net.collect(4, is_nc)
+    pl = [f[42:34 + struct.unpack("!H", f[38:40])[0]] for f in dg]
+    check("R2: ARP reply -> datagram ke MAC hasil ARP, checksum sah, <= 1024 byte, "
+          "pertama diawali penanda dibuang",
+          len(dg) >= 4 and all(netcon_ok(f) for f in dg) and
+          pl[0].startswith(b"netcon: ") and pl[0].split(b"\n")[0].endswith(b" baris dibuang"),
+          repr((len(dg), pl[:1])))
+
+    time.sleep(1.2)
+    st = cli.cmd("netcon") or ""
+    r = cli.cmd("set netcon -")
+    late = net.collect(2, is_nc)
+    check("R2: status mac=02:00:00:00:00:99; set netcon - -> tidak ada datagram lagi",
+          "netcon: mac=02:00:00:00:00:99 arp=" in st and r == "OK netcon=0 (tersimpan)\n" and
+          not late, repr((st, r, len(late))))
 
 
 def test_counters(net, cli):
@@ -831,6 +916,8 @@ def main():
         test_fs_persist(net, cli)
         time.sleep(1.2)
         test_config(net, cli)
+        time.sleep(1.2)
+        test_netcon(net, cli)
         time.sleep(1.2)
         test_src_limit(net, cli)
         time.sleep(2.2)

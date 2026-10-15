@@ -12,7 +12,7 @@
 // Nilai di RAM hanya berubah bila file berhasil ditulis.
 
 #define CFG_FILE_MAX 512
-#define CFG_NKEYS    5
+#define CFG_NKEYS    8
 #define CFG_K_CLI_PLAIN 3
 #define CFG_K_UDP_ADMIN 4
 
@@ -28,6 +28,9 @@ static const cfg_key_t g_cfg_keys[CFG_NKEYS] = {
     { "echo", 0, 1, 1, &g_net_echo },                                // TCP 7 + UDP 7777
     { "cli_plain", 0, 1, 1, &g_cli_plain },                          // D9: CLI TCP 7779
     { "udp_admin", 0, 1, 1, &g_udp_admin },                          // D9: UDP selain baca
+    { "netcon", 0, 1, 0, &g_netcon_on },                             // R2: netconsole UDP
+    { "netcon_host", 1, 254, NETCON_HOST_DEF, &g_netcon_host },      // R2: 192.168.50.x
+    { "netcon_port", 1024, 65535, NETCON_PORT_DEF, &g_netcon_port }, // R2
 };
 
 // D9: tanpa TLS aktif, cli_plain=0 + udp_admin=0 menutup semua jalur admin
@@ -245,12 +248,13 @@ void config_load(void)
     }
     cfg_apply(v);
 
-    char src[96], line[224];
+    char src[96], line[256];
 
     cfg_src_str(src, sizeof(src));
     ksnprintf(line, sizeof(line), "CONFIG: sumber=%s cli_idle=%u udp_rate=%u echo=%u "
-              "cli_plain=%u udp_admin=%u\r\n", src, g_cli_idle_s, g_net_src_rate, g_net_echo,
-              g_cli_plain, g_udp_admin);
+              "cli_plain=%u udp_admin=%u netcon=%u netcon_host=%u netcon_port=%u\r\n", src,
+              g_cli_idle_s, g_net_src_rate, g_net_echo, g_cli_plain, g_udp_admin, g_netcon_on,
+              g_netcon_host, g_netcon_port);
     serial_write(line);
 }
 
@@ -282,7 +286,8 @@ static void cfg_set(const uint8_t *c, uint32_t n)
     int k = cfg_find(c, sp);
 
     if (k < 0) {
-        cmd_puts("ERR: config: kunci tak dikenal (cli_idle udp_rate echo cli_plain udp_admin)\n");
+        cmd_puts("ERR: config: kunci tak dikenal (cli_idle udp_rate echo cli_plain udp_admin "
+                 "netcon netcon_host netcon_port)\n");
         return;
     }
 

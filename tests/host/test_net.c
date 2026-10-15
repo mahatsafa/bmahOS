@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include "test.h"
 #include "net.c"
+#include "netcon.c"   // R2
 #include "bearssl.h"
 #include "tls_test_keys.h"
 
@@ -2057,6 +2058,235 @@ void cmd_puts(const char *s)
     }
 }
 
+// ---- R2: netconsole ----
+// Datagram netcon ke-i di g_tx: payload (diakhiri '\0') bila frame UDP sah ke
+// PEER_MAC/.1:6666 dari port 6665, selain itu NULL.
+static uint16_t nc_get16(const uint8_t *p)
+{
+    return (uint16_t)(p[0] << 8 | p[1]);
+}
+
+static const char *nc_payload(int i)
+{
+    static char pl[2048];
+    const uint8_t *p = g_tx[i];
+
+    if (g_tx_len[i] < 60 || p[12] != 0x08 || p[13] != 0x00 || p[23] != 17 ||
+        memcmp(p, PEER_MAC, 6) != 0 || memcmp(p + 30, PEER_IP, 4) != 0 ||
+        nc_get16(p + 34) != NETCON_SRC_PORT || nc_get16(p + 36) != g_netcon_port) {
+        return NULL;
+    }
+    uint32_t n = nc_get16(p + 38) - 8;
+    memcpy(pl, p + 42, n);
+    pl[n] = '\0';
+    return pl;
+}
+
+static int nc_is_arp_req(int i, uint8_t host)
+{
+    const uint8_t *p = g_tx[i];
+    static const uint8_t bc[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    static const uint8_t h[8] = { 0, 1, 8, 0, 6, 4, 0, 1 };
+
+    return g_tx_len[i] == 60 && memcmp(p, bc, 6) == 0 && memcmp(p + 6, g_e1000_mac, 6) == 0 &&
+           p[12] == 0x08 && p[13] == 0x06 && memcmp(p + 14, h, 8) == 0 &&
+           memcmp(p + 22, g_e1000_mac, 6) == 0 && memcmp(p + 28, OUR_IP, 4) == 0 &&
+           p[38] == 192 && p[39] == 168 && p[40] == 50 && p[41] == host;
+}
+
+static int nc_queued(void)
+{
+    return (int)(g_nc_head - g_nc_tail);
+}
+
+static void test_netcon(void)
+{
+    char line[200];
+    uint8_t f[64];
+
+    g_e1000_rx_initialized = 1;
+    g_netcon_on = 0;
+    g_netcon_host = 1;
+    g_netcon_port = 6666;
+    serial_capture_reset();
+    netcon_init();
+    CHECK(g_nc_page_phys != 0);
+    CHECK(strstr(g_serial_cap, "R2: netcon siap aktif=0 tujuan=192.168.50.1:6666\r\n") != NULL);
+
+    // nonaktif: baris tidak diantre, tidak ada TX
+    netcon_line("abc", 3);
+    g_tx_n = 0;
+    netcon_poll();
+    CHECK(nc_queued() == 0 && g_tx_n == 0);
+
+    // aktif tanpa MAC: ARP request maks 1x per 100 tick, baris ditahan
+    g_netcon_on = 1;
+    timer_ticks += 1000;
+    g_tx_n = 0;
+    netcon_poll();
+    CHECK(g_tx_n == 1 && nc_is_arp_req(0, 1));
+    netcon_poll();
+    timer_ticks += 99;
+    netcon_poll();
+    CHECK(g_tx_n == 1);
+    timer_ticks += 1;
+    netcon_poll();
+    CHECK(g_tx_n == 2 && nc_is_arp_req(1, 1) && g_nc_arp == 2);
+
+    // antrean penuh: 40 baris x 101 byte muat (4040), 5 sisanya dibuang
+    for (int i = 0; i < 45; i++) {
+        memset(line, 'a' + i % 26, 100);
+        netcon_line(line, 100);
+    }
+    CHECK(nc_queued() == 4040 && g_nc_lost == 5 && g_nc_lost_pending == 5);
+
+    // ARP dari IP lain / pengirim multicast / MAC nol: diabaikan
+    mk_arp(f, OUR_IP);
+    f[31] = 9;
+    rx(f, 60);
+    CHECK(!g_nc_mac_ok);
+    mk_arp(f, OUR_IP);
+    f[22] = 0x01;
+    rx(f, 60);
+    CHECK(!g_nc_mac_ok);
+    mk_arp(f, OUR_IP);
+    memset(f + 22, 0, 6);
+    rx(f, 60);
+    CHECK(!g_nc_mac_ok);
+
+    // ARP request dari .1 (juga dibalas seperti biasa): MAC dipelajari
+    serial_capture_reset();
+    mk_arp(f, OUR_IP);
+    rx(f, 60);
+    CHECK(g_nc_mac_ok && memcmp(g_nc_mac, PEER_MAC, 6) == 0 && g_tx_n == 1);
+    CHECK(strstr(g_serial_cap, "R2: netcon MAC tujuan 192.168.50.1 = 02:00:00:00:00:01\r\n"));
+    // baris MAC itu sendiri tidak masuk antrean di host (log_capture = kernel.c)
+    CHECK(nc_queued() == 4040);
+
+    // datagram pertama: penanda + baris utuh, <= 1024 byte
+    g_tx_n = 0;
+    g_tx_bad = 0;
+    netcon_poll();
+    const char *pl = nc_payload(0);
+    CHECK(g_tx_n == 1 && pl != NULL);
+    CHECK(pl && strncmp(pl, "netcon: 5 baris dibuang\n", 24) == 0);
+    CHECK(pl && strlen(pl) <= 1024 && pl[strlen(pl) - 1] == '\n');
+    CHECK(pl && strlen(pl) == 24 + 9 * 101);   // 24 + 9 baris = 933, baris ke-10 tidak muat
+    CHECK(g_nc_lost_pending == 0 && g_nc_sent == 1);
+
+    // sisa: 31 baris -> 4 datagram (10+10+10+1)
+    int got = 1;
+    for (int i = 0; i < 10; i++) {
+        netcon_poll();
+    }
+    got = g_tx_n;
+    CHECK(got == 5 && nc_queued() == 0 && g_tx_bad == 0);
+    for (int i = 1; i < got && i < TX_MAX; i++) {
+        pl = nc_payload(i);
+        CHECK(pl != NULL && pl[0] == 'a' + (9 + 10 * (i - 1)) % 26);
+    }
+
+    // batas laju: 20 datagram per jendela 100 tick
+    timer_ticks += 100;
+    g_tx_n = 0;
+    for (int i = 0; i < 30; i++) {
+        netcon_line("x", 1);
+        netcon_poll();
+    }
+    CHECK(g_tx_n == 20 && nc_queued() == 20);
+    netcon_poll();
+    CHECK(g_tx_n == 20);
+    timer_ticks += 100;
+    netcon_poll();
+    CHECK(g_tx_n == 21 && nc_queued() == 0);
+    pl = nc_payload(20 % TX_MAX);
+    (void)pl;
+
+    // panic: kirim semua tanpa batas laju (jendela sudah dipakai)
+    for (int i = 0; i < 19; i++) {
+        netcon_line("x", 1);
+        netcon_poll();
+    }
+    CHECK(g_tx_n == 40);
+    for (int i = 0; i < 45; i++) {
+        memset(line, 'p', 100);
+        netcon_line(line, 100);
+    }
+    netcon_poll();
+    CHECK(g_tx_n == 40);
+    g_tx_n = 0;
+    netcon_panic_flush();
+    CHECK(g_tx_n == 5 && nc_queued() == 0 && g_tx_bad == 0);
+    pl = nc_payload(0);
+    CHECK(pl && strncmp(pl, "netcon: 5 baris dibuang\npppp", 28) == 0);
+
+    // g_netcon_hold (panic: register umum): baris tidak diantre
+    g_netcon_hold = 1;
+    netcon_line("PANIC: RAX=1", 12);
+    g_netcon_hold = 0;
+    CHECK(nc_queued() == 0);
+
+    // status
+    g_cmdbuf_len = 0;
+    g_cmdbuf[0] = '\0';
+    netcon_status();
+    CHECK(strstr(g_cmdbuf, "netcon: aktif=1 tujuan=192.168.50.1:6666 port_sumber=6665\n"
+                           "netcon: mac=02:00:00:00:00:01 arp=2\n"
+                           "netcon: terkirim=") != NULL);
+    CHECK(strstr(g_cmdbuf, " antre=0 dibuang=10 tx_gagal=0\n") != NULL);
+
+    // port berubah langsung dipakai; host berubah -> MAC lupa, ARP ke host baru
+    g_netcon_port = 17666;
+    netcon_line("p", 1);
+    timer_ticks += 100;
+    g_tx_n = 0;
+    netcon_poll();
+    CHECK(g_tx_n == 1 && nc_payload(0) && strcmp(nc_payload(0), "p\n") == 0);
+    g_netcon_host = 9;
+    netcon_line("q", 1);
+    g_tx_n = 0;
+    netcon_poll();
+    CHECK(g_tx_n == 1 && nc_is_arp_req(0, 9) && !g_nc_mac_ok && nc_queued() == 2);
+    g_tx_n = 0;
+    netcon_panic_flush();
+    CHECK(g_tx_n == 0);   // tanpa MAC: panic tidak mengirim
+
+    // netcon=0: antrean dikosongkan, tidak ada TX
+    g_netcon_on = 0;
+    netcon_poll();
+    CHECK(nc_queued() == 0 && g_tx_n == 0);
+    netcon_line("r", 1);
+    CHECK(nc_queued() == 0);
+
+    // tanpa NIC
+    g_e1000_rx_initialized = 0;
+    g_cmdbuf_len = 0;
+    netcon_status();
+    CHECK(strcmp(g_cmdbuf, "netcon: NIC tidak ada\n") == 0);
+
+    // ARP peer tiba sebelum poll pertama setelah netcon dinyalakan (VMware:
+    // Windows ARP duluan): MAC tetap, tanpa ARP request baru.
+    g_e1000_rx_initialized = 1;
+    g_netcon_host = 1;
+    netcon_poll();            // sinkron: netcon=0
+    g_netcon_on = 1;
+    mk_arp(f, OUR_IP);
+    rx(f, 60);
+    CHECK(g_nc_mac_ok);
+    uint64_t arp0 = g_nc_arp;
+    g_tx_n = 0;
+    netcon_line("s", 1);
+    netcon_poll();
+    CHECK(g_nc_mac_ok && g_nc_arp == arp0 && g_tx_n == 1 && nc_payload(0) &&
+          strcmp(nc_payload(0), "s\n") == 0);
+    g_netcon_on = 0;
+    netcon_poll();
+    g_e1000_rx_initialized = 0;
+
+    g_netcon_host = 1;
+    g_netcon_port = 6666;
+}
+
 static void tls_files(const uint8_t *k, uint32_t kl, const uint8_t *ce, uint32_t cl)
 {
     g_fk = k;
@@ -2473,5 +2703,6 @@ int main(void)
     build_templates();
     test_truncation();
     test_fuzz();
+    test_netcon();
     return test_done("net");
 }

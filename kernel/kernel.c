@@ -107,6 +107,8 @@ void log_capture(char c)
         g_log_ring[g_log_head] = '\n';
         g_log_head = (g_log_head + 1) & (LOG_RING_SIZE - 1);
         g_log_total++;
+
+        netcon_line(g_log_line, g_log_line_len);   // R2
     }
 
     g_log_line_len = 0;
@@ -410,6 +412,7 @@ static void net_task_entry(void)
 
     // C3a: butuh interrupt aktif (memakai task_sleep), ~0,5 s.
     ktimer_selftest();
+    netcon_init();   // R2
 
     for (;;) {
         static int irq_reported = 0;
@@ -436,6 +439,7 @@ static void net_task_entry(void)
         net_tcp_tick();
         entropy_poll();
         ktimer_run();
+        netcon_poll();
         sem_wait(&g_net_rx_sem);
     }
 }
