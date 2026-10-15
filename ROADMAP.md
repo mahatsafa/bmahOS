@@ -189,7 +189,10 @@ Linux, dan klien Python.
 
 - [x] **R1** (2026-10-14, 3fa72c4 R1-1, 1fea8fe TSS-1, c9c5d71 R1-2; VMware lulus pf/df/ud/assert) Panic handler: cetak jenis error, RIP, register, stack trace (butuh `-fno-omit-frame-pointer`),
   lalu reboot otomatis setelah N detik. Double fault memakai IST di TSS.
-- [ ] **R2** Netconsole UDP (jalur sederhana, tanpa heap).
+- [x] **R2** (2026-10-15, 1940362 R2-1, 3ccc7d1 R2-2; VMware lulus) Netconsole UDP (jalur sederhana, tanpa heap).
+  Hasil: baris ring log + dump panic (tanpa register umum, tanpa AUDIT) lewat UDP 6665 ke
+  192.168.50.<netcon_host>:<netcon_port>, bawaan mati; antrean statis 4 KB, maks 20 datagram/s, MAC dari ARP.
+  make test 174 -> 183, PROD 164 -> 171.
 - [ ] **R3** Registry metrik (satu tempat semua counter) dan perintah `bmctl metrics`: CPU, memori, uptime,
   statistik jaringan, jumlah koneksi.
 - [ ] **R4** Log persisten berbentuk ring buffer di penyimpanan.
