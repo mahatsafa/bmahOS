@@ -382,7 +382,6 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl)
 {
     uint32_t plen = g_cmd_len;
-    uint32_t udp_len = 8 + plen;
 
     if (g_net_tx_buf_phys == 0) {
         g_net_tx_buf_phys = pmm_alloc();
@@ -396,58 +395,13 @@ void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl)
     uint8_t *p = (uint8_t *)(g_net_tx_buf_phys + hhdm_offset);
     uint32_t r = 14 + ihl;
 
-    uint32_t frame_len = 14 + 20 + udp_len;
-    uint32_t send_len = frame_len < 60 ? 60 : frame_len;
-
-    for (uint32_t i = 0; i < send_len; i++) {
-        p[i] = 0;
-    }
-
-    for (int i = 0; i < 6; i++) {
-        p[i] = req[6 + i];
-        p[6 + i] = g_e1000_mac[i];
-    }
-    p[12] = 0x08;
-    p[13] = 0x00;
-
-    p[14] = 0x45;
-    p[15] = 0x00;
-    p[16] = (uint8_t)((20 + udp_len) >> 8);
-    p[17] = (uint8_t)((20 + udp_len) & 0xFF);
-    p[18] = (uint8_t)(g_net_ip_id >> 8);
-    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
-    g_net_ip_id++;
-    p[20] = 0x40;
-    p[21] = 0x00;
-    p[22] = 64;
-    p[23] = 17;
-
-    for (int i = 0; i < 4; i++) {
-        p[26 + i] = g_net_ip[i];
-        p[30 + i] = req[26 + i];
-    }
-
-    uint16_t ipc = net_checksum16(p + 14, 20);
-    p[24] = (uint8_t)(ipc >> 8);
-    p[25] = (uint8_t)(ipc & 0xFF);
-
-    p[34] = req[r + 2];
-    p[35] = req[r + 3];
-    p[36] = req[r + 0];
-    p[37] = req[r + 1];
-    p[38] = (uint8_t)(udp_len >> 8);
-    p[39] = (uint8_t)(udp_len & 0xFF);
-
     for (uint32_t i = 0; i < plen; i++) {
         p[42 + i] = (uint8_t)g_cmd_out[i];
     }
 
-    uint16_t uc = net_udp_checksum(p + 26, p + 30, p + 34, udp_len);
-    if (uc == 0) {
-        uc = 0xFFFF;
-    }
-    p[40] = (uint8_t)(uc >> 8);
-    p[41] = (uint8_t)(uc & 0xFF);
+    uint16_t sport = (uint16_t)(((uint32_t)req[r + 2] << 8) | req[r + 3]);
+    uint16_t dport = (uint16_t)(((uint32_t)req[r + 0] << 8) | req[r + 1]);
+    uint32_t send_len = net_udp_build(p, req + 6, req + 26, sport, dport, plen);
 
     int ok = e1000_tx_send(g_net_tx_buf_phys, send_len);
 

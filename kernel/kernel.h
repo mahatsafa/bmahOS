@@ -531,6 +531,8 @@ extern uint64_t g_net_log_muted;
 uint16_t net_checksum16(volatile uint8_t *p, uint32_t len);
 void e1000_stats_poll(void);
 uint16_t net_udp_checksum(const volatile uint8_t *src_ip, const volatile uint8_t *dst_ip, const volatile uint8_t *udp, uint32_t udp_len);
+uint32_t net_udp_build(uint8_t *p, const volatile uint8_t *dst_mac, const volatile uint8_t *dst_ip,
+                       uint16_t sport, uint16_t dport, uint32_t plen);
 void net_tcp_tick(void);
 int net_poll(void);
 

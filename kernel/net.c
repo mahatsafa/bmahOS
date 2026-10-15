@@ -436,6 +436,72 @@ uint16_t net_udp_checksum(const volatile uint8_t *src_ip,
     return (uint16_t)(~sum);
 }
 
+// R2-1: isi header Ethernet + IPv4 (proto 17) + UDP di depan payload yang
+// SUDAH ada di p[42..42+plen), padding sampai 60 byte dinolkan, checksum IP
+// dan UDP dihitung. Return = panjang frame yang dikirim (>= 60).
+uint32_t net_udp_build(uint8_t *p, const volatile uint8_t *dst_mac, const volatile uint8_t *dst_ip,
+                       uint16_t sport, uint16_t dport, uint32_t plen)
+{
+    uint32_t udp_len = 8 + plen;
+    uint32_t frame_len = 14 + 20 + udp_len;
+    uint32_t send_len = frame_len < 60 ? 60 : frame_len;
+
+    for (uint32_t i = frame_len; i < send_len; i++) {
+        p[i] = 0;
+    }
+
+    // Ethernet
+    for (int i = 0; i < 6; i++) {
+        p[i] = dst_mac[i];
+        p[6 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0x00;
+
+    // IPv4 header, protocol 17
+    p[14] = 0x45;
+    p[15] = 0x00;
+    p[16] = (uint8_t)((20 + udp_len) >> 8);
+    p[17] = (uint8_t)((20 + udp_len) & 0xFF);
+    p[18] = (uint8_t)(g_net_ip_id >> 8);
+    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
+    g_net_ip_id++;
+    p[20] = 0x40;
+    p[21] = 0x00;
+    p[22] = 64;
+    p[23] = 17;
+    p[24] = 0;
+    p[25] = 0;
+
+    for (int i = 0; i < 4; i++) {
+        p[26 + i] = g_net_ip[i];
+        p[30 + i] = dst_ip[i];
+    }
+
+    uint16_t ipc = net_checksum16(p + 14, 20);
+    p[24] = (uint8_t)(ipc >> 8);
+    p[25] = (uint8_t)(ipc & 0xFF);
+
+    // UDP
+    p[34] = (uint8_t)(sport >> 8);
+    p[35] = (uint8_t)(sport & 0xFF);
+    p[36] = (uint8_t)(dport >> 8);
+    p[37] = (uint8_t)(dport & 0xFF);
+    p[38] = (uint8_t)(udp_len >> 8);
+    p[39] = (uint8_t)(udp_len & 0xFF);
+    p[40] = 0;
+    p[41] = 0;
+
+    uint16_t uc = net_udp_checksum(p + 26, p + 30, p + 34, udp_len);
+    if (uc == 0) {
+        uc = 0xFFFF;
+    }
+    p[40] = (uint8_t)(uc >> 8);
+    p[41] = (uint8_t)(uc & 0xFF);
+
+    return send_len;
+}
+
 // req = awal frame Ethernet request, ihl = panjang header IP request,
 // udp_len = panjang datagram UDP (header 8 byte + payload).
 static void net_udp_send_echo(volatile uint8_t *req, uint32_t ihl,
@@ -458,61 +524,14 @@ static void net_udp_send_echo(volatile uint8_t *req, uint32_t ihl,
     uint8_t *p = (uint8_t *)(g_net_tx_buf_phys + hhdm_offset);
     uint32_t r = 14 + ihl;
 
-    uint32_t frame_len = 14 + 20 + udp_len;
-    uint32_t send_len = frame_len < 60 ? 60 : frame_len;
-
-    for (uint32_t i = 0; i < send_len; i++) {
-        p[i] = 0;
-    }
-
-    // Ethernet
-    for (int i = 0; i < 6; i++) {
-        p[i] = req[6 + i];
-        p[6 + i] = g_e1000_mac[i];
-    }
-    p[12] = 0x08;
-    p[13] = 0x00;
-
-    // IPv4 header, protocol 17
-    p[14] = 0x45;
-    p[15] = 0x00;
-    p[16] = (uint8_t)((20 + udp_len) >> 8);
-    p[17] = (uint8_t)((20 + udp_len) & 0xFF);
-    p[18] = (uint8_t)(g_net_ip_id >> 8);
-    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
-    g_net_ip_id++;
-    p[20] = 0x40;
-    p[21] = 0x00;
-    p[22] = 64;
-    p[23] = 17;
-
-    for (int i = 0; i < 4; i++) {
-        p[26 + i] = g_net_ip[i];
-        p[30 + i] = req[26 + i];
-    }
-
-    uint16_t ipc = net_checksum16(p + 14, 20);
-    p[24] = (uint8_t)(ipc >> 8);
-    p[25] = (uint8_t)(ipc & 0xFF);
-
-    // UDP: port ditukar (src <- dst request, dst <- src request)
-    p[34] = req[r + 2];
-    p[35] = req[r + 3];
-    p[36] = req[r + 0];
-    p[37] = req[r + 1];
-    p[38] = (uint8_t)(udp_len >> 8);
-    p[39] = (uint8_t)(udp_len & 0xFF);
-
     for (uint32_t i = 0; i + 8 < udp_len; i++) {
         p[42 + i] = req[r + 8 + i];
     }
 
-    uint16_t uc = net_udp_checksum(p + 26, p + 30, p + 34, udp_len);
-    if (uc == 0) {
-        uc = 0xFFFF;
-    }
-    p[40] = (uint8_t)(uc >> 8);
-    p[41] = (uint8_t)(uc & 0xFF);
+    // UDP: port ditukar (src <- dst request, dst <- src request)
+    uint16_t sport = (uint16_t)(((uint32_t)req[r + 2] << 8) | req[r + 3]);
+    uint16_t dport = (uint16_t)(((uint32_t)req[r + 0] << 8) | req[r + 1]);
+    uint32_t send_len = net_udp_build(p, req + 6, req + 26, sport, dport, udp_len - 8);
 
     int ok = e1000_tx_send(g_net_tx_buf_phys, send_len);
 
