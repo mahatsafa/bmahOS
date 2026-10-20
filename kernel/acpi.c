@@ -169,6 +169,7 @@ void machine_reboot(void)
 #ifndef BMAHOS_NOACPIRESET
     if (g_acpi_reset_ok) {
         serial_write("ACPI-R: reboot via register reset FADT\r\n");
+        logdisk_sync(0);   // R4: sisa log (termasuk baris ini) ke LOG.BIN
         outb(g_acpi_reset_port, g_acpi_reset_value);
 
         for (uint32_t i = 0; i < 1000000; i++) {
@@ -183,6 +184,7 @@ void machine_reboot(void)
 
 #ifndef BMAHOS_NOKBDRESET
     serial_write("Net-18B: reboot via 8042 (0xFE)\r\n");
+    logdisk_sync(0);   // R4
 
     for (uint32_t i = 0; i < 100000; i++) {
         if ((inb(0x64) & 0x02) == 0) {

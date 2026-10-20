@@ -387,6 +387,16 @@ typedef struct {
 int fat32_file_map(const char *name83, fat32_map_t *m);
 int fat32_map_read(const fat32_map_t *m, uint32_t sec, uint8_t *buf512);
 int fat32_map_write(const fat32_map_t *m, uint32_t sec, const uint8_t *buf512);
+extern volatile int g_ahci_busy;   // R4: >0 selama perintah AHCI berjalan
+
+// ---- logdisk.c (R4: log persisten di LOG.BIN) ----
+void logdisk_line(const char *s, uint32_t n);   // dari log_capture (interrupt mati)
+void logdisk_init(void);                        // net task, sebelum loop
+void logdisk_poll(void);                        // net task, tiap putaran
+void logdisk_sync(int panic);                   // panic/reboot: tulis antrean langsung
+void logdisk_execute(const volatile uint8_t *args, uint32_t len);
+int logdisk_rec_ok(const uint8_t *rec);
+extern uint64_t g_ld_written, g_ld_lost, g_ld_wfail, g_ld_bad;
 // fscmd.c: perintah ls/baca/tulis/tambah/hapus/ganti (admin). Return 1 bila dikenali.
 int fscmd_execute(const volatile uint8_t *cmd, uint32_t len);
 const char *fscmd_strerror(int rc);

@@ -79,7 +79,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Isolasi user/kernel | Ada: user mode, NX | R6, SMEP/SMAP bila CPU mendukung |
 | Entropi nonce | Ada (F1.8): kolam SHA-256 + HMAC-DRBG, tolak sebelum 256 bit; rdseed/rdrand dipercaya | Nilai ulang jitter di perangkat keras asli (H0) |
 | Otorisasi berbasis peran | Ada (D4): admin/read-only per kunci, TCP 7779 dan TLS 7780 | Kunci per pengguna |
-| Audit | Ada (D5): ring RAM (ok 16, gagal 8; banjir gagal tidak menimpa ring ok), IP:port + peran + perintah + tick, juga ke serial; baca `audit` hanya admin | Waktu nyata (P3), persisten (R4) |
+| Audit | Ada (D5): ring RAM (ok 16, gagal 8; banjir gagal tidak menimpa ring ok), IP:port + peran + perintah + tick, juga ke serial; baca `audit` hanya admin. Log persisten R4 sengaja TIDAK memuat baris AUDIT (bisa dibaca read-only) | Waktu nyata (P3); audit persisten terpisah (khusus admin) bila dibutuhkan |
 | Integritas update | Belum ada OTA | P7 |
 
 ## 6. Keterbatasan yang diketahui (diterima sementara)

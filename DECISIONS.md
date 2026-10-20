@@ -284,3 +284,16 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Kunci baru**: uptime_s, cpu_*, mem_total_kb, heap_mapped, stack_net_used, cli/tls_sess_active, tls_*,
   netcon_* (dulu sengaja ditunda di R2), fat_wr_ok/fail, audit_seq. Read-only boleh `metrics` + argumen
   (sudah boleh `metrics` sebelumnya; tidak ada rahasia di counter).
+
+## 2026-10-15 (R4 log persisten; rencana disetujui pengguna, pilihan rekomendasi Claude)
+- **File dialokasikan di host** (`LOG.BIN` 64 KB, mtools/qemu-img), kernel hanya menimpa sektor isi lewat
+  `fat32_map_write` (R4-1): FAT, entri dir, ukuran, FSInfo tidak pernah disentuh -> crash paling buruk
+  merusak satu rekaman. Kernel tidak membuat file (butuh alokasi multi-cluster > 4 KB). Tanpa file = mati.
+- **Rekaman mandiri** 512 byte (boot, seq global, hash 8 byte SHA-256 yang sudah ada), tanpa header global
+  yang harus diperbarui; posisi tulis = sesudah seq sah terbesar (pindai 128 sektor saat boot).
+- **Isi = ring `log`** (tanpa AUDIT, tanpa register umum panic). Read-only boleh `logdisk` (sama dengan `log`).
+- **Antrean statis 4 KB** sejak awal boot (4 KB pertama boot tersimpan; sisanya sampai init dibuang dan
+  dihitung). Net task: satu rekaman bila penuh atau tiap 5 s, maks 2 tulis/s (net task terblok saat I/O).
+- **Panic/reboot**: `logdisk_sync` menulis antrean langsung (maks 8 rekaman), dilewati bila AHCI sedang
+  dipakai (`g_ahci_busy`) atau bersarang. Menutup "dump persisten" yang ditunda di R1.
+- **Tulis gagal** -> logdisk nonaktif + volume baca saja (gagal tertutup, sama dengan tulis file D6).

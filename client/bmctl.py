@@ -7,6 +7,7 @@ Contoh:
     python bmctl.py --key ~/bmahos-key.txt uptime
     python bmctl.py --key key.txt metrics
     python bmctl.py --key key.txt "metrics tcp_"   (R3: hanya kunci berawalan tcp_)
+    python bmctl.py --tls --pin p.txt --key key.txt logdisk "logdisk 1"   (R4: log disk)
     python bmctl.py --key key.txt pping
     python bmctl.py --key key.txt reboot
     python bmctl.py --tcp --key key.txt uptime metrics   (satu sesi TCP)
@@ -59,30 +60,62 @@ READ_CMDS = ("help", "ping", "uptime", "mem", "log", "irq", "stats",
              "metrics", "mac", "ip", "tasks")
 PRIV_CMDS = ("pping", "reboot")
 
-# R3: `metrics [awalan]` (tanpa mulai) diambil semua halamannya: kernel
-# mengakhiri halaman yang belum habis dengan "metrics_lanjut=<indeks>".
-METRICS_RE = re.compile(r"metrics(?: [a-z_][a-z0-9_]*)?")
-METRICS_NEXT = "metrics_lanjut="
-METRICS_MAX_PAGES = 20
+# Perintah berhalaman: halaman yang belum habis diakhiri "<kunci>=<indeks>".
+# R3: `metrics [awalan]` (tanpa mulai) -> "metrics [awalan] <i>".
+# R4: `logdisk <seq>` -> "logdisk <seq lanjut>".
+PAGED = (
+    (re.compile(r"metrics(?: [a-z_][a-z0-9_]*)?"), "metrics_lanjut=",
+     lambda cmd, n: "%s %d" % (cmd, n), 20),
+    (re.compile(r"logdisk [0-9]+"), "logdisk_lanjut=",
+     lambda cmd, n: "logdisk %d" % n, 200),
+)
 
 
-def metrics_pages(cmd, run1):
-    """run1(perintah) -> (baris, ok). Perintah selain metrics [awalan] lewat
-    apa adanya; metrics diulang dengan indeks lanjut, baris lanjut dibuang."""
-    if not METRICS_RE.fullmatch(cmd):
+LD_HDR = re.compile(r"=== boot ([0-9]+) seq [0-9]+( panic)? ===")
+
+
+def logdisk_join(out, lines):
+    """Buang header awal halaman lanjutan bila boot sama dengan header
+    terakhir (kernel mencetak ulang header di awal tiap halaman)."""
+    if not lines:
+        return lines
+    m = LD_HDR.fullmatch(lines[0])
+    if not m:
+        return lines
+    for prev in reversed(out):
+        p = LD_HDR.fullmatch(prev)
+        if p:
+            if p.group(1) == m.group(1) and (not m.group(2) or p.group(2)):
+                return lines[1:]
+            break
+    return lines
+
+
+def metrics_pages(cmd, run1, pause=0.0):
+    """run1(perintah) -> (baris, ok). Perintah tak berhalaman lewat apa
+    adanya; lainnya diulang dengan indeks lanjut, baris lanjut dibuang.
+    pause: jeda antar halaman (UDP: batas 20 datagram/s per IP)."""
+    for rx, key, nextcmd, max_pages in PAGED:
+        if rx.fullmatch(cmd):
+            break
+    else:
         return run1(cmd)
     out = []
     nxt = None
-    for _ in range(METRICS_MAX_PAGES):
-        lines, ok = run1(cmd if nxt is None else "%s %d" % (cmd, nxt))
-        if not ok or not lines or not lines[-1].startswith(METRICS_NEXT):
+    for _ in range(max_pages):
+        if nxt is not None and pause:
+            time.sleep(pause)
+        lines, ok = run1(cmd if nxt is None else nextcmd(cmd, nxt))
+        if nxt is not None and key == "logdisk_lanjut=":
+            lines = logdisk_join(out, lines)
+        if not ok or not lines or not lines[-1].startswith(key):
             return out + lines, ok
-        n = int(lines[-1][len(METRICS_NEXT):])
+        n = int(lines[-1][len(key):])
         if nxt is not None and n <= nxt:
-            return out + ["bmctl: metrics_lanjut tidak maju"], False
+            return out + ["bmctl: %s tidak maju" % key[:-1]], False
         out += lines[:-1]
         nxt = n
-    return out + ["bmctl: halaman metrics terlalu banyak"], False
+    return out + ["bmctl: halaman terlalu banyak"], False
 
 
 def load_key(path):
@@ -309,7 +342,7 @@ def run(args):
         return reply.rstrip("\n").split("\n"), not reply.startswith("ERR")
 
     try:
-        out, ok = metrics_pages(args.command, one)
+        out, ok = metrics_pages(args.command, one, pause=0.12)
     except socket.timeout:
         sys.stderr.write("bmctl: tidak ada balasan dari %s:%d (%.1f s)\n"
                          % (args.host, args.port, args.timeout))

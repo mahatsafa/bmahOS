@@ -43,6 +43,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `entropy.c` | kolam entropi (jitter TSC dari IRQ timer/E1000 dan RX, rdseed/rdrand), HMAC-DRBG SP 800-90A, `entropy_get` (0 = belum cukup, pemanggil menolak), self-test CAVP | crypto, cpufeat |
 | `auth.c` | kunci dari `KEY.TXT`, nonce (tabel 16 slot, isi dari `entropy_get`), verifikasi HMAC, perintah berprivilege, reboot, pintu UDP 7778 | crypto, entropy, fat32, cmd |
 | `config.c` | D7: `CONFIG.CFG` (parser gagal tertutup, `config_load` saat boot, perintah `config`/`set`, tulis lewat `fat32_replace_name`); nilai runtime `g_cli_idle_s`/`g_net_src_rate`/`g_net_echo` ada di net.c | fat32, fscmd, cmd, kprintf |
+| `logdisk.c` | R4: log persisten di `LOG.BIN` (antrean statis 4 KB dari `log_capture`, rekaman 512 byte boot/seq/hash, pindai saat boot, tulis maks 2/s dari net task, `logdisk_sync` saat panic/reboot, perintah `logdisk`) | fat32 (`fat32_map_*`), crypto, cmd, kprintf |
 | `netcon.c` | R2: netconsole UDP (antrean statis 4 KB dari `log_capture`, ARP tujuan, batas 20 datagram/s, kirim langsung saat panic, perintah `netcon`) | net (`net_udp_build`), e1000, pmm, cmd, kprintf |
 | `tls.c` | D9: server TLS 1.2 BearSSL untuk CLI 7780 (`tls_load` identitas TLSKEY/TLSCERT.DER, pool 2 sesi statis, pembungkus engine untuk net.c, perintah `tls`) | BearSSL, fat32, entropy, cmd, kprintf |
 | `klib.c` | D9: `memcpy`/`memmove`/`memset`/`memcmp`/`strlen` (dibutuhkan BearSSL; header `kernel/compat/string.h`) | - |

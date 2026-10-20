@@ -234,6 +234,11 @@ static const metric_t g_metrics[] = {
     M64("fat_wr_ok", g_fat_wr_ok),
     M64("fat_wr_fail", g_fat_wr_fail),
     M64("audit_seq", g_audit_seq),
+    // R4
+    M64("logdisk_written", g_ld_written),
+    M64("logdisk_lost", g_ld_lost),
+    M64("logdisk_wfail", g_ld_wfail),
+    M64("logdisk_bad", g_ld_bad),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

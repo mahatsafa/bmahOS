@@ -10,6 +10,7 @@
 #         bmt uptime         perintah bertanda tangan, cetak keluaran sampai END <n>
 #         bmtx               exit lalu tutup koneksi
 #         bmmetrics [awalan] R3: semua halaman metrics (ikuti metrics_lanjut=)
+#         bmlogdisk [seq]    R4: log persisten LOG.BIN mulai seq (ikuti logdisk_lanjut=)
 #         bmtls              D9: sama dengan bmtcp lewat TLS 1.2 port 7780; pin
 #                            (sha256 sertifikat, 64 hex) dari $BmPinFile (default
 #                            $env:USERPROFILE\.bmahos\tlspin.txt). Beda -> ditutup.
@@ -113,6 +114,34 @@ function bmmetrics($awalan = "") {
     $cmd = "$base $nx"
   }
   "bmmetrics: halaman terlalu banyak"
+}
+
+# R4: "logdisk <seq>" berhalaman; baris akhir "logdisk_lanjut=<seq>".
+# Header "=== boot N seq S[ panic] ===" diulang kernel di awal tiap halaman:
+# buang bila boot sama dengan header terakhir ($hb; $hp = header itu panic).
+function bmlogdisk($seq = 1) {
+  $hr = '^=== boot (\d+) seq \d+( panic)? ===$'
+  $hb = ""
+  $hp = $false
+  for ($pg = 0; $pg -lt 200; $pg++) {
+    $lines = @(bmt "logdisk $seq")
+    if ($pg -gt 0 -and $lines.Count -gt 0 -and $lines[0] -match $hr) {
+      $np = [bool]$Matches[2]
+      if ($Matches[1] -eq $hb -and (-not $np -or $hp)) {
+        if ($lines.Count -gt 1) { $lines = @($lines[1..($lines.Count - 1)]) }
+        else { $lines = @() }
+      }
+    }
+    foreach ($l in $lines) {
+      if ($l -match $hr) { $hb = $Matches[1]; $hp = [bool]$Matches[2] }
+    }
+    $last = ""
+    if ($lines.Count -gt 0) { $last = $lines[$lines.Count - 1] }
+    if ($last -notmatch '^logdisk_lanjut=(\d+)$') { $lines; return }
+    $seq = $Matches[1]
+    if ($lines.Count -gt 1) { $lines[0..($lines.Count - 2)] }
+  }
+  "bmlogdisk: halaman terlalu banyak"
 }
 
 function bmtx {

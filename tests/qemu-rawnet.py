@@ -222,6 +222,37 @@ def test_fs_persist(net, cli):
           r == "isi CATATAN.TXT ukuran=21:\nbaris satu\nbaris dua\n", repr(r))
 
 
+def test_logdisk(net, cli):
+    """R4: boot kedua = boot 2 di LOG.BIN; teks boot pertama (sampai baris
+    reboot ACPI, ditulis logdisk_sync) terbaca lewat logdisk <seq>."""
+    st = cli.cmd("logdisk")
+    kv = dict(l.split("=", 1) for l in (st or "").splitlines() if "=" in l)
+    check("R4: boot kedua: logdisk=aktif boot=2 seq_boot_lalu=1",
+          kv.get("logdisk") == "aktif" and kv.get("boot") == "2" and
+          kv.get("seq_boot_lalu") == "1", repr(st))
+    text, nxt, pages = "", 1, 0
+    while nxt is not None and pages < 200:
+        time.sleep(0.12)
+        r = cli.cmd("logdisk %d" % nxt)
+        pages += 1
+        if r is None:
+            break
+        lines = r.rstrip("\n").split("\n")
+        nxt = None
+        if lines and lines[-1].startswith("logdisk_lanjut="):
+            nxt = int(lines[-1][len("logdisk_lanjut="):])
+            lines = lines[:-1]
+        text += "\n".join(lines) + "\n"
+    b1 = text.split("=== boot 2 ")[0]
+    print("info  R4: logdisk %d halaman, %d byte, boot 1 %d byte" % (pages, len(text), len(b1)))
+    check("R4: teks boot 1 dari LOG.BIN: awal boot, status logdisk, baris reboot ACPI terakhir",
+          b1.startswith("=== boot 1 seq 1 ===\n") and "R4: logdisk aktif rekaman=128 boot=1" in b1 and
+          b1.rstrip("\n").endswith("ACPI-R: reboot via register reset FADT"),
+          repr(b1[-200:]))
+    check("R4: boot 1 tanpa rekaman rusak, tanpa baris AUDIT", "rusak/hilang" not in text and
+          "AUDIT #" not in text)
+
+
 def test_config(net, cli):
     """D7: CONFIG.CFG dari boot pertama terbaca; set echo/udp_rate berlaku
     langsung (lalu dikembalikan supaya uji berikutnya tidak terpengaruh)."""
@@ -923,6 +954,8 @@ def main():
         test_counters(net, cli)
         time.sleep(1.2)
         test_fs_persist(net, cli)
+        time.sleep(1.2)
+        test_logdisk(net, cli)
         time.sleep(1.2)
         test_config(net, cli)
         time.sleep(1.2)

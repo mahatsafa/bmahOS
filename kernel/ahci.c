@@ -188,8 +188,10 @@ void ahci_port_init(volatile uint32_t *hba, uint32_t port)
 // D6-3: satu perintah ATA lewat slot 0. ata_cmd 0x25 READ DMA EXT,
 // 0x35 WRITE DMA EXT (wbuf = isi count sektor, disalin ke buffer DMA port),
 // 0xEA FLUSH CACHE EXT (count 0, tanpa PRDT).
-static int ahci_issue(uint32_t port_index, uint8_t ata_cmd, uint64_t lba,
-                      uint32_t count, const uint8_t *wbuf)
+volatile int g_ahci_busy = 0;   // R4: logdisk_sync saat panic tidak masuk di tengah perintah
+
+static int ahci_issue_one(uint32_t port_index, uint8_t ata_cmd, uint64_t lba,
+                          uint32_t count, const uint8_t *wbuf)
 {
     if (port_index >= (uint32_t)g_ahci_ata_port_count) {
         return AHCI_ERR_BAD_PORT;
@@ -285,6 +287,15 @@ static int ahci_issue(uint32_t port_index, uint8_t ata_cmd, uint64_t lba,
     }
 
     return AHCI_OK;
+}
+
+static int ahci_issue(uint32_t port_index, uint8_t ata_cmd, uint64_t lba,
+                      uint32_t count, const uint8_t *wbuf)
+{
+    g_ahci_busy++;
+    int rc = ahci_issue_one(port_index, ata_cmd, lba, count, wbuf);
+    g_ahci_busy--;
+    return rc;
 }
 
 int ahci_read(uint32_t port_index, uint64_t lba, uint32_t count, uint8_t **out_buf)

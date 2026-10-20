@@ -22,6 +22,7 @@ static const char *const g_fs_protected[] = {
 
 static const char *const g_fs_wprotected[] = {
     "CONFIG  CFG", "CONFIG  TMP",
+    "LOG     BIN",   // R4: dipetakan logdisk, ukuran/rantai tidak boleh berubah
 };
 
 static uint8_t g_fs_buf[FAT32_WRITE_MAX];

@@ -127,6 +127,7 @@ void panic_begin(void)
     }
 
     netcon_panic_flush();   // R2: kosongkan antrean dulu, ruang untuk dump
+    logdisk_sync(1);        // R4: begitu juga antrean LOG.BIN
 }
 
 // rip != 0: frame #0 (RIP saat exception). rbp: awal rantai frame.
@@ -156,6 +157,7 @@ void panic_finish(uint64_t rip, uint64_t rbp)
     pit_init(100);
     kprintf("PANIC: reboot otomatis dalam %d detik\r\n", PANIC_REBOOT_S);
     netcon_panic_flush();   // R2
+    logdisk_sync(1);        // R4: dump ke LOG.BIN (tanpa register umum)
 
     uint32_t periods = 0;
     uint32_t same = 0;

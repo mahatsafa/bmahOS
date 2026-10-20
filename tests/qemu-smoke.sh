@@ -68,6 +68,9 @@ openssl req -new -x509 -key "$WORK/TLSKEY.DER" -keyform DER -days 3650 \
     -subj /CN=bmahOS-uji -outform DER -out "$WORK/TLSCERT.DER" 2>/dev/null
 mcopy -i "$DISK" "$WORK/TLSKEY.DER" ::TLSKEY.DER
 mcopy -i "$DISK" "$WORK/TLSCERT.DER" ::TLSCERT.DER
+# R4: LOG.BIN 64 KB (128 rekaman) dialokasikan di host; kernel hanya menimpa isinya.
+head -c 65536 /dev/zero > "$WORK/LOG.BIN"
+mcopy -i "$DISK" "$WORK/LOG.BIN" ::LOG.BIN
 TLSPIN="$(sha256sum "$WORK/TLSCERT.DER" | cut -d" " -f1)"
 cp "$OVMF_VARS" "$WORK/vars.fd"
 
@@ -228,14 +231,31 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=97
+R3_N=101   # R4: + 4 kunci logdisk_*
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir audit_seq" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^audit_seq="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir logdisk_bad" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^logdisk_bad="'
+
+# R4: log persisten (LOG.BIN). Boot pertama = boot 1; setelah > 5 s ada rekaman.
+check "R4: serial: logdisk aktif rekaman=128 boot=1 seq=1 rusak=0" \
+    'grep -aq "^R4: logdisk aktif rekaman=128 boot=1 seq=1 rusak=0" "$LOG"'
+sleep 1.2
+R4_ST="$($BM logdisk)"
+echo "$R4_ST" | tr '\n' ' ' | sed "s/^/info  R4: /"; echo
+check "R4: logdisk status: aktif, boot=1, ditulis >= 1, gagal 0, rusak 0" \
+    'echo "$R4_ST" | grep -q "^logdisk=aktif$" && echo "$R4_ST" | grep -q "^boot=1$" && [ "$(echo "$R4_ST" | sed -n "s/^ditulis=//p")" -ge 1 ] && echo "$R4_ST" | grep -q "^gagal=0$" && echo "$R4_ST" | grep -q "^rusak=0$"'
+sleep 1.2
+R4_TXT="$($BM "logdisk 1")"
+check "R4: bmctl logdisk 1 (UDP, ikuti halaman): header boot 1, awal boot, tanpa logdisk_lanjut" \
+    'echo "$R4_TXT" | head -1 | grep -q "^=== boot 1 seq 1 ===$" && echo "$R4_TXT" | grep -q "^R4: logdisk aktif" && ! echo "$R4_TXT" | grep -q "^logdisk_lanjut="'
+check "R4: bmctl logdisk 1: header boot 1 tidak diulang di awal halaman" \
+    '[ "$(echo "$R4_TXT" | grep -c "^=== boot 1 seq [0-9]* ===$")" -eq 1 ]'
+check "R4: logdisk argumen salah -> ERR" \
+    '$BM "logdisk x" | grep -q "^ERR: logdisk \[seq\]$"'
 r3v() { echo "$R3_ALL" | sed -n "s/^$1=//p"; }
 echo "info  R3: cpu_busy_pct=$(r3v cpu_busy_pct) cpu_idle_ticks=$(r3v cpu_idle_ticks) uptime_ticks=$(r3v uptime_ticks) mem_total_kb=$(r3v mem_total_kb) mem_free_kb=$(r3v mem_free_kb) stack_net_used=$(r3v stack_net_used)"
 check "R3: cpu_busy_pct 0..100, mem_free_kb < mem_total_kb, uptime_s ~ uptime_ticks/100, heap_used <= heap_mapped" \
@@ -354,6 +374,10 @@ sleep 2.5
 T_OUT="$($BMT --key "$ROKEY" uptime pping 2>&1)"; T_RC=$?
 check "D4: bmctl --tcp kunci read-only: uptime jalan, pping ERR peran, rc 1" \
     '[ "$T_RC" -eq 1 ] && echo "$T_OUT" | grep -q "^uptime: " && echo "$T_OUT" | grep -q "^ERR: peran read-only$" && echo "$T_OUT" | grep -q "^bye$"'
+sleep 2.5
+T_OUT="$($BMT --key "$ROKEY" logdisk "logdisk 1" 2>&1)"; T_RC=$?
+check "R4: bmctl --tcp kunci read-only: logdisk + logdisk 1 (semua halaman), rc 0" \
+    '[ "$T_RC" -eq 0 ] && echo "$T_OUT" | grep -q "^logdisk=aktif$" && echo "$T_OUT" | grep -q "^=== boot 1 seq 1 ===$" && ! echo "$T_OUT" | grep -q "^logdisk_lanjut=" && echo "$T_OUT" | grep -q "^bye$"'
 check "kunci salah ditolak" \
     'python3 $ROOT/client/bmctl.py --key $WORK/bad.txt --host 127.0.0.1 --port $PORT --timeout 10 ping | grep -q "^ERR: hmac salah"'
 
@@ -531,6 +555,11 @@ check "D6: mtype dari host = isi yang ditulis kernel; KEY.TXT tidak berubah" \
     'mtype -i "$DISK" ::CATATAN.TXT | cmp -s - "$WORK/catatan.want" && mtype -i "$DISK" ::PANJANG.TXT | cmp -s - "$WORK/panjang.want" && mtype -i "$DISK" ::KEY.TXT | cmp -s - "$KEY"'
 printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\ncli_plain=1\nudp_admin=1\nnetcon=0\nnetcon_host=1\nnetcon_port=6666\n' \
     > "$WORK/config.want"
+mcopy -n -i "$DISK" ::LOG.BIN "$WORK/log1.bin" 2>/dev/null
+python3 "$ROOT/tools/logdump.py" "$WORK/log1.bin" > "$WORK/log1.txt" 2>&1
+echo "info  R4: $(python3 "$ROOT/tools/logdump.py" --status "$WORK/log1.bin" 2>&1)"
+check "R4: logdump.py dari host: ukuran 65536, boot 1, baris terakhir = reboot ACPI" \
+    '[ "$(wc -c < "$WORK/log1.bin")" -eq 65536 ] && head -1 "$WORK/log1.txt" | grep -q "^=== boot 1 seq 1 ===$" && [ "$(tail -1 "$WORK/log1.txt")" = "ACPI-R: reboot via register reset FADT" ] && ! grep -q "^AUDIT" "$WORK/log1.txt"'
 check "D7: mtype CONFIG.CFG kanonik; CONFIG.TMP/HAPUS.TXT/GANTI.TXT tidak ada; GANTI2.TXT ada" \
     'mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1 && ! mtype -i "$DISK" ::HAPUS.TXT >/dev/null 2>&1 && ! mtype -i "$DISK" ::GANTI.TXT >/dev/null 2>&1 && [ "$(mtype -i "$DISK" ::GANTI2.TXT)" = "isi ganti" ]'
 
@@ -633,6 +662,16 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         PANIC_WAIT="$PANIC_WAIT $(($(date +%s) - t0))"
     done
     wait_n "PCI-1: E1000 di" 4
+    # R4: boot 6 di LOG.BIN (1 = boot pertama, 2 = rawnet, QEMU ini 3..6); boot 5
+    # berakhir dengan panic assert, dump terbaca lewat logdisk <seq_boot_lalu>.
+    P_LD=""
+    if wait_n "Entropi: siap" 4 && wait_n "net task dimulai" 4; then
+        sleep 1
+        P_ST="$($BM logdisk 2>&1)"
+        P_SEQ="$(echo "$P_ST" | sed -n "s/^seq_boot_lalu=//p")"
+        sleep 1.2
+        [ -n "$P_SEQ" ] && P_LD="$($BM "logdisk $P_SEQ" 2>&1)"
+    fi
     kill "$PQPID" 2>/dev/null
     wait "$PQPID" 2>/dev/null
     kill "$PNCPID" 2>/dev/null
@@ -672,6 +711,13 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         'echo "$PNC_SET" | grep -q "OK netcon_port=$NCPORT (tersimpan)" && echo "$PNC_SET" | grep -q "OK netcon=1 (tersimpan)"'
     check "R2: dump panic pf/df/assert lewat netconsole (3x), tanpa register umum" \
         'grep -aq "^PANIC: exception #PF page fault (vektor 14) error=0x2" "$PNCLOG" && grep -aq "^PANIC: exception #DF double fault (vektor 8)" "$PNCLOG" && grep -aq "^PANIC: ASSERT gagal: g_panic_test_kind != 3" "$PNCLOG" && [ "$(grep -ac "^PANIC: reboot otomatis dalam 10 detik$" "$PNCLOG")" -eq 3 ] && [ "$(grep -ac "^PANIC: trace #0 " "$PNCLOG")" -eq 2 ] && grep -aq "^PANIC: RIP=" "$PNCLOG" && ! grep -aqE "^PANIC: (RAX|RSI|R9|R13)=" "$PNCLOG"'
+    check "R4: logdisk boot 6: boot 5 berakhir dengan dump panic assert (tanpa register umum)" \
+        'echo "$P_ST" | grep -q "^boot=6$" && echo "$P_LD" | grep -q "^PANIC: ASSERT gagal: g_panic_test_kind != 3" && echo "$P_LD" | grep -q "^PANIC: reboot otomatis dalam 10 detik$" && echo "$P_LD" | grep -q "^ACPI-R: reboot via register reset FADT$" && ! echo "$P_LD" | grep -qE "^PANIC: (RAX|RSI|R9|R13)="'
+    mcopy -n -i "$DISK" ::LOG.BIN "$WORK/log4.bin" 2>/dev/null
+    python3 "$ROOT/tools/logdump.py" "$WORK/log4.bin" > "$WORK/log4.txt" 2>&1
+    echo "info  R4: $(python3 "$ROOT/tools/logdump.py" --status "$WORK/log4.bin" 2>&1)"
+    check "R4: logdump: dump pf/df/assert (3x reboot otomatis) di LOG.BIN, rekaman panic, fsck bersih" \
+        'grep -q "^PANIC: exception #PF page fault (vektor 14) error=0x2" "$WORK/log4.txt" && grep -q "^PANIC: exception #DF double fault (vektor 8)" "$WORK/log4.txt" && [ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$WORK/log4.txt")" -eq 3 ] && grep -q " panic ===$" "$WORK/log4.txt" && fsck.fat -n "$DISK" >/dev/null 2>&1'
     check "R1: tanpa panic bersarang / PIT macet" \
         '! grep -qE "fault di dalam panic handler|PIT tidak berjalan|PANIC-UJI" "$P"'
 fi

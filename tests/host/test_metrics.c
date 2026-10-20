@@ -35,6 +35,7 @@ uint64_t g_chal_noentropy, g_chal_ip_recycled, g_priv_ok, g_priv_denied[6];
 uint64_t g_tls_hs_ok, g_tls_fail, g_tls_full, g_tls_noentropy;
 uint64_t g_nc_lost, g_nc_sent, g_nc_arp, g_nc_tx_fail;
 uint64_t g_fat_wr_ok, g_fat_wr_fail, g_audit_seq;
+uint64_t g_ld_written, g_ld_lost, g_ld_wfail, g_ld_bad;
 
 // Getter: nilai dikendalikan g_fn_val (0 atau besar).
 static uint64_t g_fn_val;
@@ -131,11 +132,12 @@ static int walk(const char *pfx, int seen[], uint32_t *maxlen)
 
 static void test_table(void)
 {
-    CHECK(METRICS_N == 97);
+    CHECK(METRICS_N == 101);
     CHECK_STR(g_metrics[0].name, "uptime_ticks");
     CHECK_STR(g_metrics[77].name, "priv_hmac");     // 78 kunci lama di depan
     CHECK_STR(g_metrics[78].name, "uptime_s");
-    CHECK_STR(g_metrics[METRICS_N - 1].name, "audit_seq");
+    CHECK_STR(g_metrics[96].name, "audit_seq");
+    CHECK_STR(g_metrics[METRICS_N - 1].name, "logdisk_bad");
     int ok_chars = 1, ok_len = 1, ok_uniq = 1, ok_kind = 1;
     for (uint32_t i = 0; i < METRICS_N; i++) {
         const char *n = g_metrics[i].name;
@@ -228,7 +230,8 @@ static void test_prefix(void)
     CHECK_STR(run(" audit_seq"), "audit_seq=0\n");
     CHECK_STR(run(" tcp_ 42"), "tcp_conn_active=0\n");   // mulai = indeks tabel
     CHECK_STR(run(" priv_hmac 77"), "priv_hmac=0\n");
-    CHECK_STR(run(" 96"), "audit_seq=0\n");
+    CHECK_STR(run(" 96 "), "ERR: metrics [awalan] [mulai]\n");
+    CHECK_STR(run(" 97"), "logdisk_written=0\nlogdisk_lost=0\nlogdisk_wfail=0\nlogdisk_bad=0\n");
     CHECK_STR(run(" zzz"), "ERR: metrics: tidak ada kunci yang cocok\n");
     CHECK_STR(run(" tcp_ 43"), "ERR: metrics: tidak ada kunci yang cocok\n");
     // awalan 32 byte boleh, 33 ditolak
@@ -241,7 +244,7 @@ static void test_bad_args(void)
 {
     static const char *const bad[] = {
         " ", "  ", " tcp_  1", "  tcp_", " tcp_ ", " 1 2", " 1 tcp_", " tcp_ udp_",
-        " TCP_", " tcp-", " 97", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
+        " TCP_", " tcp-", " 101", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
         " tcp_\t", " -1",
     };
     set_all(0);

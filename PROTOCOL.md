@@ -256,3 +256,20 @@ register umum dump panic), maks 160 karakter.
 - Jalur UDP: tiap halaman = CHAL + perintah sendiri (ingat batas 20 datagram/s per IP).
 - Kunci CPU: `cpu_idle_ticks` (tick timer saat task idle berjalan), `cpu_busy_pct` (persen tick
   bukan-idle di jendela 100 tick terakhir yang lengkap; build dev ~100 karena task uji).
+
+## Log persisten `logdisk` (R4)
+
+    logdisk          status, satu kunci=nilai per baris
+    logdisk <seq>    teks rekaman mulai seq (lebih kecil dari tertua = mulai dari tertua)
+
+- Status: `logdisk=aktif|baca-saja|nonaktif [alasan]`, lalu (bila aktif/baca-saja) `rekaman`,
+  `boot`, `seq_tertua`, `seq_berikut`, `seq_boot_ini`, `seq_boot_lalu` (seq pertama boot sebelumnya,
+  0 = tidak ada), `antre`, `ditulis`, `dibuang`, `gagal`, `rusak`.
+- Teks: `=== boot B seq S [panic] ===` di awal halaman dan saat boot berganti, lalu baris log apa
+  adanya. Rekaman robek/hilang: `=== seq S rusak/hilang ===`. Halaman <= 1400 byte; sisa -> baris akhir
+  `logdisk_lanjut=<seq>`, kirim `logdisk <seq>` berikutnya (bmctl.py dan `bmlogdisk` mengikutinya).
+- Salah: `ERR: logdisk [seq]`, `ERR: logdisk nonaktif`, `ERR: logdisk kosong`,
+  `ERR: logdisk: seq di luar ring`. Peran read-only boleh (isi sama dengan `log`).
+- Format `LOG.BIN` (sektor 512 byte, little endian): `BMLG`, versi 1, flag (bit 0 = panic),
+  panjang teks u16 (<= 480), boot u32, 0 u32, seq u64, hash 8 byte (awal SHA-256 sektor dengan field
+  hash nol), teks. Pembaca offline: `tools/logdump.py LOG.BIN [--boot N] [--status]`.

@@ -84,7 +84,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
         cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks config tls "
-                 "netcon\n");
+                 "netcon logdisk\n");
         cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti set\n");
         cmd_puts("berprivilege: pping reboot audit (audit gagal)\n");
         cmd_puts("kirim CHAL, lalu <nonce> <perintah> <hmac>\n");
@@ -264,6 +264,9 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "netcon")) {
         netcon_status();   // R2
+    } else if (net_cmd_is(cmd, len, "logdisk") ||
+               (len > 8 && net_cmd_is(cmd, 8, "logdisk "))) {
+        logdisk_execute(cmd + 7, len - 7);   // R4
     } else if (net_cmd_is(cmd, len, "tasks")) {
         for (size_t i = 0; i < task_count; i++) {
             cmd_puts("slot ");

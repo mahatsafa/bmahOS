@@ -52,6 +52,11 @@ Belum pernah diuji di hardware asli.
 - CLI lewat TLS 1.2 port 7780 (D9, BearSSL di `third_party/bearssl`, lihat `3RDPARTY.md`): protokol baris
   7779 yang sama, AES-128-GCM / ChaCha20-Poly1305, sertifikat self-signed di-pin klien; 7779/UDP bisa
   dimatikan/dibatasi lewat `CONFIG.CFG` (`cli_plain`, `udp_admin`)
+- Log persisten (R4): baris log (tanpa AUDIT dan register umum panic) ke `LOG.BIN` 64 KB di disk,
+  ring 128 rekaman 512 byte bertanda boot + seq + hash; termasuk dump panic dan baris terakhir sebelum
+  reboot. Baca dengan `logdisk` / `logdisk <seq>` (juga peran read-only), `bmlogdisk`, atau offline
+  `tools/logdump.py` (setelah `mcopy -i disk.img ::LOG.BIN log.bin`). `LOG.BIN` dibuat di host:
+  `head -c 65536 /dev/zero > LOG.BIN; mcopy -i disk.img LOG.BIN ::LOG.BIN`. Tanpa file ini fitur mati.
 - Diagnosis RX: `metrics` menampilkan `rx_missed` (register MPC), `rx_nobuf` (RNBC), dan
   `rx_overrun_irq` (interrupt RXO) untuk membedakan paket hilang di ring RX bmahOS dari yang hilang di luar
 
@@ -221,6 +226,8 @@ TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 
 
 ## Batasan yang diketahui
 
+- Log persisten (R4): teks polos di disk, tanpa cap waktu nyata (hanya tick), maks ~60 KB; baris saat
+  antrean 4 KB penuh dibuang (dihitung); dump panic hanya bila disk tidak sedang dipakai saat panic
 - Autentikasi hanya menjamin keaslian perintah, bukan kerahasiaan balasan (teks polos)
 - Build `LEGACYCTR=1`: counter anti-replay jalur lama disimpan di RAM, jadi setelah reboot datagram
   baca lama bisa diputar ulang sekali (build default tidak terpengaruh, semua lewat nonce)

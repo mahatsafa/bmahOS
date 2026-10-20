@@ -57,6 +57,14 @@ WEAK void netcon_panic_flush(void)
     g_netcon_flushes++;
 }
 
+WEAK int g_logdisk_syncs = 0;
+
+WEAK void logdisk_sync(int panic)
+{
+    (void)panic;
+    g_logdisk_syncs++;
+}
+
 // R1: kassert_fail (kprintf.c) memanggil panic.c.
 WEAK void panic_begin(void)
 {
