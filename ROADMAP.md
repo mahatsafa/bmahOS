@@ -202,8 +202,10 @@ Linux, dan klien Python.
 - [x] **R5** Watchdog: perangkat lunak dulu. "Tepukan" dari task sehat, **bukan** dari interrupt timer.
   Watchdog perangkat keras menyusul setelah target perangkat keras diketahui.
   Selesai 2026-10-20 (987b41f): net task menepuk, IRQ timer memeriksa, batas 10 s -> panic R1 + reboot; VMware lulus.
-- [ ] **R6** Validasi pointer di syscall, guard page di stack, kebijakan saat memori habis, penghitung
+- [x] **R6** Validasi pointer di syscall, guard page di stack, kebijakan saat memori habis, penghitung
   alokasi vs pelepasan di metrik.
+  Selesai 2026-10-20 (02aeb24, 60646b7, 003aae9): SYS_WRITE maks 1024, fault user hanya menghentikan task,
+  guard page stack kernel/user, oom_panic, KHEAP_MAX, counter pmm_*/kmalloc*; VMware lulus.
 - [ ] **R7** Fuzzing parser paket di host (AFL++ atau libFuzzer) dan perbaiki temuan.
 - [ ] **R8** Soak test 24 jam di VM: banjir paket, koneksi berulang, tanpa kebocoran memori. Laporan di `docs/`.
 
