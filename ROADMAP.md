@@ -199,8 +199,9 @@ Linux, dan klien Python.
   `metrics_lanjut=<i>`), `cpu_busy_pct`/`cpu_idle_ticks`, sesi CLI/TLS, netcon, FAT32 tulis; `bmctl.py metrics`
   dan `bmmetrics` mengikuti halaman. make test 183 -> 191, PROD 171 -> 180.
 - [x] **R4** Log persisten berbentuk ring buffer di penyimpanan. (1330e79, 1989ed6; VMware lulus)
-- [ ] **R5** Watchdog: perangkat lunak dulu. "Tepukan" dari task sehat, **bukan** dari interrupt timer.
+- [x] **R5** Watchdog: perangkat lunak dulu. "Tepukan" dari task sehat, **bukan** dari interrupt timer.
   Watchdog perangkat keras menyusul setelah target perangkat keras diketahui.
+  Selesai 2026-10-20 (987b41f): net task menepuk, IRQ timer memeriksa, batas 10 s -> panic R1 + reboot; VMware lulus.
 - [ ] **R6** Validasi pointer di syscall, guard page di stack, kebijakan saat memori habis, penghitung
   alokasi vs pelepasan di metrik.
 - [ ] **R7** Fuzzing parser paket di host (AFL++ atau libFuzzer) dan perbaiki temuan.
