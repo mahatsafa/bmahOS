@@ -126,6 +126,11 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    terlihat oleh siapa pun di LAN. MAC tujuan dipelajari dari ARP tanpa autentikasi: penyerang di LAN bisa
    membelokkan log ke dirinya (yang toh bisa ia sadap) atau membuatnya hilang. Netconsole bukan saluran
    tepercaya untuk audit.
+13. Watchdog (R5) perangkat lunak: net task yang macet > 10 s (loop, deadlock, I/O tak selesai) memicu
+   panic + reboot, jadi penyerang yang bisa membuat net task macet mendapat reboot (bukan macet permanen).
+   Macet dengan interrupt mati tidak terdeteksi (tick ikut berhenti) sampai watchdog perangkat keras (H6).
+   Pekerjaan sah yang menahan net task > 10 s (mis. handshake TLS di CPU sangat lambat) juga me-reboot;
+   jeda terpanjang terlihat di `wd_gap_max`.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

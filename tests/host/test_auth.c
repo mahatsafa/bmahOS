@@ -136,6 +136,13 @@ int panic_test_execute(const volatile uint8_t *cmd, uint32_t len)   // R1
     return 0;
 }
 
+int wd_test_execute(const volatile uint8_t *cmd, uint32_t len)   // R5
+{
+    (void)cmd;
+    (void)len;
+    return 0;
+}
+
 int config_execute(const volatile uint8_t *cmd, uint32_t len)
 {
     if ((len == 6 && memcmp((const void *)cmd, "config", 6) == 0) ||

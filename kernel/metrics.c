@@ -125,6 +125,11 @@ static uint64_t met_stack_net_used(void)
     return net_stack_used();
 }
 
+static uint64_t met_wd_timeout(void)
+{
+    return watchdog_timeout_ticks();
+}
+
 static uint64_t met_cli_sess_active(void)
 {
     return (uint64_t)net_tcp_cli_active();
@@ -239,6 +244,10 @@ static const metric_t g_metrics[] = {
     M64("logdisk_lost", g_ld_lost),
     M64("logdisk_wfail", g_ld_wfail),
     M64("logdisk_bad", g_ld_bad),
+    // R5
+    MFN("wd_timeout_ticks", met_wd_timeout),
+    M64("wd_gap_max", g_wd_gap_max),
+    M64("wd_pets", g_wd_pets),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

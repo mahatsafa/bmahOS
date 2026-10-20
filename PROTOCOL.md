@@ -257,6 +257,16 @@ register umum dump panic), maks 160 karakter.
 - Kunci CPU: `cpu_idle_ticks` (tick timer saat task idle berjalan), `cpu_busy_pct` (persen tick
   bukan-idle di jendela 100 tick terakhir yang lengkap; build dev ~100 karena task uji).
 
+## Watchdog `wd` (R5)
+
+    wd    watchdog: aktif|belum aktif batas=1000 tick jeda_sekarang=N jeda_maks=N tepukan=N slot=N
+
+- `jeda_maks` = jeda terpanjang antar tepukan net task sejak boot (tick). Peran read-only boleh.
+- Metrics: `wd_timeout_ticks`, `wd_gap_max`, `wd_pets`.
+- Build dev saja (admin): `wdtest loop|blok` -> `wdtest: net task macet (loop|blok) dalam 1 detik`,
+  lalu `PANIC: watchdog: net task tanpa tepukan N tick (batas 1000) status=.. berjalan=ya|tidak`
+  dan reboot otomatis.
+
 ## Log persisten `logdisk` (R4)
 
     logdisk          status, satu kunci=nilai per baris

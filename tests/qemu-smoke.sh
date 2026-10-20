@@ -215,6 +215,8 @@ else
     # akan menaruh "cmd panic pf" di baris AUDIT dan memicu grep "panic").
     check "R1: PROD: tanpa kode uji panic (simbol + string)" \
         '! nm "$ROOT/build/kernel.elf" | grep -q panic_test_ && ! strings "$ROOT/build/kernel.elf" | grep -q "panic: uji"'
+    check "R5: PROD: tanpa kode uji watchdog (simbol + string)" \
+        '! nm "$ROOT/build/kernel.elf" | grep -q wd_test_ && ! strings "$ROOT/build/kernel.elf" | grep -q "wdtest"'
 fi
 
 check "ping -> pong"             '[ "$($BM ping)" = "pong" ]'
@@ -231,14 +233,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=101   # R4: + 4 kunci logdisk_*
+R3_N=104   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir logdisk_bad" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^logdisk_bad="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir wd_pets" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^wd_pets="'
 
 # R4: log persisten (LOG.BIN). Boot pertama = boot 1; setelah > 5 s ada rekaman.
 check "R4: serial: logdisk aktif rekaman=128 boot=1 seq=1 rusak=0" \
@@ -375,7 +377,9 @@ T_OUT="$($BMT --key "$ROKEY" uptime pping 2>&1)"; T_RC=$?
 check "D4: bmctl --tcp kunci read-only: uptime jalan, pping ERR peran, rc 1" \
     '[ "$T_RC" -eq 1 ] && echo "$T_OUT" | grep -q "^uptime: " && echo "$T_OUT" | grep -q "^ERR: peran read-only$" && echo "$T_OUT" | grep -q "^bye$"'
 sleep 2.5
-T_OUT="$($BMT --key "$ROKEY" logdisk "logdisk 1" 2>&1)"; T_RC=$?
+T_OUT="$($BMT --key "$ROKEY" logdisk "logdisk 1" wd 2>&1)"; T_RC=$?
+check "R5: bmctl --tcp kunci read-only: wd -> watchdog aktif" \
+    'echo "$T_OUT" | grep -q "^watchdog: aktif batas=1000 tick jeda_sekarang=[0-9]* jeda_maks=[0-9]* tepukan=[1-9][0-9]* slot=[0-9]*$"'
 check "R4: bmctl --tcp kunci read-only: logdisk + logdisk 1 (semua halaman), rc 0" \
     '[ "$T_RC" -eq 0 ] && echo "$T_OUT" | grep -q "^logdisk=aktif$" && echo "$T_OUT" | grep -q "^=== boot 1 seq 1 ===$" && ! echo "$T_OUT" | grep -q "^logdisk_lanjut=" && echo "$T_OUT" | grep -q "^bye$"'
 check "kunci salah ditolak" \
@@ -526,6 +530,17 @@ else
         '[ "${REPLAY%%|*}" = "pong" ] && [ "${REPLAY#*|}" = "ERR: counter replay" ]'
 fi
 
+# R5: watchdog perangkat lunak: net task menepuk, IRQ timer hanya memeriksa.
+# Di titik ini boot pertama sudah melewati TLS, tulis FAT32, dan echo 1 MB.
+sleep 1.2
+WD_ST="$($BM wd 2>&1)"
+WD_GAP="$(echo "$WD_ST" | sed -n "s/^watchdog: aktif batas=1000 tick .* jeda_maks=\([0-9]*\) .*$/\1/p")"
+echo "info  R5: $WD_ST"
+check "R5: serial: watchdog aktif batas=1000 tick (net task)" \
+    'grep -aq "^R5: watchdog aktif batas=1000 tick (net task slot [0-9]*)" "$LOG"'
+check "R5: wd: aktif, jeda_maks < 1000 (TLS/FAT/echo 1 MB), tanpa panic watchdog" \
+    '[ -n "$WD_GAP" ] && [ "$WD_GAP" -lt 1000 ] && ! grep -aq "PANIC: watchdog" "$LOG"'
+
 sleep 1.2   # jendela batas laju baru (lihat di atas)
 check "pping -> ppong"           '[ "$($BM pping)" = "ppong" ]'
 check "reboot diterima"          '[ "$($BM reboot)" = "reboot: dimulai" ]'
@@ -672,17 +687,46 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         sleep 1.2
         [ -n "$P_SEQ" ] && P_LD="$($BM "logdisk $P_SEQ" 2>&1)"
     fi
+    # R5: watchdog. Batas bagian R1 di log/netconsole dicatat dulu. Boot ke-4
+    # QEMU ini: wdtest loop -> panic watchdog -> reboot; boot ke-5: wdtest blok
+    # -> reboot; boot ke-6 harus normal.
+    P_N1="$(wc -l < "$PLOG")"
+    P_NC1="$(wc -c < "$PNCLOG")"
+    WD_REPLY=""
+    WD_WAIT=""
+    n=3
+    for kind in loop blok; do
+        n=$((n + 1))
+        wait_n "R5: watchdog aktif" "$n" || break
+        sleep 1.2
+        WD_REPLY="$WD_REPLY$($BM "wdtest $kind" 2>&1)
+"
+        t0=$(date +%s)
+        wait_n "PANIC: watchdog: " "$((n - 3))" || break
+        WD_WAIT="$WD_WAIT $(($(date +%s) - t0))"
+        wait_n "ACPI-R: reboot via register reset FADT" "$n" || break
+    done
+    wait_n "R5: watchdog aktif" 6
     kill "$PQPID" 2>/dev/null
     wait "$PQPID" 2>/dev/null
     kill "$PNCPID" 2>/dev/null
     wait "$PNCPID" 2>/dev/null
     echo "info  R2: netconsole panic $(wc -c < "$PNCLOG") byte, set: $PNC_SET"
-    tr -d '\r' < "$PLOG" > "$WORK/serial-panic.txt"
-    "$ROOT/tools/symbolize.sh" "$PLOG" > "$WORK/panic-sym.txt" 2>&1 || true
+    tr -d '\r' < "$PLOG" > "$WORK/serial-panic-all.txt"
+    head -n "$P_N1" "$WORK/serial-panic-all.txt" > "$WORK/serial-panic.txt"
+    tail -n +"$((P_N1 + 1))" "$WORK/serial-panic-all.txt" > "$WORK/serial-wd.txt"
+    head -c "$P_NC1" "$PNCLOG" > "$WORK/netcon-panic-r1.bin"
+    tail -c +"$((P_NC1 + 1))" "$PNCLOG" > "$WORK/netcon-wd.bin"
+    "$ROOT/tools/symbolize.sh" "$WORK/serial-panic.txt" > "$WORK/panic-sym.txt" 2>&1 || true
+    "$ROOT/tools/symbolize.sh" "$WORK/serial-wd.txt" > "$WORK/wd-sym.txt" 2>&1 || true
     echo "balasan:"; echo "$PANIC_REPLY"
     echo "jeda panic -> reboot (s):$PANIC_WAIT"
     grep -a "^PANIC" "$WORK/serial-panic.txt" | head -20
     cat "$WORK/panic-sym.txt"
+    echo "balasan wdtest:"; echo "$WD_REPLY"
+    echo "jeda wdtest -> panic watchdog (s):$WD_WAIT"
+    grep -a "^PANIC: \(watchdog\|tepukan\|trace\)" "$WORK/serial-wd.txt"
+    cat "$WORK/wd-sym.txt"
     P="$WORK/serial-panic.txt"
     check "R1: balasan perintah panic (pf, df, assert)" \
         '[ "$(echo "$PANIC_REPLY" | grep -c "^panic: uji \(pf\|df\|assert\) dalam 1 detik$")" -eq 3 ]'
@@ -709,17 +753,38 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "R1: reboot setelah ~10 s (3x 9..13 s)" 'panic_wait_ok $PANIC_WAIT'
     check "R2: set netcon 1 lewat UDP sebelum panic" \
         'echo "$PNC_SET" | grep -q "OK netcon_port=$NCPORT (tersimpan)" && echo "$PNC_SET" | grep -q "OK netcon=1 (tersimpan)"'
+    PNC1="$WORK/netcon-panic-r1.bin"
     check "R2: dump panic pf/df/assert lewat netconsole (3x), tanpa register umum" \
-        'grep -aq "^PANIC: exception #PF page fault (vektor 14) error=0x2" "$PNCLOG" && grep -aq "^PANIC: exception #DF double fault (vektor 8)" "$PNCLOG" && grep -aq "^PANIC: ASSERT gagal: g_panic_test_kind != 3" "$PNCLOG" && [ "$(grep -ac "^PANIC: reboot otomatis dalam 10 detik$" "$PNCLOG")" -eq 3 ] && [ "$(grep -ac "^PANIC: trace #0 " "$PNCLOG")" -eq 2 ] && grep -aq "^PANIC: RIP=" "$PNCLOG" && ! grep -aqE "^PANIC: (RAX|RSI|R9|R13)=" "$PNCLOG"'
+        'grep -aq "^PANIC: exception #PF page fault (vektor 14) error=0x2" "$PNC1" && grep -aq "^PANIC: exception #DF double fault (vektor 8)" "$PNC1" && grep -aq "^PANIC: ASSERT gagal: g_panic_test_kind != 3" "$PNC1" && [ "$(grep -ac "^PANIC: reboot otomatis dalam 10 detik$" "$PNC1")" -eq 3 ] && [ "$(grep -ac "^PANIC: trace #0 " "$PNC1")" -eq 2 ] && grep -aq "^PANIC: RIP=" "$PNC1" && ! grep -aqE "^PANIC: (RAX|RSI|R9|R13)=" "$PNCLOG"'
     check "R4: logdisk boot 6: boot 5 berakhir dengan dump panic assert (tanpa register umum)" \
         'echo "$P_ST" | grep -q "^boot=6$" && echo "$P_LD" | grep -q "^PANIC: ASSERT gagal: g_panic_test_kind != 3" && echo "$P_LD" | grep -q "^PANIC: reboot otomatis dalam 10 detik$" && echo "$P_LD" | grep -q "^ACPI-R: reboot via register reset FADT$" && ! echo "$P_LD" | grep -qE "^PANIC: (RAX|RSI|R9|R13)="'
     mcopy -n -i "$DISK" ::LOG.BIN "$WORK/log4.bin" 2>/dev/null
     python3 "$ROOT/tools/logdump.py" "$WORK/log4.bin" > "$WORK/log4.txt" 2>&1
     echo "info  R4: $(python3 "$ROOT/tools/logdump.py" --status "$WORK/log4.bin" 2>&1)"
     check "R4: logdump: dump pf/df/assert (3x reboot otomatis) di LOG.BIN, rekaman panic, fsck bersih" \
-        'grep -q "^PANIC: exception #PF page fault (vektor 14) error=0x2" "$WORK/log4.txt" && grep -q "^PANIC: exception #DF double fault (vektor 8)" "$WORK/log4.txt" && [ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$WORK/log4.txt")" -eq 3 ] && grep -q " panic ===$" "$WORK/log4.txt" && fsck.fat -n "$DISK" >/dev/null 2>&1'
+        'grep -q "^PANIC: exception #PF page fault (vektor 14) error=0x2" "$WORK/log4.txt" && grep -q "^PANIC: exception #DF double fault (vektor 8)" "$WORK/log4.txt" && [ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$WORK/log4.txt")" -eq 5 ] && grep -q " panic ===$" "$WORK/log4.txt" && fsck.fat -n "$DISK" >/dev/null 2>&1'
+    W="$WORK/serial-wd.txt"
+    check "R5: balasan wdtest (loop, blok)" \
+        '[ "$(echo "$WD_REPLY" | grep -c "^wdtest: net task macet (\(loop\|blok\)) dalam 1 detik$")" -eq 2 ]'
+    check "R5: loop: tanpa tepukan 1001 tick, status READY" \
+        'grep -q "^PANIC: watchdog: net task tanpa tepukan 1001 tick (batas 1000) status=READY berjalan=\(ya\|tidak\)$" "$W"'
+    check "R5: blok: tanpa tepukan 1001 tick, BLOCKED, tidak berjalan" \
+        'grep -q "^PANIC: watchdog: net task tanpa tepukan 1001 tick (batas 1000) status=BLOCKED berjalan=tidak$" "$W"'
+    check "R5: symbolize: wd_test_spin/wd_test_block + sem_wait, wd_test_fire -> ktimer_run 2x" \
+        'grep -q " wd_test_spin " "$WORK/wd-sym.txt" && grep -q " wd_test_block " "$WORK/wd-sym.txt" && grep -q " sem_wait " "$WORK/wd-sym.txt" && [ "$(grep -c " wd_test_fire " "$WORK/wd-sym.txt")" -eq 2 ] && [ "$(grep -c " ktimer_run " "$WORK/wd-sym.txt")" -eq 2 ]'
+    wd_wait_ok() {
+        [ "$#" -eq 2 ] || return 1
+        for w in "$@"; do
+            [ "$w" -ge 9 ] && [ "$w" -le 15 ] || return 1
+        done
+    }
+    check "R5: panic watchdog ~11 s setelah perintah (2x 9..15 s)" 'wd_wait_ok $WD_WAIT'
+    check "R5: 2x reboot otomatis lewat jalur panic, boot sesudahnya normal (6 boot)" \
+        '[ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$W")" -eq 2 ] && [ "$(grep -c "^ACPI-R: reboot via register reset FADT$" "$W")" -eq 2 ] && [ "$(grep -c "PCI-1: E1000 di" "$WORK/serial-panic-all.txt")" -eq 6 ] && [ "$(grep -ac "^R5: watchdog aktif" "$WORK/serial-panic-all.txt")" -eq 6 ]'
+    check "R5: dump watchdog lewat netconsole (2x) dan di LOG.BIN (2x)" \
+        '[ "$(grep -ac "^PANIC: watchdog: net task tanpa tepukan" "$WORK/netcon-wd.bin")" -eq 2 ] && [ "$(grep -c "^PANIC: watchdog: net task tanpa tepukan" "$WORK/log4.txt")" -eq 2 ]'
     check "R1: tanpa panic bersarang / PIT macet" \
-        '! grep -qE "fault di dalam panic handler|PIT tidak berjalan|PANIC-UJI" "$P"'
+        '! grep -qE "fault di dalam panic handler|PIT tidak berjalan|PANIC-UJI|WD-UJI" "$WORK/serial-panic-all.txt"'
 fi
 
 echo

@@ -57,6 +57,9 @@ Belum pernah diuji di hardware asli.
   reboot. Baca dengan `logdisk` / `logdisk <seq>` (juga peran read-only), `bmlogdisk`, atau offline
   `tools/logdump.py` (setelah `mcopy -i disk.img ::LOG.BIN log.bin`). `LOG.BIN` dibuat di host:
   `head -c 65536 /dev/zero > LOG.BIN; mcopy -i disk.img LOG.BIN ::LOG.BIN`. Tanpa file ini fitur mati.
+- Watchdog perangkat lunak (R5): net task menepuk tiap putaran loop, handler timer hanya memeriksa;
+  10 s tanpa tepukan -> dump `PANIC: watchdog: ...` (status task, trace task yang macet) lewat jalur panic
+  R1 (serial, netconsole, LOG.BIN) lalu reboot otomatis. Perintah `wd`, metrics `wd_*`.
 - Diagnosis RX: `metrics` menampilkan `rx_missed` (register MPC), `rx_nobuf` (RNBC), dan
   `rx_overrun_irq` (interrupt RXO) untuk membedakan paket hilang di ring RX bmahOS dari yang hilang di luar
 
@@ -84,7 +87,9 @@ Flag uji (bisa digabung):
     ASSERTTEST=1        # sengaja ASSERT gagal di kmain; harus panic "PANIC: ASSERT gagal: ... di file:baris"
 
 Build dev (tanpa `PROD=1`) punya perintah admin `panic pf|df|ud|assert` untuk menguji panic handler
-(fault 1 detik setelah balasan, lalu reboot otomatis). Build PROD tidak memilikinya.
+(fault 1 detik setelah balasan, lalu reboot otomatis) dan `wdtest loop|blok` untuk menguji watchdog
+(net task berputar / menunggu semaphore yang tak pernah di-post, panic watchdog ~11 s kemudian).
+Build PROD tidak memilikinya.
 
 Hasil: `build/bmahOS.iso`.
 
@@ -228,6 +233,8 @@ TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 
 
 - Log persisten (R4): teks polos di disk, tanpa cap waktu nyata (hanya tick), maks ~60 KB; baris saat
   antrean 4 KB penuh dibuang (dihitung); dump panic hanya bila disk tidak sedang dipakai saat panic
+- Watchdog (R5) hanya perangkat lunak dan hanya mengawasi net task: macet dengan interrupt mati (`cli`)
+  menghentikan tick sehingga tidak terdeteksi (butuh watchdog perangkat keras, H6); batas tetap 10 s
 - Autentikasi hanya menjamin keaslian perintah, bukan kerahasiaan balasan (teks polos)
 - Build `LEGACYCTR=1`: counter anti-replay jalur lama disimpan di RAM, jadi setelah reboot datagram
   baca lama bisa diputar ulang sekali (build default tidak terpengaruh, semua lewat nonce)

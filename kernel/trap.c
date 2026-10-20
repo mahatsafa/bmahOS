@@ -159,6 +159,7 @@ void irq_handler(struct exception_context *context)
         metrics_cpu_tick(current_index == g_idle_index);   // R3
         entropy_event(ENTROPY_SRC_TIMER, 0);
         net_rx_tick_wake();
+        watchdog_check(context);   // R5: hanya memeriksa; tepukan dari net task
     }
 
     if (irq_num == 1) {

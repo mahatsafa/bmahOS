@@ -434,6 +434,7 @@ static void net_task_entry(void)
         }
 
         g_net_loops++;
+        watchdog_pet();   // R5: satu tepukan per putaran (bukan dari interrupt)
 
         while (net_poll() > 0) {
         }

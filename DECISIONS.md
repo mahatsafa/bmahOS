@@ -297,3 +297,16 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Panic/reboot**: `logdisk_sync` menulis antrean langsung (maks 8 rekaman), dilewati bila AHCI sedang
   dipakai (`g_ahci_busy`) atau bersarang. Menutup "dump persisten" yang ditunda di R1.
 - **Tulis gagal** -> logdisk nonaktif + volume baca saja (gagal tertutup, sama dengan tulis file D6).
+
+## 2026-10-20 (R5 watchdog perangkat lunak; rencana disetujui pengguna)
+- **Yang ditepuk: hanya net task**, sekali per putaran loop utama (putaran normal tiap tick lewat tick-wake).
+  Task idle tidak ditepuk: scheduler hanya menjalankannya bila tidak ada task READY lain, jadi saat banjir
+  paket idle bisa lama tidak jalan (alarm palsu). Task uji build dev tidak diawasi.
+- **Pemeriksa di IRQ timer**, hanya membaca `timer_ticks - g_wd_last`; tepukan tidak pernah dari interrupt.
+  Aktif sejak tepukan pertama (waktu boot tidak dihitung; tanpa NIC tidak pernah aktif).
+- **Batas tetap 1000 tick (10 s)**, tanpa kunci `CONFIG.CFG`; margin diukur lewat `wd_gap_max`.
+- **Saat macet**: jalur panic R1 (`panic_begin` -> netconsole + LOG.BIN, baris `PANIC: watchdog:` + status
+  task, `panic_finish` -> trace + reboot 10 s). Trace dari frame interrupt bila net task sedang berjalan,
+  selain itu dari konteks yang disimpan `context_switch` (rsp[8] = rbp, rsp[15] = alamat kembali).
+- **Tidak dicakup**: macet dengan interrupt mati (NMI lewat IOAPIC terlalu besar untuk R5) -> H6.
+- Tanpa refactor terpisah: `panic_finish(rip, rbp)` dari R1 sudah cukup, jadi R5 satu commit.

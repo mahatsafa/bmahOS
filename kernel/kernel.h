@@ -833,4 +833,18 @@ __attribute__((noreturn)) void panic_finish(uint64_t rip, uint64_t rbp);
 __attribute__((noreturn)) void panic_exception(struct exception_context *c);
 int panic_test_execute(const volatile uint8_t *cmd, uint32_t len);   // build dev saja
 
+// ---- watchdog.c (R5: watchdog perangkat lunak) ----
+#define WD_TIMEOUT_TICKS 1000   // 10 s tanpa tepukan net task -> panic + reboot
+extern volatile uint64_t g_wd_last;
+extern volatile int g_wd_armed;
+extern size_t g_wd_task;
+extern uint64_t g_wd_pets, g_wd_gap_max;
+uint64_t wd_overdue(uint64_t now, uint64_t last);
+void wd_saved_frame(uint64_t rsp, uint64_t *rip, uint64_t *rbp);
+void watchdog_pet(void);                          // net task, tiap putaran loop
+void watchdog_check(struct exception_context *c); // irq_handler (timer), hanya memeriksa
+void watchdog_status(void);                       // perintah `wd`
+uint64_t watchdog_timeout_ticks(void);
+int wd_test_execute(const volatile uint8_t *cmd, uint32_t len);   // build dev saja
+
 #endif

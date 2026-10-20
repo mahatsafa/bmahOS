@@ -415,6 +415,8 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
 #ifndef BMAHOS_PROD
     } else if (panic_test_execute(cmd, len)) {
         // R1: panic pf|df|ud|assert (admin; tidak di g_ro_cmds; build dev saja)
+    } else if (wd_test_execute(cmd, len)) {
+        // R5: wdtest loop|blok (admin; build dev saja)
 #endif
     } else if (config_execute(cmd, len)) {
         // D7: config (juga read-only) / set (admin)
@@ -682,7 +684,7 @@ int auth_tcp_cmd(const uint8_t nonce[16], int role, uint64_t seq,
 // g_ro_cmds (perintah baru otomatis ditolak); lainnya "ERR: peran read-only".
 static const char *const g_ro_cmds[] = {
     "help", "ping", "uptime", "mem", "log", "irq", "stats", "metrics", "mac",
-    "ip", "tasks", "config", "tls", "netcon", "logdisk",
+    "ip", "tasks", "config", "tls", "netcon", "logdisk", "wd",
 };
 
 // D5: juga dipakai net.c untuk menentukan jenis entri audit sebelum exec.
