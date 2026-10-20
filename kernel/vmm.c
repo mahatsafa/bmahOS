@@ -286,6 +286,58 @@ uint64_t kheap_current = 0;
 uint64_t kheap_mapped_end = 0;
 static uint64_t kheap_pml4_phys = 0;
 
+// ---- R6-2: stack kernel dengan guard page ----
+// [guard 4 KB, tidak dipetakan][stack size, P|W|NX] berurutan dari
+// KSTACK_START. Stack meluap -> #PF di guard -> pengiriman #PF butuh push ke
+// stack yang sama -> #DF lewat IST1 (R1) -> panic menyebut task-nya.
+static uint64_t g_kstack_next = KSTACK_START;
+static uint64_t g_kstack_lo[KSTACK_MAX_STACKS];    // alamat halaman guard
+static uint64_t g_kstack_top[KSTACK_MAX_STACKS];
+static int g_kstack_n;
+
+uint64_t kstack_alloc(uint64_t size)
+{
+    uint64_t pages = (size + PMM_PAGE_SIZE - 1) / PMM_PAGE_SIZE;
+    uint64_t need = (pages + 1) * PMM_PAGE_SIZE;
+
+    if (pages == 0 || g_kstack_n >= KSTACK_MAX_STACKS ||
+        need > KSTACK_START + KSTACK_REGION - g_kstack_next) {
+        serial_write("kstack_alloc: region/tabel stack penuh\r\n");
+        return 0;
+    }
+
+    uint64_t base = g_kstack_next + PMM_PAGE_SIZE;
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t frame = pmm_alloc();
+        if (frame == 0) {
+            serial_write("kstack_alloc: pmm_alloc() gagal\r\n");
+            return 0;   // frame yang sudah dipetakan tertinggal (boot saja)
+        }
+        vmm_map(kheap_pml4_phys, base + i * PMM_PAGE_SIZE, frame,
+                VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NX);
+    }
+
+    g_kstack_lo[g_kstack_n] = g_kstack_next;
+    g_kstack_top[g_kstack_n] = base + pages * PMM_PAGE_SIZE;
+    g_kstack_n++;
+    g_kstack_next += need;
+    return base;
+}
+
+// 1 bila addr jatuh di halaman guard salah satu stack (lo = guard, top =
+// puncak stack itu = rsp0 task pemiliknya).
+int kstack_guard_find(uint64_t addr, uint64_t *lo, uint64_t *top)
+{
+    for (int i = 0; i < g_kstack_n; i++) {
+        if (addr >= g_kstack_lo[i] && addr < g_kstack_lo[i] + PMM_PAGE_SIZE) {
+            *lo = g_kstack_lo[i];
+            *top = g_kstack_top[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void kheap_init(uint64_t pml4_phys)
 {
     kheap_pml4_phys = pml4_phys;

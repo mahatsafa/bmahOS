@@ -20,8 +20,11 @@
 // seolah baru masuk ke entry_function.
 void task_create(task_t *task, void (*entry_function)(void), uint64_t stack_size)
 {
-    uint64_t stack_base = (uint64_t)kmalloc(stack_size);
-    uint64_t stack_top = stack_base + stack_size;
+    uint64_t stack_base = kstack_alloc(stack_size);   // R6-2: dengan guard page
+    ASSERT(stack_base != 0);
+    // R6-2: frame pertama task (rbp=0) dibaca panic_walk sampai rbp+8; sisakan
+    // KSTACK_PAD byte nol supaya bacaan itu tidak jatuh ke guard stack berikutnya.
+    uint64_t stack_top = stack_base + stack_size - KSTACK_PAD;
 
     // Stack tumbuh ke bawah, jadi kita mulai dari alamat tinggi.
     uint64_t *sp = (uint64_t *)stack_top;
@@ -168,8 +171,9 @@ void task_create_user(
     }
 
     // --- Kernel stack task ini (dipakai context_switch() & RSP0) ---
-    uint64_t kstack_base = (uint64_t)kmalloc(kernel_stack_size);
-    uint64_t kstack_top = kstack_base + kernel_stack_size;
+    uint64_t kstack_base = kstack_alloc(kernel_stack_size);   // R6-2
+    ASSERT(kstack_base != 0);
+    uint64_t kstack_top = kstack_base + kernel_stack_size - KSTACK_PAD;
 
     uint64_t *sp = (uint64_t *)kstack_top;
 
@@ -324,8 +328,9 @@ task_t *spawn(const uint8_t *image, size_t image_len)
     // --- Kernel stack task ini (dipakai context_switch() & RSP0) ---
     // Ukuran sama seperti seluruh call site task_create_user() yang
     // ada sekarang (4096) -- bukan angka baru.
-    uint64_t kstack_base = (uint64_t)kmalloc(4096);
-    uint64_t kstack_top = kstack_base + 4096;
+    uint64_t kstack_base = kstack_alloc(4096);   // R6-2
+    ASSERT(kstack_base != 0);
+    uint64_t kstack_top = kstack_base + 4096 - KSTACK_PAD;
 
     uint64_t *sp = (uint64_t *)kstack_top;
 

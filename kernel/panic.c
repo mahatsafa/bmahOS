@@ -216,6 +216,20 @@ void panic_exception(struct exception_context *c)
             (void *)(uintptr_t)c->rsp, c->ss, on_ist ? "IST1" : "biasa");
     kprintf("PANIC: CR0=0x%lx CR2=%p CR3=0x%lx CR4=0x%lx\r\n",
             cr0, (void *)(uintptr_t)cr2, cr3, cr4);
+    // R6-2: #PF/#DF di halaman guard = stack kernel meluap. Pemilik dicari
+    // lewat rsp0 (puncak stack) di tabel task.
+    uint64_t g_lo, g_top;
+    if ((c->vector == 14 || c->vector == 8) && kstack_guard_find(cr2, &g_lo, &g_top)) {
+        long slot = -1;
+        for (size_t i = 0; i < task_count; i++) {
+            if (tasks[i].rsp0 > g_lo && tasks[i].rsp0 <= g_top) {
+                slot = (long)i;
+            }
+        }
+        kprintf("PANIC: stack guard dilanggar: task slot %d (guard %p, stack %p..%p)\r\n",
+                (int)slot, (void *)(uintptr_t)g_lo, (void *)(uintptr_t)(g_lo + 4096),
+                (void *)(uintptr_t)g_top);
+    }
     g_netcon_hold = 1;   // R2: register umum (bisa berisi sisa rahasia) hanya ke serial
     kprintf("PANIC: RAX=%p RBX=%p RCX=%p RDX=%p\r\n",
             (void *)c->rax, (void *)c->rbx, (void *)c->rcx, (void *)c->rdx);
@@ -257,6 +271,18 @@ static void panic_test_ud(void)
     __asm__ volatile("ud2");
 }
 
+// R6-2: rekursi sampai menabrak halaman guard stack net task.
+static void panic_test_stack(uint64_t depth)
+{
+    volatile uint8_t pad[256];
+
+    pad[0] = (uint8_t)depth;
+    if (depth < 1000000) {
+        panic_test_stack(depth + 1);
+    }
+    pad[1] = pad[0];
+}
+
 static void panic_test_assert(void)
 {
     ASSERT(g_panic_test_kind != 3);
@@ -269,6 +295,7 @@ static void panic_test_fire(void *arg)
     case 0: panic_test_pf(); break;
     case 1: panic_test_df(); break;
     case 2: panic_test_ud(); break;
+    case 4: panic_test_stack(0); break;
     default: panic_test_assert(); break;
     }
     kprintf("PANIC-UJI: fault tidak terjadi (jenis %d)\r\n", g_panic_test_kind);
@@ -277,10 +304,11 @@ static void panic_test_fire(void *arg)
 
 int panic_test_execute(const volatile uint8_t *cmd, uint32_t len)
 {
-    static const char *const kinds[4] = { "pf", "df", "ud", "assert" };
-    static const char *const cmds[4] = { "panic pf", "panic df", "panic ud", "panic assert" };
+    static const char *const kinds[5] = { "pf", "df", "ud", "assert", "stack" };
+    static const char *const cmds[5] = { "panic pf", "panic df", "panic ud", "panic assert",
+                                         "panic stack" };
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         if (!net_cmd_is(cmd, len, cmds[i])) {
             continue;
         }

@@ -375,7 +375,7 @@ static uint8_t *g_net_stack_base;
 
 static void net_stack_paint(task_t *t)
 {
-    g_net_stack_base = (uint8_t *)(t->rsp0 - NET_TASK_STACK);
+    g_net_stack_base = (uint8_t *)(t->rsp0 + KSTACK_PAD - NET_TASK_STACK);   // R6-2
 
     uint8_t *end = (uint8_t *)t->rsp - 64;   // jangan sentuh frame awal task
 

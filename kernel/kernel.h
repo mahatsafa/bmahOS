@@ -211,6 +211,15 @@ extern uint64_t hhdm_offset;
 extern int g_vmm_nx_ok;
 extern uint64_t kheap_current;
 extern uint64_t kheap_mapped_end;
+// R6-2: stack kernel task di region sendiri, di entri PML4 yang sama dengan
+// kheap (0x130, ikut terlihat di PML4 user hasil clone). Tiap stack diawali
+// satu halaman guard yang tidak dipetakan; stack tidak pernah dibebaskan.
+#define KSTACK_START      (KHEAP_START + 0x4000000000ULL)   // kheap + 256 GB
+#define KSTACK_REGION     0x100000ULL                       // 1 MB virtual
+#define KSTACK_MAX_STACKS 16
+#define KSTACK_PAD        16   // byte nol di puncak: rsp0 = dasar + ukuran - KSTACK_PAD
+uint64_t kstack_alloc(uint64_t size);   // alamat dasar (rendah), 0 = gagal
+int kstack_guard_find(uint64_t addr, uint64_t *lo, uint64_t *top);
 uint64_t read_cr3(void);
 void vmm_dump_pml4(uint64_t pml4_phys);
 void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t flags);

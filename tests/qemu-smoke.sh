@@ -719,7 +719,15 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         WD_WAIT="$WD_WAIT $(($(date +%s) - t0))"
         wait_n "ACPI-R: reboot via register reset FADT" "$n" || break
     done
-    wait_n "R5: watchdog aktif" 6
+    # R6-2: boot ke-6: panic stack (rekursi net task menabrak halaman guard ->
+    # #PF -> #DF lewat IST1) -> reboot; boot ke-7 harus normal.
+    STK_REPLY=""
+    if wait_n "R5: watchdog aktif" 6; then
+        sleep 1.2
+        STK_REPLY="$($BM "panic stack" 2>&1)"
+        wait_n "stack guard dilanggar" 1 && wait_n "ACPI-R: reboot via register reset FADT" 6
+    fi
+    wait_n "R5: watchdog aktif" 7
     kill "$PQPID" 2>/dev/null
     wait "$PQPID" 2>/dev/null
     kill "$PNCPID" 2>/dev/null
@@ -775,7 +783,7 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     python3 "$ROOT/tools/logdump.py" "$WORK/log4.bin" > "$WORK/log4.txt" 2>&1
     echo "info  R4: $(python3 "$ROOT/tools/logdump.py" --status "$WORK/log4.bin" 2>&1)"
     check "R4: logdump: dump pf/df/assert (3x reboot otomatis) di LOG.BIN, rekaman panic, fsck bersih" \
-        'grep -q "^PANIC: exception #PF page fault (vektor 14) error=0x2" "$WORK/log4.txt" && grep -q "^PANIC: exception #DF double fault (vektor 8)" "$WORK/log4.txt" && [ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$WORK/log4.txt")" -eq 5 ] && grep -q " panic ===$" "$WORK/log4.txt" && fsck.fat -n "$DISK" >/dev/null 2>&1'
+        'grep -q "^PANIC: exception #PF page fault (vektor 14) error=0x2" "$WORK/log4.txt" && grep -q "^PANIC: exception #DF double fault (vektor 8)" "$WORK/log4.txt" && [ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$WORK/log4.txt")" -eq 6 ] && grep -q " panic ===$" "$WORK/log4.txt" && fsck.fat -n "$DISK" >/dev/null 2>&1'
     W="$WORK/serial-wd.txt"
     check "R5: balasan wdtest (loop, blok)" \
         '[ "$(echo "$WD_REPLY" | grep -c "^wdtest: net task macet (\(loop\|blok\)) dalam 1 detik$")" -eq 2 ]'
@@ -792,8 +800,10 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         done
     }
     check "R5: panic watchdog ~11 s setelah perintah (2x 9..15 s)" 'wd_wait_ok $WD_WAIT'
-    check "R5: 2x reboot otomatis lewat jalur panic, boot sesudahnya normal (6 boot)" \
-        '[ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$W")" -eq 2 ] && [ "$(grep -c "^ACPI-R: reboot via register reset FADT$" "$W")" -eq 2 ] && [ "$(grep -c "PCI-1: E1000 di" "$WORK/serial-panic-all.txt")" -eq 6 ] && [ "$(grep -ac "^R5: watchdog aktif" "$WORK/serial-panic-all.txt")" -eq 6 ]'
+    check "R5: 2x reboot watchdog + 1x panic stack (R6-2) lewat jalur panic, boot sesudahnya normal (7 boot)" \
+        '[ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$W")" -eq 3 ] && [ "$(grep -c "^ACPI-R: reboot via register reset FADT$" "$W")" -eq 3 ] && [ "$(grep -c "PCI-1: E1000 di" "$WORK/serial-panic-all.txt")" -eq 7 ] && [ "$(grep -ac "^R5: watchdog aktif" "$WORK/serial-panic-all.txt")" -eq 7 ]'
+    check "R6-2: panic stack: #DF lewat IST1, stack guard dilanggar task slot 7 (net task), trace panic_test_stack" \
+        'echo "$STK_REPLY" | grep -q "^panic: uji stack dalam 1 detik$" && grep -q "^PANIC: exception #DF double fault (vektor 8) error=0x0$" "$W" && grep -q "^PANIC: RSP=.* stack=IST1$" "$W" && grep -q "^PANIC: stack guard dilanggar: task slot 7 (guard 0xffff98400000[0-9a-f]*, stack 0x[0-9a-f]*..0x[0-9a-f]*)$" "$W" && grep -q " panic_test_stack " "$WORK/wd-sym.txt"'
     check "R5: dump watchdog lewat netconsole (2x) dan di LOG.BIN (2x)" \
         '[ "$(grep -ac "^PANIC: watchdog: net task tanpa tepukan" "$WORK/netcon-wd.bin")" -eq 2 ] && [ "$(grep -c "^PANIC: watchdog: net task tanpa tepukan" "$WORK/log4.txt")" -eq 2 ]'
     check "R1: tanpa panic bersarang / PIT macet" \

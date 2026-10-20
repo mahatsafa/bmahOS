@@ -12,6 +12,8 @@ char __text_start[1];
 char __text_end[1];
 uint8_t g_df_stack[DF_STACK_SIZE];
 size_t current_index = 0;
+task_t tasks[MAX_TASKS];   // R6-2: pemilik stack guard
+size_t task_count = 0;
 
 void machine_reboot(void)
 {
@@ -209,6 +211,13 @@ static void test_cmd(void)
     CHECK_STR(g_out, "ERR: uji panic sudah dijadwalkan\n");
     CHECK(g_timer_started == 1);
     CHECK(g_panic_test_kind == 1);
+
+    g_panic_test_kind = -1;
+    g_panic_test_kind = -1;
+    CHECK(exec("panic stack") == 1);   // R6-2
+    CHECK_STR(g_out, "panic: uji stack dalam 1 detik\n");
+    CHECK(g_panic_test_kind == 4);
+    CHECK(exec("panic stackx") == 0);
 
     g_panic_test_kind = -1;
     CHECK(exec("panic assert") == 1);
