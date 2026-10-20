@@ -254,6 +254,23 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts(" byte, termap: ");
         cmd_putdec(kheap_mapped_end - (uint64_t)KHEAP_START);
         cmd_puts(" byte\n");
+        cmd_puts("pmm: alokasi=");   // R6-3
+        cmd_putdec(g_pmm_allocs);
+        cmd_puts(" lepas=");
+        cmd_putdec(g_pmm_frees);
+        cmd_puts(" gagal=");
+        cmd_putdec(g_pmm_fail);
+        cmd_puts(" lepas_salah=");
+        cmd_putdec(g_pmm_bad_free);
+        cmd_puts("\nkmalloc: alokasi=");
+        cmd_putdec(g_kmalloc_n);
+        cmd_puts(" kfree=");
+        cmd_putdec(g_kfree_n);
+        cmd_puts(" kfree_noop=");
+        cmd_putdec(g_kfree_noop);
+        cmd_puts(" gagal=");
+        cmd_putdec(g_kmalloc_fail);
+        cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "tls")) {
         // D9: status TLS 7780, pin sertifikat, counter sesi.
         tls_status();

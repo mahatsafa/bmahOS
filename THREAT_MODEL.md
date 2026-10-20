@@ -76,7 +76,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Anti-replay | Ada: nonce sekali pakai | Uji adversarial (R7) |
 | Ketahanan terhadap banjir paket | Sebagian: batas laju, batas nonce, boot aman tanpa NIC | C5, firewall (P4) |
 | Kerahasiaan balasan | Ada lewat TLS 1.2 port 7780 (D9); UDP 7778 dan TCP 7779 tetap teks polos kecuali dimatikan (`cli_plain=0`, `udp_admin=0` = UDP hanya baca) | Matikan 7779 setelah klien pindah |
-| Isolasi user/kernel | Ada: user mode, NX | R6, SMEP/SMAP bila CPU mendukung |
+| Isolasi user/kernel | Ada: user mode, NX, validasi pointer syscall + batas len (R6-1), fault user hanya menghentikan task, guard page stack kernel/user (R6-2) | SMEP/SMAP bila CPU mendukung, fuzzing (R7) |
 | Entropi nonce | Ada (F1.8): kolam SHA-256 + HMAC-DRBG, tolak sebelum 256 bit; rdseed/rdrand dipercaya | Nilai ulang jitter di perangkat keras asli (H0) |
 | Otorisasi berbasis peran | Ada (D4): admin/read-only per kunci, TCP 7779 dan TLS 7780 | Kunci per pengguna |
 | Audit | Ada (D5): ring RAM (ok 16, gagal 8; banjir gagal tidak menimpa ring ok), IP:port + peran + perintah + tick, juga ke serial; baca `audit` hanya admin. Log persisten R4 sengaja TIDAK memuat baris AUDIT (bisa dibaca read-only) | Waktu nyata (P3); audit persisten terpisah (khusus admin) bila dibutuhkan |
@@ -117,8 +117,8 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    dihitung sinkron di net task, jadi banjir handshake memperlambat semua jaringan (dibatasi 2 TCB 7780 dan
    batas SYN per IP); pengaman `cli_plain` membuat penulis disk bisa menyalakan 7779 dengan menghapus file TLS.
 
-11. Panic (R1): exception apa pun, juga dari program user mode, me-reboot sistem (penolakan layanan oleh
-   program di disk; mematikan task saja = R6). Dump register di serial bisa memuat sisa nilai rahasia di
+11. Panic (R1): exception di kernel me-reboot sistem. Sejak R6-1 exception dari user mode hanya
+   menghentikan task itu (NMI/#DF/#MC tetap panic). Dump register di serial bisa memuat sisa nilai rahasia di
    register (serial = akses fisik/hypervisor, di luar cakupan penyerang jaringan). Perintah uji `panic`
    hanya ada di build dev dan hanya untuk admin.
 

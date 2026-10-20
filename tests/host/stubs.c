@@ -66,6 +66,9 @@ WEAK void logdisk_sync(int panic)
 }
 
 // R1: kassert_fail (kprintf.c) memanggil panic.c.
+// R6-3: counter pmm (dirujuk oom_panic di panic.c).
+WEAK uint64_t g_pmm_allocs, g_pmm_frees, g_pmm_fail;
+
 // R6-2: vmm.c tidak dikompilasi di host.
 WEAK int kstack_guard_find(uint64_t addr, uint64_t *lo, uint64_t *top)
 {

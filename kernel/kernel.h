@@ -233,6 +233,13 @@ extern uint64_t g_sys_calls, g_sys_rejected, g_user_faults;
 void kheap_init(uint64_t pml4_phys);
 void * kmalloc(uint64_t size);
 void kfree(void *ptr);
+// R6-3: batas heap + counter alokasi/pelepasan (metrics, `mem`).
+#define KHEAP_MAX (16ULL * 1024 * 1024)
+extern uint64_t g_pmm_allocs, g_pmm_frees, g_pmm_fail, g_pmm_bad_free;
+extern uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail;
+// Alokasi wajib (tabel halaman, PML4 task, stack task, halaman user saat
+// dibuat) gagal -> panic + reboot, bukan lanjut dengan pemetaan hilang.
+__attribute__((noreturn)) void oom_panic(const char *where);
 
 // ---- acpi.c (RSDP/MADT/FADT) ----
 struct acpi_rsdp

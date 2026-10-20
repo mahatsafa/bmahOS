@@ -993,6 +993,15 @@ void kmain(void)
     } else {
         serial_write("kfree test: FAIL (alamat tidak sama, reclaim tidak bekerja)\r\n");
     }
+
+    // R6-3: batas heap. Ukuran > KHEAP_MAX dan ukuran yang membuat size +
+    // header overflow harus ditolak (0), heap tidak berubah.
+    uint64_t heap_before = kheap_current;
+    void *too_big = kmalloc(KHEAP_MAX);
+    void *wrap = kmalloc((uint64_t)-8);
+    serial_write((too_big == 0 && wrap == 0 && kheap_current == heap_before)
+                 ? "kmalloc batas: PASS (KHEAP_MAX dan overflow ditolak)\r\n"
+                 : "kmalloc batas: FAIL\r\n");
     serial_write("\r\n");
 
     /* DISABLED (Layer 7 trampoline checkpoint) -- known-good reference,

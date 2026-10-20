@@ -48,8 +48,7 @@ static uint64_t vmm_get_or_create_table(uint64_t *table_virt, uint64_t index)
 
     uint64_t new_table_phys = pmm_alloc();
     if (new_table_phys == 0) {
-        serial_write("VMM: pmm_alloc() FAILED\r\n");
-        return 0;
+        oom_panic("tabel halaman (vmm_map)");   // R6-3: dulu pemetaan hilang diam-diam
     }
 
     uint64_t *new_table_virt = (uint64_t *)(new_table_phys + hhdm_offset);
@@ -153,8 +152,7 @@ uint64_t vmm_clone_kernel_pml4(uint64_t kernel_pml4_phys)
 {
     uint64_t new_pml4_phys = pmm_alloc();
     if (new_pml4_phys == 0) {
-        serial_write("vmm_clone_kernel_pml4(): pmm_alloc() FAILED\r\n");
-        return 0;
+        oom_panic("PML4 task user");   // R6-3
     }
 
     uint64_t *new_pml4_virt = (uint64_t *)(new_pml4_phys + hhdm_offset);
@@ -345,15 +343,26 @@ void kheap_init(uint64_t pml4_phys)
     kheap_mapped_end = KHEAP_START;
 }
 
+uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail;   // R6-3
+
 void *kmalloc(uint64_t size)
 {
+    // R6-3: batas KHEAP_MAX (juga mencegah overflow size + header).
+    if (size > KHEAP_MAX ||
+        kheap_current - KHEAP_START + size + sizeof(uint64_t) + 15 > KHEAP_MAX) {
+        g_kmalloc_fail++;
+        serial_write("kmalloc: ditolak, melebihi KHEAP_MAX\r\n");
+        return (void *)0;
+    }
+
     uint64_t total = size + sizeof(uint64_t);
     total = (total + 15) & ~((uint64_t)15);
 
     while (kheap_current + total > kheap_mapped_end) {
         uint64_t new_frame = pmm_alloc();
         if (new_frame == 0) {
-            serial_write("kmalloc: pmm_alloc() FAILED, heap kehabisan memori\r\n");
+            g_kmalloc_fail++;
+            serial_write("kmalloc: pmm_alloc() gagal, heap kehabisan memori\r\n");
             return (void *)0;
         }
         vmm_map(kheap_pml4_phys, kheap_mapped_end, new_frame,
@@ -366,6 +375,7 @@ void *kmalloc(uint64_t size)
     *header = total;
 
     kheap_current += total;
+    g_kmalloc_n++;
 
     return (void *)(header_addr + sizeof(uint64_t));
 }
@@ -381,10 +391,12 @@ void kfree(void *ptr)
     uint64_t *header = (uint64_t *)header_addr;
     uint64_t total = *header;
 
+    g_kfree_n++;
     if (header_addr + total == kheap_current) {
         kheap_current = header_addr;
         serial_write("kfree: alokasi terakhir, berhasil reclaim\r\n");
     } else {
+        g_kfree_noop++;
         serial_write("kfree: bukan alokasi terakhir, tidak bisa reclaim aman (no-op)\r\n");
     }
 }

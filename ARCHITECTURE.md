@@ -24,9 +24,9 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `cpu.c` | GDT, TSS (rsp0; R1: IST1 16 KB untuk #DF, tanpa peta I/O), IDT dan tabel vektor 0-31 + 0x80 | `gdt.S`, `interrupt.S` |
 | `cpufeat.c` | CPUID sekali saat boot: vendor, family/model, hypervisor, fitur (rdrand, rdseed, nx, smep, smap, umip, pcid, apic, x2apic, tsc, tsc_invarian, sse2) di `g_cpu` + serial | — |
 | `kprintf.c` | `kprintf` (serial), `ksnprintf` (buffer), `kassert_fail` untuk `ASSERT()` (cetak `PANIC: ... file:baris`, lalu panic.c: trace + reboot), self-test format | serial |
-| `trap.c` | `exception_dispatcher` (exception -> `panic_exception`), `irq_handler`, syscall `int 0x80` (test/write/exit), `trigger_*` uji | sched, vmm, apic |
-| `pmm.c` | bitmap frame fisik (maks 4 GiB), frame 0 tidak pernah dibagikan | Limine memmap |
-| `vmm.c` | page table 4 level, `vmm_map`, NX, klon PML4 kernel, validasi pointer user, heap kernel (`kmalloc`/`kfree` bump) | pmm |
+| `trap.c` | `exception_dispatcher` (exception kernel -> `panic_exception`; dari ring 3 -> task dihentikan, R6-1), `irq_handler`, syscall `int 0x80` (test/write/exit; `SYS_WRITE` maks 1024 byte, counter `sys_*`), `trigger_*` uji | sched, vmm, apic |
+| `pmm.c` | bitmap frame fisik (maks 4 GiB), frame 0 tidak pernah dibagikan, counter alokasi/lepas/gagal/lepas salah (R6-3) | Limine memmap |
+| `vmm.c` | page table 4 level, `vmm_map` (tabel gagal -> `oom_panic`), NX, klon PML4 kernel, validasi pointer user, heap kernel (`kmalloc`/`kfree` bump, maks `KHEAP_MAX` 16 MB), stack kernel ber-guard `kstack_alloc` di region `KSTACK_START` (R6-2) | pmm |
 | `acpi.c` | RSDP, MADT (alamat LAPIC/IOAPIC, override IRQ0), FADT (register reset), `machine_reboot` (ACPI -> 8042 -> triple fault) | Limine RSDP |
 | `panic.c` | R1: dump exception (nama vektor, register, CR0-4, error #PF diurai), stack trace rantai rbp (maks 16 frame, tiap rbp dicek sebelum dibaca), reboot otomatis 10 s (polling PIT), panic bersarang -> reboot langsung; perintah uji `panic pf/df/ud/assert` (build dev) | kprintf, acpi, pic, ktimer |
 | `pic.c` | remap dan mask 8259, PIT | — |

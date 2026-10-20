@@ -7,6 +7,10 @@ uint64_t pmm_usable_memory = 0;
 static uint64_t pmm_usable_frames = 0;
 static uint64_t pmm_next_frame = 0;
 
+// R6-3: counter (metrics pmm_*). bad_free = pmm_free frame yang sudah bebas,
+// tidak sejajar halaman, atau di luar bitmap (diabaikan, tidak di-clear ulang).
+uint64_t g_pmm_allocs, g_pmm_frees, g_pmm_fail, g_pmm_bad_free;
+
 static void pmm_bitmap_set(uint64_t frame)
 {
     pmm_bitmap[frame / 8] |= (uint8_t)(1U << (frame % 8));
@@ -98,11 +102,13 @@ uint64_t pmm_alloc(void)
         if (!pmm_bitmap_test(frame)) {
             pmm_bitmap_set(frame);
             pmm_next_frame = frame + 1;
+            g_pmm_allocs++;
 
             return frame * PMM_PAGE_SIZE;
         }
     }
 
+    g_pmm_fail++;
     return 0;
 }
 
@@ -113,20 +119,21 @@ void pmm_free(uint64_t phys_addr)
     }
 
     if ((phys_addr & (PMM_PAGE_SIZE - 1)) != 0) {
+        g_pmm_bad_free++;
         return;
     }
 
     uint64_t frame = phys_addr / PMM_PAGE_SIZE;
 
-    if (frame >= PMM_MAX_FRAMES) {
+    if (frame >= PMM_MAX_FRAMES || !pmm_bitmap_test(frame)) {
+        g_pmm_bad_free++;
         return;
     }
 
-    if (pmm_bitmap_test(frame)) {
-        pmm_bitmap_clear(frame);
+    pmm_bitmap_clear(frame);
+    g_pmm_frees++;
 
-        if (frame < pmm_next_frame) {
-            pmm_next_frame = frame;
-        }
+    if (frame < pmm_next_frame) {
+        pmm_next_frame = frame;
     }
 }

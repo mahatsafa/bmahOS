@@ -310,3 +310,20 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   selain itu dari konteks yang disimpan `context_switch` (rsp[8] = rbp, rsp[15] = alamat kembali).
 - **Tidak dicakup**: macet dengan interrupt mati (NMI lewat IOAPIC terlalu besar untuk R5) -> H6.
 - Tanpa refactor terpisah: `panic_finish(rip, rbp)` dari R1 sudah cukup, jadi R5 satu commit.
+
+## 2026-10-20 (R6 ketahanan memori; rencana disetujui pengguna)
+- **R6-1 syscall**: `SYS_WRITE` maks 1024 byte (ditulis ke UART dengan polling saat interrupt mati; len besar
+  = sistem macet tanpa tick, di luar jangkauan watchdog R5). Validasi pointer tetap satu pola (ptr+len).
+- **Fault user**: exception dari CPL 3 -> `task_exit` task itu + baris `R6:`; NMI, #DF, #MC tetap panic.
+  `MAX_TASKS` 8 -> 10 (slot dev penuh). `spawn` menyisipkan halaman guard di antara kode dan stack user.
+- **R6-2 stack kernel**: region `KSTACK_START` (kheap + 256 GB, entri PML4 0x130 yang sama, jadi terlihat di
+  PML4 user tanpa mengubah daftar entri bersama), 1 MB, maks 16 stack, guard 4 KB di bawah tiap stack, tidak
+  pernah dibebaskan. Overflow -> #PF -> #DF lewat IST1 -> panic menyebut slot task. 16 byte nol di puncak
+  (`KSTACK_PAD`): panic_walk membaca satu word di atas frame pertama (dulu heap, kini guard berikutnya ->
+  panic bersarang, ditemukan oleh uji `panic pf`).
+- **R6-3 memori habis**: alokasi wajib (tabel halaman, PML4 task, stack task, halaman user saat dibuat) gagal
+  -> `oom_panic` (panic + reboot), bukan lanjut dengan pemetaan hilang (dulu `vmm_map` diam). Fitur opsional
+  (E1000, AHCI, netcon, buffer TX) tetap mematikan diri seperti sebelumnya. Heap `KHEAP_MAX` 16 MB + cek
+  overflow ukuran. `pmm_free` frame bebas/tidak sejajar/di luar bitmap = `pmm_bad_free`, diabaikan.
+- **Kebocoran**: make test membandingkan `pmm_alloc - pmm_free` dan `kmalloc` sebelum/sesudah uji boot
+  pertama (harus sama). Soak 24 jam = R8.

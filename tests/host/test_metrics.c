@@ -38,6 +38,8 @@ uint64_t g_fat_wr_ok, g_fat_wr_fail, g_audit_seq;
 uint64_t g_ld_written, g_ld_lost, g_ld_wfail, g_ld_bad;
 uint64_t g_wd_gap_max, g_wd_pets;
 uint64_t g_sys_calls, g_sys_rejected, g_user_faults;
+uint64_t g_pmm_allocs, g_pmm_frees, g_pmm_fail, g_pmm_bad_free;
+uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail;
 
 // Getter: nilai dikendalikan g_fn_val (0 atau besar).
 static uint64_t g_fn_val;
@@ -135,12 +137,12 @@ static int walk(const char *pfx, int seen[], uint32_t *maxlen)
 
 static void test_table(void)
 {
-    CHECK(METRICS_N == 107);
+    CHECK(METRICS_N == 115);
     CHECK_STR(g_metrics[0].name, "uptime_ticks");
     CHECK_STR(g_metrics[77].name, "priv_hmac");     // 78 kunci lama di depan
     CHECK_STR(g_metrics[78].name, "uptime_s");
     CHECK_STR(g_metrics[96].name, "audit_seq");
-    CHECK_STR(g_metrics[METRICS_N - 1].name, "user_faults");
+    CHECK_STR(g_metrics[METRICS_N - 1].name, "kmalloc_fail");
     int ok_chars = 1, ok_len = 1, ok_uniq = 1, ok_kind = 1;
     for (uint32_t i = 0; i < METRICS_N; i++) {
         const char *n = g_metrics[i].name;
@@ -236,8 +238,11 @@ static void test_prefix(void)
     CHECK_STR(run(" 96 "), "ERR: metrics [awalan] [mulai]\n");
     CHECK_STR(run(" 97"), "logdisk_written=0\nlogdisk_lost=0\nlogdisk_wfail=0\nlogdisk_bad=0\n"
               "wd_timeout_ticks=0\nwd_gap_max=0\nwd_pets=0\n"
-              "sys_calls=0\nsys_rejected=0\nuser_faults=0\n");
-    CHECK_STR(run(" 104"), "sys_calls=0\nsys_rejected=0\nuser_faults=0\n");
+              "sys_calls=0\nsys_rejected=0\nuser_faults=0\n"
+              "pmm_alloc=0\npmm_free=0\npmm_fail=0\npmm_bad_free=0\n"
+              "kmalloc=0\nkfree=0\nkfree_noop=0\nkmalloc_fail=0\n");
+    CHECK_STR(run(" 111"), "kmalloc=0\nkfree=0\nkfree_noop=0\nkmalloc_fail=0\n");
+    CHECK_STR(run(" kmalloc"), "kmalloc=0\nkmalloc_fail=0\n");
     CHECK_STR(run(" zzz"), "ERR: metrics: tidak ada kunci yang cocok\n");
     CHECK_STR(run(" tcp_ 43"), "ERR: metrics: tidak ada kunci yang cocok\n");
     // awalan 32 byte boleh, 33 ditolak
@@ -250,7 +255,7 @@ static void test_bad_args(void)
 {
     static const char *const bad[] = {
         " ", "  ", " tcp_  1", "  tcp_", " tcp_ ", " 1 2", " 1 tcp_", " tcp_ udp_",
-        " TCP_", " tcp-", " 107", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
+        " TCP_", " tcp-", " 115", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
         " tcp_\t", " -1",
     };
     set_all(0);

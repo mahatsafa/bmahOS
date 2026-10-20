@@ -233,14 +233,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=107   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3
+R3_N=115   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir user_faults" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^user_faults="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir kmalloc_fail" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^kmalloc_fail="'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -254,6 +254,12 @@ else
     check "R6-1: PROD: tanpa task user: sys_rejected=0 user_faults=0" \
         '[ "$(mval sys_rejected)" = 0 ] && [ "$(mval user_faults)" = 0 ]'
 fi
+# R6-3: batas heap (uji boot) dan counter alokasi; pmm_alloc - pmm_free
+# dicatat di sini lalu dibandingkan setelah semua uji boot pertama.
+check "R6-3: kmalloc batas PASS, kmalloc_fail=2, pmm_fail=0, pmm_bad_free=1 (uji double free boot), kmalloc/pmm terhitung" \
+    'grep -aq "^kmalloc batas: PASS" "$LOG" && [ "$(mval kmalloc_fail)" = 2 ] && [ "$(mval pmm_fail)" = 0 ] && [ "$(mval pmm_bad_free)" = 1 ] && [ "$(mval pmm_alloc)" -gt "$(mval pmm_free)" ] && [ "$(mval kmalloc)" -ge 4 ]'
+PMM_OUT0=$(( $(mval pmm_alloc) - $(mval pmm_free) ))
+KM0="$(mval kmalloc)"
 
 # R4: log persisten (LOG.BIN). Boot pertama = boot 1; setelah > 5 s ada rekaman.
 check "R4: serial: logdisk aktif rekaman=128 boot=1 seq=1 rusak=0" \
@@ -553,6 +559,13 @@ check "R5: serial: watchdog aktif batas=1000 tick (net task)" \
     'grep -aq "^R5: watchdog aktif batas=1000 tick (net task slot [0-9]*)" "$LOG"'
 check "R5: wd: aktif, jeda_maks < 1000 (TLS/FAT/echo 1 MB), tanpa panic watchdog" \
     '[ -n "$WD_GAP" ] && [ "$WD_GAP" -lt 1000 ] && ! grep -aq "PANIC: watchdog" "$LOG"'
+sleep 1.2
+PMM_L="$($BM "metrics pmm_" 2>&1)"
+KM_L="$($BM "metrics kmalloc" 2>&1)"
+PMM_OUT1=$(( $(echo "$PMM_L" | sed -n "s/^pmm_alloc=//p") - $(echo "$PMM_L" | sed -n "s/^pmm_free=//p") ))
+echo "info  R6-3: frame terpakai (alloc-free) awal=$PMM_OUT0 akhir=$PMM_OUT1, kmalloc awal=$KM0"
+check "R6-3: tanpa kebocoran frame/heap selama uji boot pertama (alloc-free tetap, kmalloc tetap)" \
+    '[ "$PMM_OUT1" -eq "$PMM_OUT0" ] && echo "$KM_L" | grep -q "^kmalloc=$KM0$" && echo "$PMM_L" | grep -q "^pmm_fail=0$"'
 
 sleep 1.2   # jendela batas laju baru (lihat di atas)
 check "pping -> ppong"           '[ "$($BM pping)" = "ppong" ]'

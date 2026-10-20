@@ -252,6 +252,14 @@ static const metric_t g_metrics[] = {
     M64("sys_calls", g_sys_calls),
     M64("sys_rejected", g_sys_rejected),
     M64("user_faults", g_user_faults),
+    M64("pmm_alloc", g_pmm_allocs),
+    M64("pmm_free", g_pmm_frees),
+    M64("pmm_fail", g_pmm_fail),
+    M64("pmm_bad_free", g_pmm_bad_free),
+    M64("kmalloc", g_kmalloc_n),
+    M64("kfree", g_kfree_n),
+    M64("kfree_noop", g_kfree_noop),
+    M64("kmalloc_fail", g_kmalloc_fail),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

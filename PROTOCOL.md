@@ -257,6 +257,15 @@ register umum dump panic), maks 160 karakter.
 - Kunci CPU: `cpu_idle_ticks` (tick timer saat task idle berjalan), `cpu_busy_pct` (persen tick
   bukan-idle di jendela 100 tick terakhir yang lengkap; build dev ~100 karena task uji).
 
+## Memori (R6)
+
+- `mem` menambah baris `pmm: alokasi= lepas= gagal= lepas_salah=` dan
+  `kmalloc: alokasi= kfree= kfree_noop= gagal=`.
+- Metrics: `sys_calls`, `sys_rejected`, `user_faults`, `pmm_alloc`, `pmm_free`, `pmm_fail`,
+  `pmm_bad_free`, `kmalloc`, `kfree`, `kfree_noop`, `kmalloc_fail`.
+- Build dev saja (admin): `panic stack` -> rekursi net task sampai halaman guard ->
+  `PANIC: stack guard dilanggar: task slot N (guard .., stack ..)` lalu reboot otomatis.
+
 ## Watchdog `wd` (R5)
 
     wd    watchdog: aktif|belum aktif batas=1000 tick jeda_sekarang=N jeda_maks=N tepukan=N slot=N

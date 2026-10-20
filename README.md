@@ -57,6 +57,11 @@ Belum pernah diuji di hardware asli.
   reboot. Baca dengan `logdisk` / `logdisk <seq>` (juga peran read-only), `bmlogdisk`, atau offline
   `tools/logdump.py` (setelah `mcopy -i disk.img ::LOG.BIN log.bin`). `LOG.BIN` dibuat di host:
   `head -c 65536 /dev/zero > LOG.BIN; mcopy -i disk.img LOG.BIN ::LOG.BIN`. Tanpa file ini fitur mati.
+- Ketahanan memori (R6): `SYS_WRITE` maks 1024 byte; exception dari ring 3 hanya menghentikan task
+  itu (`R6: task user slot N dihentikan ...`); stack kernel tiap task punya halaman guard (meluap ->
+  `PANIC: stack guard dilanggar: task slot N`), stack user hasil `spawn` juga; alokasi wajib gagal ->
+  `PANIC: memori habis: <tempat>`; heap maks 16 MB; counter `pmm_*`, `kmalloc*`, `sys_*`, `user_faults`
+  di `metrics` dan `mem`.
 - Watchdog perangkat lunak (R5): net task menepuk tiap putaran loop, handler timer hanya memeriksa;
   10 s tanpa tepukan -> dump `PANIC: watchdog: ...` (status task, trace task yang macet) lewat jalur panic
   R1 (serial, netconsole, LOG.BIN) lalu reboot otomatis. Perintah `wd`, metrics `wd_*`.
@@ -88,8 +93,9 @@ Flag uji (bisa digabung):
 
 Build dev (tanpa `PROD=1`) punya perintah admin `panic pf|df|ud|assert` untuk menguji panic handler
 (fault 1 detik setelah balasan, lalu reboot otomatis) dan `wdtest loop|blok` untuk menguji watchdog
-(net task berputar / menunggu semaphore yang tak pernah di-post, panic watchdog ~11 s kemudian).
-Build PROD tidak memilikinya.
+(net task berputar / menunggu semaphore yang tak pernah di-post, panic watchdog ~11 s kemudian);
+`panic stack` menguji halaman guard stack kernel (R6-2). Build dev juga menjalankan task user uji R6-1
+saat boot. Build PROD tidak memilikinya.
 
 Hasil: `build/bmahOS.iso`.
 
@@ -254,8 +260,10 @@ TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 
 - Hanya driver E1000 (device ID `0x100F` 82545EM dan `0x100E` 82540EM yang sudah diuji); belum ada
   driver untuk NIC hardware target
 - Hanya controller AHCI pertama yang dipakai
-- Panic: exception dari user mode juga me-reboot seluruh sistem (belum mematikan task saja, R6); dump
-  hanya ke serial dan ring log RAM (hilang saat reboot, persisten di R4); trace berisi alamat mentah
+- Panic: dump ke serial, netconsole (R2) dan LOG.BIN (R4); trace berisi alamat mentah. Exception dari
+  user mode hanya menghentikan task itu (R6-1), kecuali NMI/#DF/#MC
+- Memori (R6): stack kernel dan heap tidak pernah dibebaskan (task mati tidak mengembalikan stack/PML4);
+  alokasi wajib yang gagal = panic + reboot; bitmap PMM tidak membedakan frame reserved dan terpakai
 - TLS hanya 1.2 (BearSSL tanpa TLS 1.3), handshake dihitung di net task; maks 2 sesi TLS
 - Netconsole: teks polos tanpa autentikasi, MAC tujuan dari ARP (bisa dipalsukan di LAN), satu tujuan,
   hanya di subnet sendiri; antrean 4 KB (baris dibuang saat penuh), maks 20 datagram/detik

@@ -181,6 +181,15 @@ void panic_finish(uint64_t rip, uint64_t rbp)
     machine_reboot();
 }
 
+// R6-3: alokasi wajib gagal (lihat kernel.h). Trace dari pemanggil.
+void oom_panic(const char *where)
+{
+    panic_begin();
+    kprintf("\r\nPANIC: memori habis: %s (pmm_alloc=%lu pmm_free=%lu pmm_gagal=%lu)\r\n",
+            where, g_pmm_allocs, g_pmm_frees, g_pmm_fail);
+    panic_finish(0, (uint64_t)(uintptr_t)__builtin_frame_address(0));
+}
+
 void panic_exception(struct exception_context *c)
 {
     panic_begin();
