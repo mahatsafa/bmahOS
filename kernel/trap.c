@@ -97,12 +97,18 @@ static const syscall_desc_t syscall_table[SYSCALL_COUNT] = {
 
 // Dispatch syscall (int 0x80). context->rax = nomor syscall saat
 // masuk, ditimpa dengan return value sebelum kembali ke pemanggil.
+uint64_t g_sys_calls;      // R6-1: semua int 0x80
+uint64_t g_sys_rejected;   // nomor tidak dikenal / pointer atau len ditolak
+uint64_t g_user_faults;    // exception dari ring 3 (task dihentikan)
+
 static void syscall_handler(struct exception_context *context)
 {
     uint64_t syscall_num = context->rax;
 
+    g_sys_calls++;
     if (syscall_num >= SYSCALL_COUNT || syscall_table[syscall_num].fn == 0)
     {
+        g_sys_rejected++;
         serial_write("SYSCALL tidak dikenal: ");
         serial_write_hex(syscall_num);
         serial_write("\r\n");
@@ -112,8 +118,13 @@ static void syscall_handler(struct exception_context *context)
 
     if (syscall_table[syscall_num].has_user_ptr)
     {
-        if (!is_valid_user_ptr(g_current_pml4_phys, context->rdi, context->rsi, false))
+        // R6-1: len dibatasi dulu. sys_write menulis ke UART dengan polling
+        // saat interrupt mati: len besar = sistem macet tanpa tick (watchdog
+        // R5 pun tidak melihatnya).
+        if (context->rsi > SYS_WRITE_MAX ||
+            !is_valid_user_ptr(g_current_pml4_phys, context->rdi, context->rsi, false))
         {
+            g_sys_rejected++;
             serial_write("syscall_handler(): DITOLAK -- pointer/len tidak valid (syscall=");
             serial_write_hex(syscall_num);
             serial_write(", ptr=");
@@ -139,6 +150,21 @@ void exception_dispatcher(struct exception_context *context)
     {
         syscall_handler(context);
         return;
+    }
+
+    // R6-1: exception dari ring 3 hanya menghentikan task itu (kecuali NMI,
+    // #DF, #MC: masalah mesin, tetap panic). Kata "fault"/"exception" sengaja
+    // tidak dipakai di baris log (grep fault di uji).
+    uint64_t v = context->vector;
+    if ((context->cs & 3) == 3 && v != 2 && v != 8 && v != 18)
+    {
+        uint64_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        g_user_faults++;
+        kprintf("R6: task user slot %lu dihentikan (vektor %lu error=0x%lx rip=%p cr2=%p)\r\n",
+                (uint64_t)current_index, v, context->error_code,
+                (void *)(uintptr_t)context->rip, (void *)(uintptr_t)cr2);
+        task_exit();   // tidak kembali (sama seperti sys_exit)
     }
 
     // R1: dump register + stack trace + reboot otomatis (panic.c).

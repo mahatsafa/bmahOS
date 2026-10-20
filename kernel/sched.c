@@ -310,7 +310,10 @@ task_t *spawn(const uint8_t *image, size_t image_len)
         }
     }
 
-    uint64_t stack_vaddr = vmm_alloc_vaddr(task, PMM_PAGE_SIZE);
+    // R6-1: satu halaman guard (tidak dipetakan) di antara kode dan stack:
+    // stack yang meluap ke bawah memicu #PF not-present, bukan menabrak kode.
+    uint64_t guard_vaddr = vmm_alloc_vaddr(task, PMM_PAGE_SIZE);
+    uint64_t stack_vaddr = guard_vaddr ? vmm_alloc_vaddr(task, PMM_PAGE_SIZE) : 0;
     if (stack_vaddr == 0) {
         serial_write("spawn(): FATAL -- vmm_alloc_vaddr() gagal untuk stack, dibatalkan.\r\n");
         for (;;) {

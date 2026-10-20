@@ -248,6 +248,10 @@ static const metric_t g_metrics[] = {
     MFN("wd_timeout_ticks", met_wd_timeout),
     M64("wd_gap_max", g_wd_gap_max),
     M64("wd_pets", g_wd_pets),
+    // R6
+    M64("sys_calls", g_sys_calls),
+    M64("sys_rejected", g_sys_rejected),
+    M64("user_faults", g_user_faults),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

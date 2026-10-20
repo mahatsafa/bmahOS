@@ -218,6 +218,9 @@ int vmm_nx_of(uint64_t pml4_phys, uint64_t vaddr);
 void nx_init(void);
 uint64_t vmm_clone_kernel_pml4(uint64_t kernel_pml4_phys);
 bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len, bool require_writable);
+// R6-1: syscall + fault user (trap.c)
+#define SYS_WRITE_MAX 1024   // byte per SYS_WRITE; lebih -> -1 (UART polling, interrupt mati)
+extern uint64_t g_sys_calls, g_sys_rejected, g_user_faults;
 void kheap_init(uint64_t pml4_phys);
 void * kmalloc(uint64_t size);
 void kfree(void *ptr);
@@ -611,7 +614,7 @@ extern uint64_t g_audit_seq;    // audit.c: nomor urut entri terakhir
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----
-#define MAX_TASKS 8
+#define MAX_TASKS 10   // R6-1: 8 -> 10 (slot dev: 7 task uji + net + idle)
 
 typedef enum {
     TASK_READY,

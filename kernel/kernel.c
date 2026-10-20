@@ -221,6 +221,25 @@ static const uint8_t user_task_sysexit_test_code[] = {
     0x61, 0x66, 0x74, 0x65, 0x72, 0x20, 0x65, 0x78, 0x69, 0x74, 0x0A
 };
 
+#ifndef BMAHOS_PROD
+// R6-1: task user uji (spawn, basis 0x400000). SYS_WRITE ke alamat kernel
+// (ditolak), SYS_WRITE 2048 byte dari halaman kodenya sendiri (ditolak:
+// > SYS_WRITE_MAX), lalu push tanpa henti sampai menabrak halaman guard di
+// bawah stack -> #PF dari ring 3 -> hanya task ini yang dihentikan.
+static const uint8_t user_task_r6_test_code[] = {
+    0xB8, 0x01, 0x00, 0x00, 0x00,                                 // mov eax, 1
+    0x48, 0xBF, 0x00, 0x00, 0x00, 0x80, 0xFF, 0xFF, 0xFF, 0xFF,   // mov rdi, kernel
+    0xBE, 0x08, 0x00, 0x00, 0x00,                                 // mov esi, 8
+    0xCD, 0x80,                                                   // int 0x80
+    0xB8, 0x01, 0x00, 0x00, 0x00,                                 // mov eax, 1
+    0xBF, 0x00, 0x00, 0x40, 0x00,                                 // mov edi, 0x400000
+    0xBE, 0x00, 0x08, 0x00, 0x00,                                 // mov esi, 2048
+    0xCD, 0x80,                                                   // int 0x80
+    0x50,                                                         // 1: push rax
+    0xEB, 0xFD,                                                   // jmp 1b
+};
+#endif
+
 static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 {
     uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
@@ -1143,6 +1162,9 @@ void kmain(void)
     // terjaga), dengan alamat code/stack dari vmm_alloc_vaddr() (bukan
     // konstanta USER_CODE_VADDR* manual seperti task 0-4).
     spawn(user_task_spawn_test_code, sizeof(user_task_spawn_test_code));
+#ifndef BMAHOS_PROD
+    spawn(user_task_r6_test_code, sizeof(user_task_r6_test_code));   // R6-1
+#endif
 
     nx_selftest(pml4_phys, tasks[2].pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR);
 

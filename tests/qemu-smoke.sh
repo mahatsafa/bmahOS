@@ -233,14 +233,27 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=104   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*
+R3_N=107   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir wd_pets" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^wd_pets="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir user_faults" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^user_faults="'
+
+# R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
+# ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
+mval() { echo "$R3_ALL" | sed -n "s/^$1=//p"; }
+if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    check "R6-1: task uji user: write pointer kernel + len 0x800 ditolak" \
+        'grep -aq "DITOLAK -- pointer/len tidak valid (syscall=0x0000000000000001, ptr=0xFFFFFFFF80000000, len=0x0000000000000008)" "$LOG" && grep -aq "DITOLAK -- pointer/len tidak valid (syscall=0x0000000000000001, ptr=0x0000000000400000, len=0x0000000000000800)" "$LOG"'
+    check "R6-1: stack user menabrak guard -> #PF ring 3 (error 0x6) -> hanya task itu dihentikan" \
+        'grep -aq "^R6: task user slot 6 dihentikan (vektor 14 error=0x6 rip=0x0000000000400027 cr2=0x0000000000401ff8)" "$LOG" && [ "$(mval user_faults)" = 1 ] && [ "$(mval sys_rejected)" -ge 2 ] && [ "$(mval sys_calls)" -ge "$(mval sys_rejected)" ]'
+else
+    check "R6-1: PROD: tanpa task user: sys_rejected=0 user_faults=0" \
+        '[ "$(mval sys_rejected)" = 0 ] && [ "$(mval user_faults)" = 0 ]'
+fi
 
 # R4: log persisten (LOG.BIN). Boot pertama = boot 1; setelah > 5 s ada rekaman.
 check "R4: serial: logdisk aktif rekaman=128 boot=1 seq=1 rusak=0" \
