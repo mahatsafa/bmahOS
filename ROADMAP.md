@@ -198,7 +198,7 @@ Linux, dan klien Python.
   Hasil: tabel `g_metrics` di `kernel/metrics.c` (97 kunci), `metrics [awalan] [mulai]` berhalaman (maks 1400 byte,
   `metrics_lanjut=<i>`), `cpu_busy_pct`/`cpu_idle_ticks`, sesi CLI/TLS, netcon, FAT32 tulis; `bmctl.py metrics`
   dan `bmmetrics` mengikuti halaman. make test 183 -> 191, PROD 171 -> 180.
-- [ ] **R4** Log persisten berbentuk ring buffer di penyimpanan.
+- [x] **R4** Log persisten berbentuk ring buffer di penyimpanan. (1330e79, 1989ed6; VMware lulus)
 - [ ] **R5** Watchdog: perangkat lunak dulu. "Tepukan" dari task sehat, **bukan** dari interrupt timer.
   Watchdog perangkat keras menyusul setelah target perangkat keras diketahui.
 - [ ] **R6** Validasi pointer di syscall, guard page di stack, kebijakan saat memori habis, penghitung
