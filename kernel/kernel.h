@@ -374,6 +374,19 @@ int fat32_rename_name(const char *old83, const char *new83);
 int fat32_replace_name(const char *dst83, const char *tmp83, const uint8_t *data,
                        uint32_t len);
 uint32_t fat32_free_hint(void);
+// R4-1: peta sektor file yang sudah ada (root, ukuran kelipatan 512, 512 ..
+// FAT32_MAP_MAX * 512 byte) untuk baca/timpa per sektor di tempat. Ukuran,
+// rantai FAT, dan entri direktori tidak pernah diubah. Peta berlaku selama file
+// tidak dihapus/diganti (pemanggil melindungi nama file itu).
+#define FAT32_MAP_MAX 128
+typedef struct {
+    uint32_t nsec;                 // jumlah sektor = ukuran / 512
+    uint32_t spc;                  // sektor per cluster saat dipetakan
+    uint32_t clu[FAT32_MAP_MAX];   // rantai cluster (nsec / spc dibulatkan ke atas)
+} fat32_map_t;
+int fat32_file_map(const char *name83, fat32_map_t *m);
+int fat32_map_read(const fat32_map_t *m, uint32_t sec, uint8_t *buf512);
+int fat32_map_write(const fat32_map_t *m, uint32_t sec, const uint8_t *buf512);
 // fscmd.c: perintah ls/baca/tulis/tambah/hapus/ganti (admin). Return 1 bila dikenali.
 int fscmd_execute(const volatile uint8_t *cmd, uint32_t len);
 const char *fscmd_strerror(int rc);

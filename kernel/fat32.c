@@ -1570,3 +1570,86 @@ uint32_t fat32_free_hint(void)
 
     return fat32_le32(g_fw_fsi + 488);
 }
+
+// ---- R4-1: peta sektor file yang ada + timpa di tempat ----
+// Untuk file berukuran tetap yang dialokasikan di luar kernel (LOG.BIN, R4).
+// Hanya sektor data di dalam ukuran file yang ditulis; FAT, entri direktori,
+// dan FSInfo tidak disentuh, jadi crash paling buruk merusak satu sektor isi
+// file itu sendiri (pemakai memeriksa isi per sektor).
+int fat32_file_map(const char *name83, fat32_map_t *m)
+{
+    const uint8_t *dir;
+    uint32_t n;
+    int free_slot;
+    int rc = fat32_root_read(&dir, &n);
+
+    m->nsec = 0;
+    if (rc != FAT32_OK) {
+        return rc;
+    }
+
+    int idx = fw_dir_find(dir, n, name83, &free_slot);
+
+    if (idx < 0) {
+        return FAT32_ERR_NOENT;
+    }
+
+    const uint8_t *e = dir + idx * 32;
+
+    if (e[0x0B] & 0x18) {
+        return FAT32_ERR_NOTFILE;
+    }
+
+    uint32_t first = fw_entry_first(e);
+    uint32_t size = fat32_le32(e + 0x1C);
+
+    if (size == 0 || size % 512 != 0 || size > FAT32_MAP_MAX * 512u) {
+        return FAT32_ERR_TOOBIG;
+    }
+
+    uint32_t cnt;
+
+    rc = fw_walk(first, size, m->clu, &cnt);
+    if (rc != FAT32_OK) {
+        return rc;
+    }
+    m->spc = g_fat32_volume.sectors_per_cluster;
+    m->nsec = size / 512;
+    return FAT32_OK;
+}
+
+static int fw_map_lba(const fat32_map_t *m, uint32_t sec, uint64_t *lba)
+{
+    if (!g_fat32_volume.valid || m->nsec == 0 || sec >= m->nsec ||
+        m->spc != g_fat32_volume.sectors_per_cluster) {
+        return FAT32_ERR_UNSUP;
+    }
+    *lba = fw_cluster_lba(m->clu[sec / m->spc]) + sec % m->spc;
+    return FAT32_OK;
+}
+
+int fat32_map_read(const fat32_map_t *m, uint32_t sec, uint8_t *buf512)
+{
+    uint64_t lba;
+    int rc = fw_map_lba(m, sec, &lba);
+
+    return rc != FAT32_OK ? rc : fw_read(lba, 1, buf512);
+}
+
+// Satu sektor + FLUSH CACHE. I/O gagal -> volume baca saja (seperti tulis file).
+int fat32_map_write(const fat32_map_t *m, uint32_t sec, const uint8_t *buf512)
+{
+    uint64_t lba;
+    int rc = fw_map_lba(m, sec, &lba);
+
+    if (rc != FAT32_OK) {
+        return rc;
+    }
+    if (!fat32_writable()) {
+        return FAT32_ERR_RO;
+    }
+    if (fw_write(lba, 1, buf512) != FAT32_OK || fw_flush() != FAT32_OK) {
+        return fw_fail(FAT32_ERR_IO, 1);
+    }
+    return FAT32_OK;
+}

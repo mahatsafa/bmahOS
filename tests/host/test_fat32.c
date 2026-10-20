@@ -837,6 +837,90 @@ static void test_corrupt(void)
     img_close();
 }
 
+// R4-1: peta sektor file 64 KB (dibuat mtools), baca/timpa di tempat; FAT,
+// dir, dan file lain tidak berubah (fsck bersih, mtype sama).
+static void test_map(int spc)
+{
+    fat32_map_t m;
+    uint8_t buf[512], want[512];
+    char path[512];
+
+    img_open(spc == 1 ? "map1" : "map8", spc == 1 ? 64 * 1024 : 300 * 1024, spc);
+    // LOG.BIN 64 KB isi 'L', OD.BIN 1000 byte (bukan kelipatan 512), MAX.BIN 64 KB + 512.
+    sh("head -c 65536 /dev/zero | tr '\\0' 'L' > build/host/log.bin && "
+       "mcopy -i %s build/host/log.bin ::LOG.BIN%s", g_img_path, "");
+    sh("head -c 1000 /dev/zero > build/host/odd.bin && mcopy -i %s build/host/odd.bin ::ODD.BIN && "
+       "head -c 66048 /dev/zero > build/host/max.bin && mcopy -i %s build/host/max.bin ::MAX.BIN",
+       g_img_path, g_img_path);
+    sh("head -c 512 /dev/zero > build/host/one.bin && mcopy -i %s build/host/one.bin ::ONE.BIN && "
+       "touch build/host/empty.bin && mcopy -i %s build/host/empty.bin ::EMPTY.BIN",
+       g_img_path, g_img_path);
+    probe();
+
+    CHECK(fat32_file_map("LOG     BIN", &m) == FAT32_OK && m.nsec == 128 &&
+          m.spc == (uint32_t)spc);
+    CHECK(fat32_file_map("ONE     BIN", &m) == FAT32_OK && m.nsec == 1);
+    CHECK(fat32_file_map("ODD     BIN", &m) == FAT32_ERR_TOOBIG && m.nsec == 0);
+    CHECK(fat32_file_map("MAX     BIN", &m) == FAT32_ERR_TOOBIG);
+    CHECK(fat32_file_map("EMPTY   BIN", &m) == FAT32_ERR_TOOBIG);
+    CHECK(fat32_file_map("NADA    BIN", &m) == FAT32_ERR_NOENT);
+    CHECK(fat32_file_map("TEST       ", &m) == FAT32_ERR_NOTFILE);
+    // peta tanpa sektor: baca/tulis ditolak
+    CHECK(fat32_map_read(&m, 0, buf) == FAT32_ERR_UNSUP);
+
+    CHECK(fat32_file_map("LOG     BIN", &m) == FAT32_OK);
+    memset(want, 'L', sizeof(want));
+    CHECK(fat32_map_read(&m, 0, buf) == FAT32_OK && memcmp(buf, want, 512) == 0);
+    CHECK(fat32_map_read(&m, 127, buf) == FAT32_OK && memcmp(buf, want, 512) == 0);
+    CHECK(fat32_map_read(&m, 128, buf) == FAT32_ERR_UNSUP);
+    CHECK(fat32_map_write(&m, 128, want) == FAT32_ERR_UNSUP);
+
+    // Tulis tiap sektor dengan pola sendiri; baca kembali dari kernel + mtools.
+    uint64_t wok = g_fat_wr_ok, wfail = g_fat_wr_fail;
+    int all = 1;
+    for (uint32_t s = 0; s < 128; s++) {
+        memset(buf, 'a' + (int)(s % 26), sizeof(buf));
+        snprintf((char *)buf, 16, "sektor %03u", s);
+        all &= fat32_map_write(&m, s, buf) == FAT32_OK;
+    }
+    CHECK(all);
+    all = 1;
+    for (uint32_t s = 0; s < 128; s++) {
+        memset(want, 'a' + (int)(s % 26), sizeof(want));
+        snprintf((char *)want, 16, "sektor %03u", s);
+        all &= fat32_map_read(&m, s, buf) == FAT32_OK && memcmp(buf, want, 512) == 0;
+    }
+    CHECK(all);
+    CHECK(g_fat_wr_ok == wok && g_fat_wr_fail == wfail);   // bukan tulis file
+    CHECK(img_fsck() == 0);
+    msync(g_img, g_img_sectors * 512, MS_SYNC);
+    snprintf(path, sizeof(path), "mtype -i %s ::LOG.BIN | head -c 10 | grep -q '^sektor 000'", g_img_path);
+    CHECK(system(path) == 0);
+    snprintf(path, sizeof(path), "mtype -i %s ::LOG.BIN | wc -c | grep -q '^65536$'", g_img_path);
+    CHECK(system(path) == 0);
+    CHECK(img_mtype_eq("HELLO.TXT", "halo dari disk\n"));
+    CHECK(img_consistent());
+
+    // Baca saja (mode dari probe): tulis ditolak, isi tetap.
+    g_fat32_volume.writable = 0;
+    memset(buf, 'Z', sizeof(buf));
+    CHECK(fat32_map_write(&m, 5, buf) == FAT32_ERR_RO);
+    g_fat32_volume.writable = 1;
+
+    // I/O gagal -> FAT32_ERR_IO, volume jadi baca saja, fat_wr_fail +1.
+    g_fail_at = g_writes + 1;
+    CHECK(fat32_map_write(&m, 5, buf) == FAT32_ERR_IO);
+    CHECK(!fat32_writable() && g_fat_wr_fail == wfail + 1);
+    g_fail_at = 0;
+
+    // Peta dari volume dengan spc lain tidak dipakai.
+    probe();
+    fat32_map_t m2 = m;
+    m2.spc = m.spc == 1 ? 8 : 1;
+    CHECK(fat32_map_read(&m2, 0, buf) == FAT32_ERR_UNSUP);
+    img_close();
+}
+
 int main(void)
 {
     test_basic(1);
@@ -848,5 +932,7 @@ int main(void)
     test_replace();
     test_crash_d7();
     test_corrupt();
+    test_map(1);
+    test_map(8);
     return test_done("fat32");
 }
