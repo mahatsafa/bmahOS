@@ -161,7 +161,7 @@ void exception_dispatcher(struct exception_context *context)
         uint64_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         g_user_faults++;
-        kprintf("R6: task user slot %lu dihentikan (vektor %lu error=0x%lx rip=%p cr2=%p)\r\n",
+        kprintf("R6: task user slot %lu dihentikan (vektor %lu kode=0x%lx rip=%p cr2=%p)\r\n",
                 (uint64_t)current_index, v, context->error_code,
                 (void *)(uintptr_t)context->rip, (void *)(uintptr_t)cr2);
         task_exit();   // tidak kembali (sama seperti sys_exit)
