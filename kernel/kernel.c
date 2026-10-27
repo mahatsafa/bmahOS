@@ -238,6 +238,15 @@ static const uint8_t user_task_r6_test_code[] = {
     0x50,                                                         // 1: push rax
     0xEB, 0xFD,                                                   // jmp 1b
 };
+
+// TSS-1 (uji ring 3): IOPL 0 dan iopb_offset = sizeof(tss) (tanpa peta I/O)
+// -> instruksi I/O dari ring 3 harus #GP (vektor 13, kode 0) -> hanya task
+// ini yang dihentikan. Port 0x60 (data keyboard) dipilih karena baca saja:
+// bila TSS salah dan I/O lolos, task berputar di jmp $ tanpa efek samping.
+static const uint8_t user_task_tss1_test_code[] = {
+    0xE4, 0x60,                                                   // in al, 0x60
+    0xEB, 0xFE,                                                   // jmp $
+};
 #endif
 
 static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
@@ -1174,6 +1183,7 @@ void kmain(void)
     spawn(user_task_spawn_test_code, sizeof(user_task_spawn_test_code));
 #ifndef BMAHOS_PROD
     spawn(user_task_r6_test_code, sizeof(user_task_r6_test_code));   // R6-1
+    spawn(user_task_tss1_test_code, sizeof(user_task_tss1_test_code));   // TSS-1
 #endif
 
     nx_selftest(pml4_phys, tasks[2].pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR);

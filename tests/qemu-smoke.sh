@@ -249,7 +249,9 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "R6-1: task uji user: write pointer kernel + len 0x800 ditolak" \
         'grep -aq "DITOLAK -- pointer/len tidak valid (syscall=0x0000000000000001, ptr=0xFFFFFFFF80000000, len=0x0000000000000008)" "$LOG" && grep -aq "DITOLAK -- pointer/len tidak valid (syscall=0x0000000000000001, ptr=0x0000000000400000, len=0x0000000000000800)" "$LOG"'
     check "R6-1: stack user menabrak guard -> #PF ring 3 (error 0x6) -> hanya task itu dihentikan" \
-        'grep -aq "^R6: task user slot 6 dihentikan (vektor 14 kode=0x6 rip=0x0000000000400027 cr2=0x0000000000401ff8)" "$LOG" && [ "$(mval user_faults)" = 1 ] && [ "$(mval sys_rejected)" -ge 2 ] && [ "$(mval sys_calls)" -ge "$(mval sys_rejected)" ]'
+        'grep -aq "^R6: task user slot 6 dihentikan (vektor 14 kode=0x6 rip=0x0000000000400027 cr2=0x0000000000401ff8)" "$LOG" && [ "$(mval user_faults)" = 2 ] && [ "$(mval sys_rejected)" -ge 2 ] && [ "$(mval sys_calls)" -ge "$(mval sys_rejected)" ]'
+    check "TSS-1: in dari ring 3 -> #GP (vektor 13 kode 0) -> hanya task slot 7 dihentikan" \
+        'grep -aq "^R6: task user slot 7 dihentikan (vektor 13 kode=0x0 rip=0x0000000000400000 " "$LOG"'
 else
     check "R6-1: PROD: tanpa task user: sys_rejected=0 user_faults=0" \
         '[ "$(mval sys_rejected)" = 0 ] && [ "$(mval user_faults)" = 0 ]'
@@ -823,8 +825,8 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "R5: panic watchdog ~11 s setelah perintah (2x 9..15 s)" 'wd_wait_ok $WD_WAIT'
     check "R5: 2x reboot watchdog + 1x panic stack (R6-2) lewat jalur panic, boot sesudahnya normal (7 boot)" \
         '[ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$W")" -eq 3 ] && [ "$(grep -c "^ACPI-R: reboot via register reset FADT$" "$W")" -eq 3 ] && [ "$(grep -c "PCI-1: E1000 di" "$WORK/serial-panic-all.txt")" -eq 7 ] && [ "$(grep -ac "^R5: watchdog aktif" "$WORK/serial-panic-all.txt")" -eq 7 ]'
-    check "R6-2: panic stack: #DF lewat IST1, stack guard dilanggar task slot 7 (net task), trace panic_test_stack" \
-        'echo "$STK_REPLY" | grep -q "^panic: uji stack dalam 1 detik$" && grep -q "^PANIC: exception #DF double fault (vektor 8) error=0x0$" "$W" && grep -q "^PANIC: RSP=.* stack=IST1$" "$W" && grep -q "^PANIC: stack guard dilanggar: task slot 7 (guard 0xffff98400000[0-9a-f]*, stack 0x[0-9a-f]*..0x[0-9a-f]*)$" "$W" && grep -q " panic_test_stack " "$WORK/wd-sym.txt"'
+    check "R6-2: panic stack: #DF lewat IST1, stack guard dilanggar task slot 8 (net task), trace panic_test_stack" \
+        'echo "$STK_REPLY" | grep -q "^panic: uji stack dalam 1 detik$" && grep -q "^PANIC: exception #DF double fault (vektor 8) error=0x0$" "$W" && grep -q "^PANIC: RSP=.* stack=IST1$" "$W" && grep -q "^PANIC: stack guard dilanggar: task slot 8 (guard 0xffff9840000[0-9a-f]*, stack 0x[0-9a-f]*..0x[0-9a-f]*)$" "$W" && grep -q " panic_test_stack " "$WORK/wd-sym.txt"'
     check "R5: dump watchdog lewat netconsole (2x) dan di LOG.BIN (2x)" \
         '[ "$(grep -ac "^PANIC: watchdog: net task tanpa tepukan" "$WORK/netcon-wd.bin")" -eq 2 ] && [ "$(grep -c "^PANIC: watchdog: net task tanpa tepukan" "$WORK/log4.txt")" -eq 2 ]'
     check "R1: tanpa panic bersarang / PIT macet" \

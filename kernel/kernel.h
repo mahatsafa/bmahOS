@@ -630,7 +630,7 @@ extern uint64_t g_audit_seq;    // audit.c: nomor urut entri terakhir
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----
-#define MAX_TASKS 10   // R6-1: 8 -> 10 (slot dev: 7 task uji + net + idle)
+#define MAX_TASKS 10   // R6-1: 8 -> 10 (slot dev: 8 task uji + net + idle, sejak TSS-1)
 
 typedef enum {
     TASK_READY,
