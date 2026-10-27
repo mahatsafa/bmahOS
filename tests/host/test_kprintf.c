@@ -54,6 +54,22 @@ static void test_ints(void)
     }
 }
 
+// Lebar ber-nol %0N (P2/P3): sama dengan libc untuk N <= 20.
+static void test_width(void)
+{
+    SAME("%02x", 5u);
+    SAME("%02x", 0xabcu);
+    SAME("%04x:%04x", 0x8086u, 0x100eu);
+    SAME("%02x:%02x.%u", 0u, 0x1fu, 2u);
+    SAME("%04u-%02u-%02u %02u:%02u:%02u", 2026u, 10u, 7u, 0u, 5u, 59u);
+    SAME("%05d|%05d|%01d|%0d", 42, -42, -7, 7);
+    SAME("%03d", INT_MIN);
+    SAME("%020lu", (unsigned long)UINT64_MAX);
+    SAME("%016lx", 0x1234UL);
+    SAME("%020ld", (long)INT64_MIN);
+    SAME("[%08x]", 0xdeadbeefu);
+}
+
 static void test_strs(void)
 {
     SAME("%s", "");
@@ -95,6 +111,20 @@ static void test_special(void)
 #pragma GCC diagnostic pop
     CHECK_STR(b, "%q 5 %");
     CHECK(r == 6);
+    // Lebar tanpa nol tidak didukung: dicetak apa adanya, argumen tidak diambil.
+    // Lebar > 20 dipotong ke 20 digit; digit ketiga dst. jadi format tak dikenal.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat"
+#ifdef __clang__
+#pragma GCC diagnostic ignored "-Wformat-insufficient-args"
+#endif
+    r = ksnprintf(b, sizeof(b), "%5d|%d", 9);
+    CHECK_STR(b, "%5d|9");
+    ksnprintf(b, sizeof(b), "%025u", 1u);
+    CHECK_STR(b, "00000000000000000001");
+    ksnprintf(b, sizeof(b), "%0999u|%u", 3u);
+    CHECK_STR(b, "%0999u|3");
+#pragma GCC diagnostic pop
 
     // size 0: tidak menulis apa pun (buffer boleh NULL), panjang penuh dikembalikan.
     CHECK(ksnprintf(NULL, 0, "%d", 12345) == 5);
@@ -118,6 +148,7 @@ static void test_kprintf_serial(void)
 int main(void)
 {
     test_ints();
+    test_width();
     test_strs();
     test_special();
     test_kprintf_serial();

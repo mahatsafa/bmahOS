@@ -3,8 +3,9 @@
 
 // F1.6: kprintf/ksnprintf minimal + ASSERT. Format yang didukung:
 // %s %c %d %u %x %p %%, dengan awalan panjang 'l' (64-bit) untuk d/u/x.
-// Tanpa lebar/presisi/flag. Format tak dikenal dicetak apa adanya dan
-// TIDAK mengambil argumen (supaya va_list tidak bergeser).
+// Lebar hanya dengan nol: %0Nd %0Nu %0Nx (N maks 20, tanda minus ikut lebar
+// seperti libc); tanpa presisi/flag lain. Format tak dikenal (mis. %5d tanpa
+// nol) dicetak apa adanya dan TIDAK mengambil argumen (va_list tidak bergeser).
 
 typedef void (*kfmt_put_fn)(char c, void *ctx);
 
@@ -39,6 +40,17 @@ static void kfmt(kfmt_put_fn put, void *ctx, const char *fmt, va_list ap)
         const char *spec_start = fmt;
         fmt++;
 
+        int width = 0;
+        if (*fmt == '0') {
+            fmt++;
+            while (*fmt >= '0' && *fmt <= '9' && width <= 20) {
+                width = width * 10 + (*fmt++ - '0');
+            }
+            if (width > 20) {
+                width = 20;
+            }
+        }
+
         int is_long = 0;
         if (*fmt == 'l') {
             is_long = 1;
@@ -62,18 +74,22 @@ static void kfmt(kfmt_put_fn put, void *ctx, const char *fmt, va_list ap)
         case 'd': {
             int64_t v = is_long ? va_arg(ap, int64_t) : (int64_t)va_arg(ap, int);
             uint64_t mag = (uint64_t)v;
+            int minw = width > 1 ? width : 1;
             if (v < 0) {
                 put('-', ctx);
                 mag = (uint64_t)0 - mag;   // aman juga untuk INT64_MIN
+                minw = width > 1 ? width - 1 : 1;
             }
-            kfmt_putu(put, ctx, mag, 10, 1);
+            kfmt_putu(put, ctx, mag, 10, minw);
             break;
         }
         case 'u':
-            kfmt_putu(put, ctx, is_long ? va_arg(ap, uint64_t) : (uint64_t)va_arg(ap, unsigned int), 10, 1);
+            kfmt_putu(put, ctx, is_long ? va_arg(ap, uint64_t) : (uint64_t)va_arg(ap, unsigned int), 10,
+                      width > 1 ? width : 1);
             break;
         case 'x':
-            kfmt_putu(put, ctx, is_long ? va_arg(ap, uint64_t) : (uint64_t)va_arg(ap, unsigned int), 16, 1);
+            kfmt_putu(put, ctx, is_long ? va_arg(ap, uint64_t) : (uint64_t)va_arg(ap, unsigned int), 16,
+                      width > 1 ? width : 1);
             break;
         case 'p':
             put('0', ctx);

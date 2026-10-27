@@ -141,7 +141,7 @@ static int tls_load_cert(void)
     return 1;
 }
 
-// 64 hex huruf kecil + NUL dari pin (ksnprintf tidak punya %02x).
+// 64 hex huruf kecil + NUL dari pin (ditulis sebelum ksnprintf punya %02x).
 static void tls_pin_hex(char *out)
 {
     static const char hx[] = "0123456789abcdef";
