@@ -2675,6 +2675,7 @@ static void test_tls_limit(void)
     CHECK(tls_sess_active() == 0);
 }
 
+#ifndef BMAHOS_FUZZ   // R7: tests/fuzz/fuzz_net.c memakai helper file ini
 int main(void)
 {
     test_checksum();
@@ -2706,3 +2707,4 @@ int main(void)
     test_netcon();
     return test_done("net");
 }
+#endif

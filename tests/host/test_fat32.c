@@ -921,6 +921,7 @@ static void test_map(int spc)
     img_close();
 }
 
+#ifndef BMAHOS_FUZZ   // R7: tests/fuzz/fuzz_fat32.c memakai helper file ini
 int main(void)
 {
     test_basic(1);
@@ -936,3 +937,4 @@ int main(void)
     test_map(8);
     return test_done("fat32");
 }
+#endif

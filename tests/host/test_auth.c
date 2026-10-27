@@ -10,7 +10,12 @@
 #include "auth.c"
 
 // ---- stub untuk auth.c ----
+#ifdef BMAHOS_FUZZ
+void fuzz_machine_reboot(void) __attribute__((noreturn));   // R7: fuzz_auth.c (longjmp)
+void machine_reboot(void) { fuzz_machine_reboot(); }
+#else
 void machine_reboot(void) { abort(); }   // R1-1: acpi.c
+#endif
 uint64_t g_auth_ctr_off = 0;
 uint64_t g_chal_issued = 0;
 uint64_t g_chal_noentropy = 0;
@@ -840,6 +845,7 @@ static void test_udp_admin(void)
     g_udp_admin = 1;
 }
 
+#ifndef BMAHOS_FUZZ   // R7: tests/fuzz/fuzz_auth.c memakai helper file ini
 int main(void)
 {
     test_load_key();
@@ -854,3 +860,4 @@ int main(void)
     test_udp_admin();
     return test_done("auth");
 }
+#endif

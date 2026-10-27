@@ -384,6 +384,7 @@ static void test_plain_admin(void)
     config_load();
 }
 
+#ifndef BMAHOS_FUZZ   // R7: tests/fuzz/fuzz_config.c memakai helper file ini
 int main(void)
 {
     test_parse();
@@ -393,3 +394,4 @@ int main(void)
     test_netcon_keys();
     return test_done("config");
 }
+#endif

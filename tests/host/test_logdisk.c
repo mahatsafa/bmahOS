@@ -473,6 +473,7 @@ static void test_fail_ro(void)
     CHECK_STR(run(" 1"), "=== boot 1 seq 3 ===\nterakhir\n");
 }
 
+#ifndef BMAHOS_FUZZ   // R7: tests/fuzz/fuzz_logdisk.c memakai helper file ini
 int main(void)
 {
     test_off();
@@ -486,3 +487,4 @@ int main(void)
     test_fail_ro();
     return test_done("logdisk");
 }
+#endif
