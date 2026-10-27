@@ -473,6 +473,7 @@ void e1000_probe_and_log(uint64_t pml4_phys)
     auth_load_key();
     tls_load();      // D9: TLSKEY.DER + TLSCERT.DER (port 7780), sebelum config
     config_load();   // D7: CONFIG.CFG (default bila tidak ada / ditolak)
+    filter_load();   // P4: FILTER.CFG (tidak ada / ditolak = tanpa aturan)
 
     if (!g_e1000_found) {
         serial_write("E1000: perangkat tidak ditemukan, skip\r\n");

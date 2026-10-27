@@ -590,6 +590,21 @@ echo "info  P3-1: $WAKTU_L (selisih ${WAKTU_D} s)"
 check "P3-1: RTC terbaca saat boot, waktu = jam host (selisih <= 120 s)" \
     'grep -aq "P3: RTC ok 20[0-9][0-9]-[01][0-9]-[0-3][0-9] [0-2][0-9]:[0-5][0-9]:[0-5][0-9] (status B 0x" "$LOG" && [ -n "$WAKTU_E" ] && [ "${WAKTU_D#-}" -le 120 ]'
 
+# P4: packet filter. Disk baru: tanpa FILTER.CFG. Aturan untuk .99 (tidak dipakai
+# uji lain) disimpan dan dibaca ulang boot kedua (qemu-rawnet.py test_filter).
+sleep 1.2
+FLT_ADD="$($BM "filter tambah tolak udp 192.168.50.99 port 7777" 2>&1)"
+sleep 1.2
+FLT_L="$($BM filter 2>&1)"
+sleep 2.5
+FLT_RO="$($BMT --key "$ROKEY" filter "filter kosong" 2>&1)"
+echo "info  P4: $FLT_ADD | $(echo "$FLT_L" | head -1)"
+check "P4: tanpa FILTER.CFG -> tanpa aturan; filter tambah tersimpan dan terdaftar" \
+    'grep -aq "P4: filter tanpa aturan (tanpa file)" "$LOG" && [ "$FLT_ADD" = "OK filter 1: tolak udp 192.168.50.99/32 port 7777 (tersimpan)" ] && echo "$FLT_L" | grep -q "^1: tolak udp 192.168.50.99/32 port 7777 \[0/0\]$"'
+check "P4: peran read-only boleh membaca filter, tidak boleh mengubah" \
+    'echo "$FLT_RO" | grep -q "^filter: aturan=1 " && echo "$FLT_RO" | grep -q "^ERR: peran read-only"'
+sleep 2.5
+
 # R5: watchdog perangkat lunak: net task menepuk, IRQ timer hanya memeriksa.
 # Di titik ini boot pertama sudah melewati TLS, tulis FAT32, dan echo 1 MB.
 sleep 1.2
@@ -696,6 +711,7 @@ check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|FATA
 check "D7: tanpa disk: CONFIG: sumber=bawaan (tanpa disk)" \
     'grep -q "CONFIG: sumber=bawaan (tanpa disk) cli_idle=300 udp_rate=20 echo=1" "$BARE"'
 check "P1: tanpa VGA: fbcon nonaktif, boot lanjut" 'grep -aq "P1: fbcon nonaktif (tanpa framebuffer)" "$BARE"'
+check "P4: tanpa disk: filter tanpa aturan" 'grep -aq "P4: filter tanpa aturan (tanpa disk)" "$BARE"'
 check "D9: tanpa disk: TLS nonaktif" 'grep -q "TLS: nonaktif (TLSKEY.DER tidak ada)" "$BARE"'
 
 # R1: panic handler (build dev saja). Satu QEMU TANPA -no-reboot: panic pf ->

@@ -390,6 +390,13 @@ void rtc_init(void);
 uint64_t rtc_now(void);                       // epoch sekarang, 0 bila RTC tidak sah
 void rtc_status(void (*out)(const char *));   // perintah `waktu`
 
+// ---- filter.c (P4: packet filter, aturan di FILTER.CFG) ----
+extern uint64_t g_filter_drop;
+void filter_load(void);                        // saat boot, setelah config_load
+int filter_check(const volatile uint8_t *ip_src, uint8_t proto, uint16_t dport);   // 1 lolos
+int filter_ipv4(const volatile uint8_t *buf, uint32_t ihl, uint32_t payload_len); // 1 lolos
+int filter_execute(const volatile uint8_t *cmd, uint32_t len);                    // 1 = ditangani
+
 // ---- apic.c (Local APIC + IOAPIC) ----
 #define LAPIC_VIRT  0xFFFF910000000000ULL
 #define IOAPIC_REDTBL_BASE  0x10

@@ -22,6 +22,7 @@ static const char *const g_fs_protected[] = {
 
 static const char *const g_fs_wprotected[] = {
     "CONFIG  CFG", "CONFIG  TMP",
+    "FILTER  CFG", "FILTER  TMP",   // P4: hanya lewat perintah filter
     "LOG     BIN",   // R4: dipetakan logdisk, ukuran/rantai tidak boleh berubah
 };
 

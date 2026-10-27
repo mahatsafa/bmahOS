@@ -57,6 +57,22 @@ WEAK void netcon_panic_flush(void)
     g_netcon_flushes++;
 }
 
+// P4: filter.c tidak ikut di uji lain: tanpa aturan (semua lolos), perintah tidak ditangani.
+WEAK int filter_ipv4(const volatile uint8_t *buf, uint32_t ihl, uint32_t payload_len)
+{
+    (void)buf;
+    (void)ihl;
+    (void)payload_len;
+    return 1;
+}
+
+WEAK int filter_execute(const volatile uint8_t *cmd, uint32_t len)
+{
+    (void)cmd;
+    (void)len;
+    return 0;
+}
+
 WEAK int g_logdisk_syncs = 0;
 
 WEAK void logdisk_sync(int panic)

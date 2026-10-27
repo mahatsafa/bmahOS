@@ -2054,6 +2054,10 @@ static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
         return;
     }
 
+    if (!filter_ipv4(buf, ihl, total_len - ihl)) {
+        return;   // P4: dibuang aturan filter (dihitung di filter.c)
+    }
+
     if (buf[23] == 17) {
         net_handle_udp(buf, ihl, total_len - ihl);
         return;

@@ -290,6 +290,69 @@ def test_config(net, cli):
           repr((r, n, r2, r3)))
 
 
+def test_filter(net, cli, log):
+    """P4: aturan dari boot pertama terbaca dari FILTER.CFG; tolak per IP/port,
+    laju, SYN baru saja (koneksi berjalan tidak disentuh), TCP 7780 selalu lolos.
+    Semua aturan dihapus lagi di akhir supaya uji berikutnya tidak terpengaruh."""
+    r0 = cli.cmd("filter")
+    text = open(log, "rb").read()
+    check("P4: aturan boot pertama dimuat dari FILTER.CFG saat boot",
+          b"P4: filter sumber=disk aturan=1" in text and r0 is not None and
+          r0.startswith("filter: aturan=1 dibuang=0 sumber=disk ") and
+          "1: tolak udp 192.168.50.99/32 port 7777 [0/0]\n" in r0, repr(r0))
+    a, b = bytes([192, 168, 50, 66]), bytes([192, 168, 50, 67])
+    c, d = bytes([192, 168, 50, 68]), bytes([192, 168, 50, 69])
+    try:
+        r1 = cli.cmd("filter tambah tolak udp 192.168.50.66 port 7777")
+        ea = net.request(a, 48000, ECHO_PORT, b"a", timeout=1.5)
+        eb = net.request(b, 48001, ECHO_PORT, b"b", timeout=5)
+        check("P4: tolak udp .66 port 7777: .66 diam, .67 tetap dibalas",
+              r1 == "OK filter 2: tolak udp 192.168.50.66/32 port 7777 (tersimpan)\n" and
+              ea is None and eb == b"b", repr((r1, ea, eb)))
+        time.sleep(1.2)
+        r2 = cli.cmd("filter tambah izinkan udp 192.168.50.68 port 7777 laju 3")
+        for _ in range(10):
+            net.send(udp_frame(c, 48100, ECHO_PORT, b"x"))
+        n = len(net.udp_replies(c, 48100, 3))
+        # Seperti udp_rate: TCG bisa memproses 10 datagram melewati dua jendela.
+        check("P4: izinkan .68 laju 3: 10 datagram -> 3..6 dibalas",
+              r2 == "OK filter 3: izinkan udp 192.168.50.68/32 port 7777 laju 3 (tersimpan)\n"
+              and 3 <= n <= 6, repr((r2, n)))
+        time.sleep(1.2)
+        r3 = cli.cmd("filter tambah tolak tcp semua")
+        net.send(tcp_frame(d, 48200, 7, 1000, 0, 0x02))
+        t7 = net.tcp_replies(d, 48200, 2)
+        net.send(tcp_frame(d, 48201, 7780, 2000, 0, 0x02))
+        t80 = net.tcp_replies(d, 48201, 3, limit=1)
+        if t80 and t80[0][2] == 0x12:
+            net.send(tcp_frame(d, 48201, 7780, 2001, 0, 0x04))   # buang SYN_RCVD
+        check("P4: tolak tcp semua: SYN ke port 7 dibuang (tanpa RST), SYN ke 7780 tetap dijawab",
+              r3 == "OK filter 4: tolak tcp semua (tersimpan)\n" and t7 == [] and
+              len(t80) == 1 and t80[0][2] in (0x12, 0x14), repr((r3, t7, t80)))
+        time.sleep(1.2)
+        r4 = cli.cmd("filter")
+        r5 = cli.cmd("tulis FILTER.CFG x")
+        check("P4: filter: 4 aturan dengan hitungan [cocok/dibuang]; FILTER.CFG dilindungi dari tulis",
+              r4 is not None and r4.startswith("filter: aturan=4 dibuang=%d sumber=disk " % (1 + 10 - n + 1))
+              and "2: tolak udp 192.168.50.66/32 port 7777 [1/1]\n" in r4
+              and ("3: izinkan udp 192.168.50.68/32 port 7777 laju 3 [10/%d]\n" % (10 - n)) in r4
+              and "4: tolak tcp semua [1/1]\n" in r4 and r5 == "ERR: fs: nama dilindungi\n",
+              repr((r4, r5)))
+        time.sleep(1.2)
+        r6 = cli.cmd("filter hapus 2")
+        r7 = cli.cmd("filter")
+        check("P4: filter hapus 2: aturan berikutnya naik nomor, hitungannya ikut",
+              r6 == "OK filter: aturan 2 dihapus, sisa 3 (tersimpan)\n" and r7 is not None and
+              ("2: izinkan udp 192.168.50.68/32 port 7777 laju 3 [10/%d]\n" % (10 - n)) in r7,
+              repr((r6, r7)))
+    finally:
+        time.sleep(1.2)
+        r8 = cli.cmd("filter kosong")
+        eb = net.request(a, 48002, ECHO_PORT, b"a2", timeout=5)
+        check("P4: filter kosong: .66 dibalas lagi",
+              r8 == "OK filter: semua aturan dihapus (tersimpan)\n" and eb == b"a2", repr((r8, eb)))
+
+
 def arp_frame(sender_mac, sender_ip, target_ip, oper):
     eth = GUEST_MAC + sender_mac + b"\x08\x06"
     arp = (struct.pack("!HHBBH", 1, 0x0800, 6, 4, oper) + sender_mac + sender_ip +
@@ -984,6 +1047,8 @@ def main():
         time.sleep(1.2)
         test_config(net, cli)
         time.sleep(1.2)
+        test_filter(net, cli, log)
+        time.sleep(2.2)
         test_netcon(net, cli)
         time.sleep(1.2)
         test_src_limit(net, cli)
