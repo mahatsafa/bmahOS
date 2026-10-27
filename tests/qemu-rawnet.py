@@ -249,10 +249,13 @@ def test_logdisk(net, cli):
         text += "\n".join(lines) + "\n"
     b1 = text.split("=== boot 2 ")[0]
     print("info  R4: logdisk %d halaman, %d byte, boot 1 %d byte" % (pages, len(text), len(b1)))
-    check("R4: teks boot 1 dari LOG.BIN: awal boot, status logdisk, baris reboot ACPI terakhir",
-          b1.startswith("=== boot 1 seq 1 ===\n") and "R4: logdisk aktif rekaman=128 boot=1" in b1 and
+    # Cincin 128 rekaman (~61 KB) bisa sudah berputar, juga selama halaman dibaca (boot 1
+    # dev + boot 2 ~61 KB): rekaman tertua tertimpa, pembacaan melompat ke rekaman tertua
+    # berikutnya. Yang wajib: teks diawali rekaman boot 1, diakhiri baris reboot boot 1.
+    check("R4: teks boot 1 dari LOG.BIN: diawali rekaman boot 1, diakhiri baris reboot ACPI",
+          re.match(r"=== boot 1 seq \d+ ===\n", b1) is not None and
           b1.rstrip("\n").endswith("ACPI-R: reboot via register reset FADT"),
-          repr(b1[-200:]))
+          repr((b1[:60], b1[-200:])))
     check("R4: boot 1 tanpa rekaman rusak, tanpa baris AUDIT", "rusak/hilang" not in text and
           "AUDIT #" not in text)
 
