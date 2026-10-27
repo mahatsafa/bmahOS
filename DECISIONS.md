@@ -327,3 +327,62 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   overflow ukuran. `pmm_free` frame bebas/tidak sejajar/di luar bitmap = `pmm_bad_free`, diabaikan.
 - **Kebocoran**: make test membandingkan `pmm_alloc - pmm_free` dan `kmalloc` sebelum/sesudah uji boot
   pertama (harus sama). Soak 24 jam = R8.
+
+## 2026-10-27 (P1 konsol framebuffer; urutan R8 dilompati atas izin pengguna, soak menyusul)
+- **Cermin di `serial_putc`** (di bawah `irq_save` yang sudah ada), bukan modul konsol terpisah: semua yang ke
+  UART (kprintf, dump panic) ikut tampil; ikut mute B4b supaya banjir log paket tidak menggambar.
+- **Gulir setengah layar** sekaligus dengan salinan 64-bit. Gulir per baris = menyalin seluruh framebuffer
+  (~3 MB di 1280x800x4) tiap baris, terlalu mahal di QEMU TCG dan di bawah interrupt mati.
+- **Warna dari mask/shift Limine** (bpp 16/24/32, model RGB); mode lain atau tanpa framebuffer -> nonaktif.
+- **Font**: tabel bawaan flanterm (Limine, BSD-2-Clause; menurut upstream dari dump font BIOS Toshiba). Hanya
+  ASCII 0x20..0x7E. Status hak cipta font BIOS aslinya tidak diketahui; bila perlu diganti font berlisensi
+  jelas (mis. Spleen, BSD-2) tanpa mengubah format (3RDPARTY.md).
+
+## 2026-10-27 (P2 PCI generik + ACPI tervalidasi)
+- **Enumerasi**: semua bus 0..255 (tidak bergantung topologi bridge, karena tetap murah: fungsi 0 dulu,
+  fungsi 1..7 hanya bila header bit 7). Tabel statis 64 perangkat, kelebihan dihitung (`pci`).
+- **ACPI**: RSDP (checksum 20 byte; revisi 2+ juga panjang penuh, gagal -> pakai RSDT), XSDT/RSDT dan setiap
+  tabel: panjang >= header, <= 1 MB, checksum 0; tabel rusak dilewati dan dihitung. MADT: entri panjang < 2
+  atau melewati ujung -> berhenti (dulu panjang 0 = loop tanpa akhir); entri lebih pendek dari jenisnya
+  dilewati. CPU = LAPIC/x2APIC aktif atau online-capable. HPET hanya dicatat (dipakai H4).
+- **kprintf lebar `%0N`** (maks 20) ditambahkan untuk alamat PCI dan tanggal; lebar tanpa nol tetap
+  dicetak apa adanya.
+
+## 2026-10-27 (P3-1 jam RTC)
+- RTC CMOS dibaca sekali saat boot (tunggu UIP, dua bacaan sama), lalu dimajukan tick; perintah `waktu`.
+- Zona waktu RTC tidak diketahui (QEMU: UTC; VMware/Windows: umumnya waktu lokal host) -> ditampilkan
+  apa adanya dengan label "zona host". Tahun dianggap 20xx (register abad tidak selalu ada).
+
+## 2026-10-27 (P3-2 klien SNTP)
+- **Sekali jalan atas perintah admin** `waktu sinkron <oktet> [port]` (tanpa sinkron berkala, tanpa kunci
+  CONFIG.CFG): server di /24 sendiri (tanpa gateway, seperti netconsole), port bawaan 123.
+- **Penerimaan balasan**: hanya saat menunggu, dari IP:port server ke port sumber acak kita, checksum UDP,
+  panjang >= 48, LI != 3, versi 3/4, mode 4, stratum 1..15, originate = 8 byte acak yang kita kirim sebagai
+  transmit timestamp; lainnya diabaikan dan dihitung (`diabaikan=`). Batas waktu ARP 3x1 s, NTP 3 s.
+- **Hasil**: jam dinding diganti (sumber=sntp, UTC) mulai tick itu; koreksi (baru - lama) dilaporkan.
+  Presisi 1 s (pecahan dan jeda jaringan diabaikan), era NTP 0 (sampai 2036). Tanpa autentikasi NTP:
+  penyerang di LAN yang bisa membaca permintaan bisa memalsu waktu (THREAT_MODEL).
+- Kode ARP request digabung jadi `net_arp_request_build` (P3-3a) begitu DNS menjadi pemakai ketiga.
+
+## 2026-10-27 (P3-3 klien DNS)
+- **`dns <nama> [oktet [port]]`** (admin) sekali jalan, query A/IN saja; `dns` (status + cache) boleh untuk
+  peran read-only. Server di /24 sendiri, bawaan .1:53. Hasil dibaca dengan mengulang perintah (perintah
+  dieksekusi di net task, jadi tidak bisa menunggu jaringan).
+- **Validasi**: ID + port sumber acak, IP:port server, QR=1, opcode 0, TC=0, QDCOUNT 1, pertanyaan identik
+  (huruf besar/kecil diabaikan). Nama di bagian answer hanya dilompati, tidak pernah diikuti: pointer
+  kompresi mengakhiri nama, jadi loop pointer mustahil; label > 63 / bit dicadangkan / melewati paket = rusak.
+  A/IN pertama dipakai (CNAME di depannya dilewati, tanpa mengikuti rantai).
+- **Cache** 8 entri statis, TTL dibatasi 5..3600 s, NXDOMAIN disimpan 60 s; penuh -> yang paling cepat
+  kedaluwarsa diganti. Hasil DNS belum dipakai modul lain (P6 monitor jaringan nanti).
+- DHCP (sisa P3) belum: IP bmahOS tetap 192.168.50.200 (alamat DHCP akan mengubah semua uji dan klien).
+
+## 2026-10-27 (P4 packet filter)
+- **Bawaan izinkan**: tanpa aturan perilaku sama dengan sebelum P4. Aturan cocok-pertama, maks 16.
+- **Yang diperiksa**: UDP, ICMP, dan TCP SYN tanpa ACK (koneksi baru). Segmen koneksi yang sudah berjalan
+  tidak disentuh (aturan baru tidak memutus sesi admin yang sedang dipakai). Dibuang diam-diam (tanpa RST).
+- **TCP 7780 selalu lolos**: admin tidak bisa mengunci diri dari jauh lewat filter. Akibatnya filter tidak
+  bisa menyembunyikan port TLS (yang tetap butuh pin + HMAC).
+- **FILTER.CFG**: satu baris salah -> seluruh file diabaikan (tanpa aturan, dicatat di serial), sama seperti
+  CONFIG.CFG. Gagal-tertutup ditolak karena mengunci admin; dicatat sebagai keterbatasan.
+- **laju N**: per aturan (total, bukan per IP), jendela 100 tick, hanya untuk `izinkan`.
+- Filter diperiksa sebelum batas laju UDP per IP, jadi paket yang ditolak tidak memakan jatah klien lain.

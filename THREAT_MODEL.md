@@ -62,10 +62,11 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Parser FAT32 | Struktur disk rusak | D6: validasi BPB lengkap (512 B/sektor, SPC 1/2/4/8, NumFATs 1..2, reserved > 0, area data dan FAT cukup untuk jumlah cluster, RootCluster sah), setiap nomor cluster dicek 2..max, rantai melingkar dideteksi, poll AHCI ber-timeout, kode error bukan halt |
 | Tulis FAT32 (D6, D7) | Perintah tulis/hapus/ganti nama merusak volume, menimpa atau menghapus kunci/program boot, crash di tengah tulis | Hanya admin (HMAC), hanya root dir, nama 8.3, KEY.TXT/KEYRO.TXT/PROG.BIN ditolak untuk semua perintah (juga sebagai nama tujuan `ganti`), CONFIG.CFG/.TMP hanya lewat `set`, file maks 4096 byte, entri ber-LFN ditolak, semua cek sebelum tulis pertama, urutan data -> FAT -> dir -> bebaskan lama -> FSInfo dengan flush; hapus: entri dulu lalu rantai; ganti isi atomik lewat file sementara + satu tulis sektor (uji crash di setiap tulisan, `make host-test`), error I/O -> baca saja |
 | Konfigurasi persisten (D7) | File CONFIG.CFG rusak/dimanipulasi lewat disk, nilai yang melemahkan batas, crash saat `set` | Parser ketat: satu baris salah -> seluruh file ditolak, semua default (= nilai sebelum D7); rentang dibatasi (udp_rate maks 100 = batas global, cli_idle 30..3600); IP tidak bisa diatur; `set` hanya admin, tercatat di audit; tulis atomik lewat file sementara; nilai RAM berubah hanya bila tersimpan |
+| Packet filter (P4) | Aturan salah mengunci admin, FILTER.CFG dimanipulasi lewat disk, aturan dilewati dengan IP palsu | Parser ketat (satu baris salah -> tanpa aturan + catatan serial), maks 16 aturan statis, hanya admin yang mengubah (tercatat di audit), tulis atomik lewat FILTER.TMP, FILTER.CFG dilindungi dari `tulis`/`hapus`; TCP 7780 selalu lolos; hanya koneksi baru yang diperiksa |
 | Netconsole UDP (R2) | Log polos di LAN, tujuan dibelokkan lewat ARP palsu, banjir log | Bawaan mati; hanya baris ring log (tanpa AUDIT, tanpa register umum panic, tanpa teks perintah/kunci); tujuan hanya di /24 sendiri; antrean statis 4 KB, maks 20 datagram/s, penuh -> baris dibuang + penanda; tidak ada data masuk yang diproses selain ARP dari IP tujuan |
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |
 | Syscall | Pointer jahat dari user mode | Validasi pointer (R6) |
-| Klien DHCP/DNS/NTP | Balasan palsu | Validasi ID transaksi, batas ukuran, jangan percaya buta (P3) |
+| Klien SNTP (P3-2), DNS (P3-3), DHCP (belum) | Balasan palsu menggeser jam / meracuni cache, parser nama DNS (pointer kompresi) | SNTP dan DNS hanya atas perintah admin, server di /24 sendiri, port sumber acak, SNTP: nonce 8 byte (transmit = originate), mode/versi/LI/stratum dicek; DNS: ID acak, pertanyaan harus identik, nama answer hanya dilompati (pointer tidak diikuti), batas label/panjang, cache statis 8 entri dengan TTL 5..3600 s; balasan lain diabaikan dan dihitung, batas waktu 3 s |
 | Jalur OTA | Kernel palsu | Tanda tangan digital + slot A/B + rollback (P7) |
 
 ## 5. Properti keamanan yang dituju
@@ -131,6 +132,15 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    Macet dengan interrupt mati tidak terdeteksi (tick ikut berhenti) sampai watchdog perangkat keras (H6).
    Pekerjaan sah yang menahan net task > 10 s (mis. handshake TLS di CPU sangat lambat) juga me-reboot;
    jeda terpanjang terlihat di `wd_gap_max`.
+14. Packet filter (P4): aturan berdasarkan IP sumber yang bisa dipalsukan di LAN; bawaan izinkan; TCP 7780
+   tidak bisa difilter; koneksi yang sudah berjalan tidak disentuh aturan baru; FILTER.CFG rusak = tanpa
+   aturan (gagal-terbuka, demi akses admin). ICMP tanpa batas laju kecuali lewat aturan `izinkan icmp ...
+   laju N`.
+15. SNTP (P3-2): tanpa autentikasi NTP; penyerang di LAN yang bisa membaca permintaan (nonce + port) bisa
+   membalas lebih dulu dan menggeser jam. Jam hanya dipakai untuk tampilan `waktu` (belum untuk log, sertifikat,
+   atau keputusan keamanan).
+16. DNS (P3-3): tanpa DNSSEC; penyerang di LAN yang membaca query (ID + port) bisa memasukkan jawaban palsu ke
+   cache. Hasil DNS hanya ditampilkan (belum dipakai untuk koneksi keluar).
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

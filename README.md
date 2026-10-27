@@ -29,7 +29,19 @@ Belum pernah diuji di hardware asli.
   `.text` dan halaman kode user yang executable (self-test page walk saat boot)
 - PMM: frame fisik 0 tidak pernah dibagikan (QEMU melaporkannya usable, dan 0 dipakai `pmm_alloc()`
   sebagai tanda gagal); ada self-test free/realloc saat boot
-- PCI: AHCI dan E1000 dicari otomatis (kelas/vendor/device ID), bukan alamat bus tetap
+- PCI (P2): enumerasi generik semua bus ke tabel 64 perangkat (fungsi 1..7 hanya pada perangkat
+  multi-function); AHCI dan E1000 dicari dari tabel (kelas/vendor/device ID). Perintah `pci`
+- ACPI (P2): RSDP/XSDT/RSDT dan setiap tabel dicek checksum + panjang (rusak dilewati), MADT tahan entri
+  rusak, jumlah CPU, HPET dicatat. Perintah `acpi`
+- Konsol framebuffer (P1): semua keluaran serial (juga dump panic) ikut tampil di layar (font 8x16,
+  warna dari mask Limine, gulir setengah layar); tanpa framebuffer -> nonaktif
+- Jam (P3): RTC CMOS dibaca saat boot (`waktu`, zona host); `waktu sinkron <oktet> [port]` (admin) mengambil
+  jam UTC dari server SNTP di /24 sendiri (balasan divalidasi nonce, lihat `PROTOCOL.md`)
+- DNS (P3): `dns <nama> [oktet [port]]` (admin) query A ke server di /24 sendiri, cache 8 entri dengan TTL;
+  `dns` menampilkan status dan isi cache
+- Packet filter (P4): `FILTER.CFG`, maks 16 aturan cocok-pertama
+  `<izinkan|tolak> <semua|tcp|udp|icmp> <semua|a.b.c.d[/n]> [port A[-B]] [laju N]` untuk UDP, ICMP, dan
+  SYN TCP baru; TCP 7780 selalu lolos. Perintah `filter`, `filter tambah|hapus <n>|kosong` (admin)
 - Storage: AHCI (baca/tulis blok, flush, poll ber-timeout), FAT32 (baca file; D6: tulis file teks
   <= 4096 byte di root directory lewat perintah admin `ls`/`baca`/`tulis`/`tambah`, D7: `hapus`/`ganti`,
   urutan tulis aman saat crash, lihat `PROTOCOL.md`), `spawn()` program dari disk
@@ -233,8 +245,8 @@ TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 
 
 ## Arah berikutnya (belum dikerjakan)
 
-- TCP, lalu CLI interaktif di atasnya dengan autentikasi challenge-response
-- SSH hanya dipertimbangkan setelah itu
+- Urutan lengkap dan status di `ROADMAP.md`: soak test 24 jam (R8), DHCP (sisa P3), socket API user
+  mode (P5), monitor jaringan (P6), OTA A/B (P7), lalu perangkat keras asli (Fase 6)
 
 ## Batasan yang diketahui
 

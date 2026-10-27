@@ -27,11 +27,11 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `trap.c` | `exception_dispatcher` (exception kernel -> `panic_exception`; dari ring 3 -> task dihentikan, R6-1), `irq_handler`, syscall `int 0x80` (test/write/exit; `SYS_WRITE` maks 1024 byte, counter `sys_*`), `trigger_*` uji | sched, vmm, apic |
 | `pmm.c` | bitmap frame fisik (maks 4 GiB), frame 0 tidak pernah dibagikan, counter alokasi/lepas/gagal/lepas salah (R6-3) | Limine memmap |
 | `vmm.c` | page table 4 level, `vmm_map` (tabel gagal -> `oom_panic`), NX, klon PML4 kernel, validasi pointer user, heap kernel (`kmalloc`/`kfree` bump, maks `KHEAP_MAX` 16 MB), stack kernel ber-guard `kstack_alloc` di region `KSTACK_START` (R6-2) | pmm |
-| `acpi.c` | RSDP, MADT (alamat LAPIC/IOAPIC, override IRQ0), FADT (register reset), `machine_reboot` (ACPI -> 8042 -> triple fault) | Limine RSDP |
+| `acpi.c` | RSDP, MADT (alamat LAPIC/IOAPIC, override IRQ0), FADT (register reset), `machine_reboot` (ACPI -> 8042 -> triple fault); P2: checksum + panjang RSDP/XSDT/RSDT/tiap tabel, MADT tahan entri rusak, jumlah CPU, HPET, perintah `acpi` | Limine RSDP |
 | `panic.c` | R1: dump exception (nama vektor, register, CR0-4, error #PF diurai), stack trace rantai rbp (maks 16 frame, tiap rbp dicek sebelum dibaca), reboot otomatis 10 s (polling PIT), panic bersarang -> reboot langsung; perintah uji `panic pf/df/ud/assert` (build dev) | kprintf, acpi, pic, ktimer |
 | `pic.c` | remap dan mask 8259, PIT | — |
 | `apic.c` | Local APIC (EOI), IOAPIC (redirection table) | acpi, vmm |
-| `pci.c` | config space mekanisme #1, pencarian AHCI dan E1000 | — |
+| `pci.c` | config space mekanisme #1; P2: enumerasi semua bus ke tabel `g_pci_devs` (maks 64, multi-function), `pci_find_class`/`pci_find_id`, pencarian AHCI dan E1000 dari tabel, perintah `pci` | kprintf |
 | `ahci.c` | inisialisasi port, `ahci_read` (polling, satu frame) | pci, vmm, pmm |
 | `fat32.c` | validasi BPB, root directory, cluster chain, `fat32_find_file`/`fat32_load_file`; D6: tulis root dir (`fat32_write_name`, `fat32_read_name`, `fat32_root_read`) dengan urutan tulis aman; D7: `fat32_delete_name`, `fat32_rename_name`, `fat32_replace_name` (ganti isi atomik lewat file sementara) | ahci |
 | `fscmd.c` | D6: perintah `ls`/`baca`/`tulis`/`tambah` (D7: + `hapus`/`ganti`; nama 8.3, nama dilindungi, teks), dipanggil dari `priv_cmd_execute` | fat32, cmd, kprintf |
@@ -46,6 +46,10 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `watchdog.c` | R5: watchdog perangkat lunak (`watchdog_pet` dari loop net task, `watchdog_check` dari IRQ timer, batas 1000 tick -> dump lewat panic.c + reboot; trace dari frame interrupt atau konteks `context_switch` tersimpan; perintah `wd`, uji `wdtest loop/blok` build dev) | panic, sched, ktimer, cmd, kprintf |
 | `fbcon.c` | P1: konsol framebuffer (request framebuffer Limine, font 8x16 `fbfont.h`, alamat baris pakai `pitch`, warna dari mask/shift, gulir setengah layar dengan salinan 64-bit; dicerminkan dari `serial_putc` di bawah `irq_save`, ikut mute B4b; tanpa framebuffer/mode lain -> nonaktif) | serial, kprintf, klib |
 | `logdisk.c` | R4: log persisten di `LOG.BIN` (antrean statis 4 KB dari `log_capture`, rekaman 512 byte boot/seq/hash, pindai saat boot, tulis maks 2/s dari net task, `logdisk_sync` saat panic/reboot, perintah `logdisk`) | fat32 (`fat32_map_*`), crypto, cmd, kprintf |
+| `rtc.c` | P3-1: RTC CMOS saat boot (UIP, dua bacaan sama, BCD/12 jam) -> epoch + tick; P3-2: `rtc_set_sntp`; perintah `waktu` | kprintf |
+| `sntp.c` | P3-2: klien SNTP sekali jalan (`waktu sinkron`): ARP, permintaan dengan nonce, validasi balasan, batas waktu; hook di net_handle_arp/udp dan loop net task | net (`net_udp_build`), e1000, entropy, rtc, pmm, cmd |
+| `dns.c` | P3-3: klien DNS A sekali jalan (`dns <nama>`), validasi balasan (ID, pertanyaan identik, nama answer hanya dilompati), cache 8 entri TTL 5..3600 s | net (`net_udp_build`, `net_arp_request_build`), e1000, entropy, pmm, cmd |
+| `filter.c` | P4: packet filter (maks 16 aturan cocok-pertama dari `FILTER.CFG`, UDP/ICMP/SYN TCP, laju per aturan, TCP 7780 selalu lolos), perintah `filter` | fat32 (`read_name`/`replace_name`), cmd, kprintf |
 | `netcon.c` | R2: netconsole UDP (antrean statis 4 KB dari `log_capture`, ARP tujuan, batas 20 datagram/s, kirim langsung saat panic, perintah `netcon`) | net (`net_udp_build`), e1000, pmm, cmd, kprintf |
 | `tls.c` | D9: server TLS 1.2 BearSSL untuk CLI 7780 (`tls_load` identitas TLSKEY/TLSCERT.DER, pool 2 sesi statis, pembungkus engine untuk net.c, perintah `tls`) | BearSSL, fat32, entropy, cmd, kprintf |
 | `klib.c` | D9: `memcpy`/`memmove`/`memset`/`memcmp`/`strlen` (dibutuhkan BearSSL; header `kernel/compat/string.h`) | - |

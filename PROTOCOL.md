@@ -292,3 +292,59 @@ register umum dump panic), maks 160 karakter.
 - Format `LOG.BIN` (sektor 512 byte, little endian): `BMLG`, versi 1, flag (bit 0 = panic),
   panjang teks u16 (<= 480), boot u32, 0 u32, seq u64, hash 8 byte (awal SHA-256 sektor dengan field
   hash nol), teks. Pembaca offline: `tools/logdump.py LOG.BIN [--boot N] [--status]`.
+
+## Perangkat keras: `pci`, `acpi` (P2)
+
+- `pci` (ro): satu baris per perangkat `BB:DD.F vvvv:dddd kelas KK:SS:PP hdr H` (hex; hdr = header type
+  tanpa bit multi-function), lalu `pci: N perangkat, tidak muat M` (tabel maks 64).
+- `acpi` (ro): satu baris per tabel dari XSDT/RSDT `SIG len=N rev=R ok|rusak` (rusak = panjang atau
+  checksum salah, tidak dipakai), lalu `acpi: tabel=N ditolak=M cpu=C hpet=0x<basis>` (`(tidak dipakai)`
+  bila HPET tidak ada atau bukan ruang memori).
+
+## Jam: `waktu`, `waktu sinkron` (P3)
+
+- `waktu` (ro): `waktu: YYYY-MM-DD HH:MM:SS epoch=N sumber=rtc (zona host)` atau, setelah SNTP berhasil,
+  `... sumber=sntp oktet=X stratum=S (UTC) koreksi=±D s`; lalu
+  `sntp: diam|berjalan terakhir=<hasil> ok=N gagal=N diabaikan=N`. RTC tidak sah:
+  `waktu: tidak tersedia (RTC tidak masuk akal)`.
+- `waktu sinkron <oktet 1..254> [port]` (admin, bawaan port 123): satu kali SNTP ke 192.168.50.<oktet>.
+  Balasan langsung `OK: SNTP ke a.b.c.d:p dimulai, lihat `waktu` (maks 6 s)`; hasil lewat `waktu`.
+  Galat: `ERR: waktu: format: ...`, `ERR: waktu: oktet 1..254 (bukan IP sendiri), port 1..65535`,
+  `ERR: waktu: sinkron sebelumnya masih berjalan`, `ERR: waktu: entropi belum cukup`, `ERR: waktu: tanpa NIC`.
+- Paket: ARP request (maks 3, tiap 1 s), lalu UDP 48 byte dari port sumber acak 49152..65535: byte 0 =
+  0x23 (LI 0, versi 4, mode 3), transmit timestamp (byte 40..47) = 8 byte acak. Balasan diterima bila
+  dari IP:port server ke port sumber itu, checksum UDP sah, >= 48 byte, LI != 3, versi 3/4, mode 4,
+  stratum 1..15, originate (byte 24..31) = 8 byte tadi; detik = transmit (byte 40..43) - 2208988800.
+  Serial: `P3: SNTP ok dari ... stratum S koreksi D s` / `P3: SNTP gagal: tanpa balasan ARP|tanpa balasan
+  NTP (3 s)|kirim gagal`. Server uji: `tests/sntp-server.py HOST PORT [geser] [durasi]`.
+
+## Packet filter `filter` (P4)
+
+- Aturan (juga satu baris `FILTER.CFG`, `#` komentar, maks 16):
+  `<izinkan|tolak> <semua|tcp|udp|icmp> <semua|a.b.c.d[/n]> [port A[-B]] [laju N]`. Bit host di luar
+  prefix harus 0; `port` hanya untuk tcp/udp/semua (cocok dengan paket TCP/UDP saja); `laju N` (1..10000)
+  hanya untuk `izinkan`: paling banyak N paket per jendela 1 s untuk aturan itu (total).
+- Diperiksa berurutan, aturan pertama yang cocok menentukan; tanpa yang cocok = izinkan. Yang diperiksa:
+  UDP, ICMP, TCP SYN tanpa ACK. TCP ke 7780 selalu lolos. Ditolak = dibuang tanpa balasan.
+- `filter` (ro): `filter: aturan=N dibuang=D sumber=<disk|tanpa file|tanpa disk|FILTER.CFG ditolak|...>
+  [cocok/dibuang]; tanpa cocok: izinkan; tcp 7780 selalu lolos`, lalu `N: <aturan kanonik> [cocok/dibuang]`.
+- Admin: `filter tambah <aturan>` -> `OK filter N: <aturan kanonik> (tersimpan)`; `filter hapus <n>` ->
+  `OK filter: aturan n dihapus, sisa M (tersimpan)`; `filter kosong` -> `OK filter: semua aturan dihapus
+  (tersimpan)`. FILTER.CFG ditulis atomik lewat FILTER.TMP; gagal tulis -> `ERR: filter: tidak tersimpan,
+  aturan tidak diubah (fs: ...)`. Galat parser: `ERR: filter: <alasan>`. FILTER.CFG/.TMP tidak bisa
+  diubah lewat `tulis`/`hapus`/`ganti`.
+- Saat boot: `P4: filter sumber=disk aturan=N`, `P4: filter tanpa aturan (tanpa file|tanpa disk|galat baca
+  disk)`, atau `P4: FILTER.CFG ditolak baris N (alasan), tanpa aturan`.
+
+## DNS `dns` (P3-3)
+
+- `dns` (ro): `dns: diam|berjalan terakhir=<nama> <hasil> ok=N gagal=N diabaikan=N cache=K/8`, lalu satu baris
+  per entri cache: `<nama> = a.b.c.d sisa=S s` atau `<nama> = tidak ada (NXDOMAIN) sisa=S s`.
+- `dns <nama> [oktet [port]]` (admin; bawaan oktet 1, port 53): nama 1..63 byte (label a-z 0-9 '-', huruf besar
+  jadi kecil). Ada di cache -> `<nama> = ... sisa=S s (cache)`; selain itu `OK: DNS <nama> ke a.b.c.d:p dimulai,
+  ulangi perintah (maks 6 s)`. Galat: `ERR: dns: nama ...`, `ERR: dns: format: dns <nama> [oktet [port]]`,
+  `ERR: dns: oktet 1..254 (bukan IP sendiri), port 1..65535`, `ERR: dns: query sebelumnya masih berjalan`.
+- Paket: ARP (maks 3 x 1 s), lalu query standar (ID acak, RD=1, QDCOUNT 1, A/IN) dari port sumber acak.
+  Balasan sah: dari IP:port server, ID sama, QR=1, opcode 0, TC=0, QDCOUNT 1, pertanyaan identik. RCODE 3 ->
+  NXDOMAIN (cache 60 s); A/IN pertama di answer (TTL dibatasi 5..3600 s). Serial `P3: DNS <nama> <hasil>`.
+  Server uji: `tests/dns-server.py HOST PORT [durasi]` (bmahos.uji -> 192.168.50.123).
