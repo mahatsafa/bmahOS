@@ -354,6 +354,28 @@ uint32_t pci_config_read32(uint8_t bus, uint8_t device, uint8_t function, uint8_
 void pci_scan_and_log(void);
 void pci_config_write32(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset, uint32_t value);
 void pci_find_devices(void);
+// P2: tabel perangkat PCI hasil enumerasi generik (maks PCI_MAX_DEVS, sisanya dihitung).
+#define PCI_MAX_DEVS 64
+typedef struct {
+    uint8_t bus, dev, fn, hdr;     // hdr = header type tanpa bit multi-function
+    uint16_t vendor, device;
+    uint32_t cls;                  // kelas << 16 | subkelas << 8 | prog_if
+} pci_dev_t;
+extern pci_dev_t g_pci_devs[PCI_MAX_DEVS];
+extern uint32_t g_pci_ndevs, g_pci_dropped;
+extern uint32_t (*g_pci_read)(uint8_t, uint8_t, uint8_t, uint8_t);
+void pci_enumerate(void);
+const pci_dev_t *pci_find_class(uint32_t cls);
+const pci_dev_t *pci_find_id(uint16_t vendor, uint16_t device);
+void pci_list(void (*out)(const char *));   // perintah `pci` dan log boot
+// P2: ACPI tervalidasi (checksum/panjang), HPET, jumlah CPU dari MADT.
+extern uint32_t g_acpi_bad, g_acpi_cpus;
+extern uint64_t g_hpet_base;
+extern uint16_t g_hpet_min_tick;
+extern int g_hpet_ok;
+int acpi_table_ok(const struct acpi_sdt_header *h);
+int acpi_parse_rsdp(const struct acpi_rsdp *rsdp);   // 0 OK, -1 RSDP/root rusak
+void acpi_list(void (*out)(const char *));            // perintah `acpi`
 
 // ---- apic.c (Local APIC + IOAPIC) ----
 #define LAPIC_VIRT  0xFFFF910000000000ULL

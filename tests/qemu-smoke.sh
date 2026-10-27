@@ -560,6 +560,26 @@ else
         '[ "${REPLAY%%|*}" = "pong" ] && [ "${REPLAY#*|}" = "ERR: counter replay" ]'
 fi
 
+# P2: enumerasi PCI generik (tabel) dan ACPI tervalidasi (QEMU q35: ICH9 AHCI
+# 00:1f.2, E1000 8086:100e, 1 CPU). HPET opsional: qemu-kvm RHEL/CentOS tidak
+# menyediakannya; bila tabel HPET ada, harus sah dan basisnya terbaca.
+sleep 1.2
+PCI_L="$($BM pci 2>&1)"
+sleep 1.2
+ACPI_L="$($BM acpi 2>&1)"
+echo "info  P2: $(echo "$PCI_L" | tail -1) | $(echo "$ACPI_L" | tail -1)"
+check "P2: pci: E1000 8086:100e + AHCI 01:06:01 + host bridge di tabel, semua muat" \
+    'echo "$PCI_L" | grep -q "^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]\.[0-7] 8086:100e kelas 02:00:00 hdr 0$" && echo "$PCI_L" | grep -q " kelas 01:06:01 hdr 0$" && echo "$PCI_L" | grep -q "^00:00.0 .* kelas 06:00:00 " && echo "$PCI_L" | grep -q "^pci: [0-9]* perangkat, tidak muat 0$"'
+if echo "$ACPI_L" | grep -q "^HPET len="; then
+    HPET_OK='echo "$ACPI_L" | grep -q "^HPET len=56 rev=[0-9]* ok$" && echo "$ACPI_L" | grep -q "^acpi: .* hpet=0xfed00000$" && grep -aq "P2: HPET base=0xfed00000 .* ok" "$LOG" && grep -aq "P2: ACPI .* hpet=ada" "$LOG"'
+else
+    HPET_OK='echo "$ACPI_L" | grep -q "^acpi: .* hpet=0x0 (tidak dipakai)$" && grep -aq "P2: ACPI .* hpet=tidak ada" "$LOG"'
+fi
+check "P2: acpi: FACP/APIC ok, ditolak 0, cpu 1, HPET sah bila ada" \
+    'echo "$ACPI_L" | grep -q "^FACP len=[0-9]* rev=[0-9]* ok$" && echo "$ACPI_L" | grep -q "^APIC len=[0-9]* rev=[0-9]* ok$" && echo "$ACPI_L" | grep -q "^acpi: tabel=[0-9]* ditolak=0 cpu=1 hpet=" && ! echo "$ACPI_L" | grep -q " rusak$" && eval "$HPET_OK"'
+check "P2: serial: ringkasan PCI dan ACPI saat boot" \
+    'grep -aq "PCI: pci: [0-9]* perangkat, tidak muat 0" "$LOG" && grep -aq "P2: ACPI tabel=[0-9]* ditolak=0 cpu=1 hpet=" "$LOG"'
+
 # R5: watchdog perangkat lunak: net task menepuk, IRQ timer hanya memeriksa.
 # Di titik ini boot pertama sudah melewati TLS, tulis FAT32, dan echo 1 MB.
 sleep 1.2
