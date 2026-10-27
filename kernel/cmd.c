@@ -84,7 +84,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
         cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks config tls "
-                 "netcon logdisk wd pci acpi\n");
+                 "netcon logdisk wd pci acpi waktu\n");
         cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti set\n");
         cmd_puts("berprivilege: pping reboot audit (audit gagal)\n");
         cmd_puts("kirim CHAL, lalu <nonce> <perintah> <hmac>\n");
@@ -281,6 +281,8 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "netcon")) {
         netcon_status();   // R2
+    } else if (net_cmd_is(cmd, len, "waktu")) {
+        rtc_status(cmd_puts);   // P3-1
     } else if (net_cmd_is(cmd, len, "acpi")) {
         acpi_list(cmd_puts);   // P2
     } else if (net_cmd_is(cmd, len, "pci")) {

@@ -580,6 +580,16 @@ check "P2: acpi: FACP/APIC ok, ditolak 0, cpu 1, HPET sah bila ada" \
 check "P2: serial: ringkasan PCI dan ACPI saat boot" \
     'grep -aq "PCI: pci: [0-9]* perangkat, tidak muat 0" "$LOG" && grep -aq "P2: ACPI tabel=[0-9]* ditolak=0 cpu=1 hpet=" "$LOG"'
 
+# P3-1: RTC CMOS QEMU = UTC host (-rtc base=utc bawaan), jadi epoch `waktu`
+# harus dekat jam CentOS (selisih <= 120 s, TCG lambat).
+sleep 1.2
+WAKTU_L="$($BM waktu 2>&1)"
+WAKTU_E="$(echo "$WAKTU_L" | sed -n "s/^waktu: 20[0-9-]* [0-9:]* epoch=\([0-9]*\) sumber=rtc (zona host)$/\1/p")"
+WAKTU_D=$(( ${WAKTU_E:-0} - $(date +%s) ))
+echo "info  P3-1: $WAKTU_L (selisih ${WAKTU_D} s)"
+check "P3-1: RTC terbaca saat boot, waktu = jam host (selisih <= 120 s)" \
+    'grep -aq "P3: RTC ok 20[0-9][0-9]-[01][0-9]-[0-3][0-9] [0-2][0-9]:[0-5][0-9]:[0-5][0-9] (status B 0x" "$LOG" && [ -n "$WAKTU_E" ] && [ "${WAKTU_D#-}" -le 120 ]'
+
 # R5: watchdog perangkat lunak: net task menepuk, IRQ timer hanya memeriksa.
 # Di titik ini boot pertama sudah melewati TLS, tulis FAT32, dan echo 1 MB.
 sleep 1.2

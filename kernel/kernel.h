@@ -377,6 +377,19 @@ int acpi_table_ok(const struct acpi_sdt_header *h);
 int acpi_parse_rsdp(const struct acpi_rsdp *rsdp);   // 0 OK, -1 RSDP/root rusak
 void acpi_list(void (*out)(const char *));            // perintah `acpi`
 
+// ---- rtc.c (P3-1: jam dinding dari RTC CMOS, dimajukan tick) ----
+typedef struct {
+    uint32_t year, month, day, hour, min, sec;
+} rtc_time_t;
+extern uint64_t g_rtc_boot_epoch, g_rtc_boot_tick;
+extern int g_rtc_ok;
+uint64_t rtc_days_from_civil(uint32_t y, uint32_t m, uint32_t d);
+void rtc_civil_from_epoch(uint64_t t, rtc_time_t *o);
+uint64_t rtc_raw_to_epoch(const uint8_t raw[6], uint8_t status_b);   // 0 = tidak masuk akal
+void rtc_init(void);
+uint64_t rtc_now(void);                       // epoch sekarang, 0 bila RTC tidak sah
+void rtc_status(void (*out)(const char *));   // perintah `waktu`
+
 // ---- apic.c (Local APIC + IOAPIC) ----
 #define LAPIC_VIRT  0xFFFF910000000000ULL
 #define IOAPIC_REDTBL_BASE  0x10

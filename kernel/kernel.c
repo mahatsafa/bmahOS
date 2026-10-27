@@ -784,6 +784,7 @@ void kmain(void)
 {
     serial_init();
     fbcon_init();   // P1
+    rtc_init();     // P3-1
     cpu_features_init();
     kprintf_selftest();
     entropy_init();

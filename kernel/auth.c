@@ -684,7 +684,7 @@ int auth_tcp_cmd(const uint8_t nonce[16], int role, uint64_t seq,
 // g_ro_cmds (perintah baru otomatis ditolak); lainnya "ERR: peran read-only".
 static const char *const g_ro_cmds[] = {
     "help", "ping", "uptime", "mem", "log", "irq", "stats", "metrics", "mac",
-    "ip", "tasks", "config", "tls", "netcon", "logdisk", "wd", "pci", "acpi",
+    "ip", "tasks", "config", "tls", "netcon", "logdisk", "wd", "pci", "acpi", "waktu",
 };
 
 // D5: juga dipakai net.c untuk menentukan jenis entri audit sebelum exec.
