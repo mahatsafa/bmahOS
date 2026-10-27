@@ -439,6 +439,32 @@ uint16_t net_udp_checksum(const volatile uint8_t *src_ip,
     return (uint16_t)(~sum);
 }
 
+// P3-3a: ARP request "who-has ip" (broadcast) 60 byte di p, dari MAC/IP kita.
+// Dipakai netconsole dan SNTP (dulu tiap modul menyalin kode ini). Return 60.
+uint32_t net_arp_request_build(uint8_t *p, const volatile uint8_t *ip)
+{
+    for (int i = 0; i < 60; i++) {
+        p[i] = 0;
+    }
+    for (int i = 0; i < 6; i++) {
+        p[i] = 0xFF;
+        p[6 + i] = g_e1000_mac[i];
+        p[22 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0x06;
+    p[15] = 0x01;   // htype Ethernet
+    p[16] = 0x08;   // ptype IPv4
+    p[18] = 6;
+    p[19] = 4;
+    p[21] = 0x01;   // request
+    for (int i = 0; i < 4; i++) {
+        p[28 + i] = g_net_ip[i];
+        p[38 + i] = ip[i];
+    }
+    return 60;
+}
+
 // R2-1: isi header Ethernet + IPv4 (proto 17) + UDP di depan payload yang
 // SUDAH ada di p[42..42+plen), padding sampai 60 byte dinolkan, checksum IP
 // dan UDP dihitung. Return = panjang frame yang dikirim (>= 60).

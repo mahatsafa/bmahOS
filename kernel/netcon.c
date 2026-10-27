@@ -131,26 +131,7 @@ static void nc_send_arp(void)
     uint8_t ip[4];
 
     nc_dst_ip(ip);
-
-    for (int i = 0; i < 60; i++) {
-        p[i] = 0;
-    }
-    for (int i = 0; i < 6; i++) {
-        p[i] = 0xFF;
-        p[6 + i] = g_e1000_mac[i];
-        p[22 + i] = g_e1000_mac[i];
-    }
-    p[12] = 0x08;
-    p[13] = 0x06;
-    p[15] = 0x01;   // htype Ethernet
-    p[16] = 0x08;   // ptype IPv4
-    p[18] = 6;
-    p[19] = 4;
-    p[21] = 0x01;   // request
-    for (int i = 0; i < 4; i++) {
-        p[28 + i] = g_net_ip[i];
-        p[38 + i] = ip[i];
-    }
+    net_arp_request_build(p, ip);
 
     if (e1000_tx_send(g_nc_page_phys, 60)) {
         g_nc_arp++;

@@ -55,6 +55,29 @@ uint32_t net_udp_build(uint8_t *p, const volatile uint8_t *dst_mac, const volati
     return 42 + plen;
 }
 
+// Sama dengan net_arp_request_build di net.c (net.c tidak ditautkan di uji ini).
+uint32_t net_arp_request_build(uint8_t *p, const volatile uint8_t *ip)
+{
+    memset(p, 0, 60);
+    for (int i = 0; i < 6; i++) {
+        p[i] = 0xFF;
+        p[6 + i] = g_e1000_mac[i];
+        p[22 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0x06;
+    p[15] = 0x01;
+    p[16] = 0x08;
+    p[18] = 6;
+    p[19] = 4;
+    p[21] = 0x01;
+    for (int i = 0; i < 4; i++) {
+        p[28 + i] = g_net_ip[i];
+        p[38 + i] = ip[i];
+    }
+    return 60;
+}
+
 static int g_ent_ok = 1;
 static uint8_t g_ent_next = 0x10;
 int entropy_get(uint8_t *out, uint32_t len)
