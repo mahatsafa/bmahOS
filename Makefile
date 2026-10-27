@@ -67,7 +67,7 @@ ISO_OUT    := $(BUILD_DIR)/bmahOS.iso
 QEMU := $(shell command -v qemu-system-x86_64 2>/dev/null || echo /usr/libexec/qemu-kvm)
 OVMF := /usr/share/edk2/ovmf/OVMF_CODE.fd
 
-.PHONY: all clean run iso test host-test
+.PHONY: all clean run iso test host-test fuzz fuzz-regress
 
 all: iso
 
@@ -202,8 +202,50 @@ host-test: $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS)) $(HOST_BUILD)/bearssl_
 	   [ "$$(grep -c 'done\.$$' $$log)" -eq $(BEARSSL_KAT_LINES) ]; then \
 	    echo "bearssl      $(BEARSSL_KAT_LINES) uji test_crypto upstream lulus"; \
 	else echo "bearssl      GAGAL (lihat $$log)"; tail -5 $$log; fail=1; fi; \
+	$(MAKE) --no-print-directory fuzz-regress || fail=1; \
 	if [ $$fail -eq 0 ]; then echo ">> host-test: semua lulus"; \
 	else echo ">> host-test: ADA YANG GAGAL"; exit 1; fi
+
+# R7: fuzzing libFuzzer di host. tests/fuzz/fuzz_X.c meng-#include tests/host/test_X.c
+# (main dilewati BMAHOS_FUZZ). fuzz_X = -fsanitize=fuzzer; regr_X = tests/fuzz/driver.c
+# (sekali jalan per file, juga "-s DIR" = tulis korpus awal).
+#   make fuzz [FUZZ_TARGETS="net auth"] [FUZZ_TIME=600]: tiap target FUZZ_TIME detik,
+#     korpus kerja build/fuzz/corpus/X, temuan build/fuzz/crash-X-*, log build/fuzz/X.log
+#   make fuzz-regress: korpus awal + tests/fuzz/regress/X (temuan yang sudah diperbaiki)
+FUZZ_TARGETS ?= net auth config fat32 logdisk
+FUZZ_TIME    ?= 600
+FUZZ_BUILD   := $(BUILD_DIR)/fuzz
+FUZZ_CFLAGS   = $(HOST_CFLAGS) -DBMAHOS_FUZZ -Wno-unused-function -Itests/fuzz
+FUZZ_DEPS    := tests/fuzz/fuzz.h tests/host/stubs.c tests/host/test.h tests/host/drbg_vectors.h \
+                tests/host/tls_test_keys.h $(HDRS)
+fuzz_maxlen_net := 8192
+
+$(FUZZ_BUILD)/fuzz_%: tests/fuzz/fuzz_%.c tests/host/test_%.c $(FUZZ_DEPS) $$(host_srcs_$$*) $$(host_deps_$$*) $$(host_libs_$$*)
+	@mkdir -p $(FUZZ_BUILD)
+	$(HOST_CC) $(FUZZ_CFLAGS) -fsanitize=fuzzer $< tests/host/stubs.c $(host_srcs_$*) $(host_libs_$*) -o $@
+
+$(FUZZ_BUILD)/regr_%: tests/fuzz/fuzz_%.c tests/fuzz/driver.c tests/host/test_%.c $(FUZZ_DEPS) $$(host_srcs_$$*) $$(host_deps_$$*) $$(host_libs_$$*)
+	@mkdir -p $(FUZZ_BUILD)
+	$(HOST_CC) $(FUZZ_CFLAGS) $< tests/fuzz/driver.c tests/host/stubs.c $(host_srcs_$*) $(host_libs_$*) -o $@
+
+fuzz-regress: $(addprefix $(FUZZ_BUILD)/regr_,$(FUZZ_TARGETS))
+	@for t in $(FUZZ_TARGETS); do s=$(FUZZ_BUILD)/seeds/$$t; rm -rf $$s; mkdir -p $$s; \
+	    $(FUZZ_BUILD)/regr_$$t -s $$s && $(FUZZ_BUILD)/regr_$$t $$s tests/fuzz/regress/$$t \
+	    || { echo "fuzz-regress $$t GAGAL"; exit 1; }; done
+
+fuzz: $(addprefix $(FUZZ_BUILD)/fuzz_,$(FUZZ_TARGETS)) $(addprefix $(FUZZ_BUILD)/regr_,$(FUZZ_TARGETS))
+	@fail=0; for t in $(FUZZ_TARGETS); do s=$(FUZZ_BUILD)/seeds/$$t; c=$(FUZZ_BUILD)/corpus/$$t; \
+	    rm -rf $$s; mkdir -p $$s $$c; $(FUZZ_BUILD)/regr_$$t -s $$s || exit 1; \
+	    case $$t in net) ml="-max_len=$(fuzz_maxlen_net)";; *) ml="";; esac; \
+	    dict=""; [ -f tests/fuzz/$$t.dict ] && dict="-dict=tests/fuzz/$$t.dict"; \
+	    echo ">> fuzz $$t $(FUZZ_TIME) s (log $(FUZZ_BUILD)/$$t.log)"; \
+	    if $(FUZZ_BUILD)/fuzz_$$t -max_total_time=$(FUZZ_TIME) -print_final_stats=1 $$ml $$dict \
+	        -artifact_prefix=$(FUZZ_BUILD)/crash-$$t- $$c $$s > $(FUZZ_BUILD)/$$t.log 2>&1; then \
+	        grep -aE '^(#[0-9]+[[:space:]]+DONE|stat::number_of_executed_units)' \
+	            $(FUZZ_BUILD)/$$t.log | tr '\n' ' '; echo; \
+	    else echo "fuzz $$t: TEMUAN"; grep -m3 -E 'ERROR|FUZZ:|SUMMARY' $(FUZZ_BUILD)/$$t.log; \
+	        ls $(FUZZ_BUILD)/crash-$$t-* 2>/dev/null; fail=1; fi; done; \
+	if [ $$fail -eq 0 ]; then echo ">> fuzz: tanpa temuan"; else echo ">> fuzz: ADA TEMUAN"; exit 1; fi
 
 clean:
 	rm -rf $(BUILD_DIR)
