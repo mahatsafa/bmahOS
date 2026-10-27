@@ -1,10 +1,12 @@
 # soak-mulai.ps1: mulai soak test R8 (24 jam) di VMware dari Windows.
 # Pakai (satu baris, dari PowerShell):
 #   powershell -ExecutionPolicy Bypass -File "D:\Shared Folders VM\CentOS Terminal\soak-mulai.ps1"
+# -Iso <nama file di shared folder>: disalin ke bmahOS.iso setelah VM mati (mis. ISO PROD
+# untuk soak saat bmahOS.iso berisi ISO dev uji).
 # Langkah: tolak bila soak.py masih jalan -> Power Off/On VM bmahOS (ISO di
 # shared folder) -> tunggu port 7780 -> cek serial -> jalankan soak.py di
 # jendela kecil (hasil di soak-R8\, folder lama diganti nama).
-param([int]$Durasi = 86400)
+param([int]$Durasi = 86400, [string]$Iso = "")
 
 $vmrun = "C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe"
 $vmx = "D:\Virtual Machines\bmahOS\bmahOS.vmx"
@@ -25,6 +27,10 @@ if ($jalan) {
 for ($i = 0; $i -lt 60; $i++) {
   if (-not (Test-Path "$sf\disk.vmdk.lck")) { break }
   Start-Sleep 1
+}
+if ($Iso) {
+  Copy-Item "$sf\$Iso" "$sf\bmahOS.iso" -Force
+  "ISO diganti dari $Iso -> $((Get-FileHash "$sf\bmahOS.iso").Hash.Substring(0, 8))"
 }
 & $vmrun -T ws start $vmx
 $ok = $false
