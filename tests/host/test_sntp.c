@@ -249,6 +249,17 @@ static void test_flow(void)
     sntp_rx(g_rep, 48);                            // sebelum 1970
     CHECK(g_sntp_bad == 8 && g_sntp_state == SNTP_SENT && !g_rtc_ok);
 
+    // Temuan fuzz: isi 0..47 byte dalam buffer seukuran persis (ASan menangkap
+    // baca lewat batas); semuanya ditolak tanpa membaca byte di luar isi.
+    mk_rep(0x24, 2, orig, t2030);
+    for (uint32_t n = 0; n < 48; n++) {
+        uint8_t *s = malloc(n ? n : 1);
+        memcpy(s, g_rep, n);
+        sntp_rx(s, n);
+        free(s);
+    }
+    CHECK(g_sntp_bad == 8 + 48 && g_sntp_state == SNTP_SENT && !g_rtc_ok);
+
     // Sah (versi 3 juga boleh): jam diset, koreksi 0 karena belum ada jam.
     serial_capture_reset();
     mk_rep(0x1C, 2, orig, t2030);
@@ -261,7 +272,7 @@ static void test_flow(void)
     CHECK_STR(g_st, "waktu: 2030-01-01 00:00:02 epoch=1893456002 sumber=sntp oktet=1 stratum=2 "
                     "(UTC) koreksi=0 s\n");
     sntp_status(st_cpy);
-    CHECK_STR(g_st, "sntp: diam terakhir=ok ok=1 gagal=0 diabaikan=8\n");
+    CHECK_STR(g_st, "sntp: diam terakhir=ok ok=1 gagal=0 diabaikan=56\n");
     CHECK(!sntp_wants(ip1, 123, g_sntp_lport));    // tidak menunggu lagi
 
     // Sinkron kedua 60 s lebih awal: koreksi -62 (jam sekarang +2 s).

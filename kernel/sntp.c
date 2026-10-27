@@ -187,15 +187,19 @@ static uint32_t sn_be32(const volatile uint8_t *p)
 // Isi UDP balasan (sudah lolos checksum). Balasan tidak sah diabaikan.
 void sntp_rx(const volatile uint8_t *p, uint32_t len)
 {
+    // Panjang dicek sebelum byte pertama dibaca (temuan fuzz 2026-10-28: isi 1 byte
+    // dulu membuat p[1] dibaca di luar data).
+    if (len < 48) {
+        g_sntp_bad++;
+        return;
+    }
     uint8_t li = p[0] >> 6, vn = (p[0] >> 3) & 7, mode = p[0] & 7, stratum = p[1];
     int same = 1;
 
-    if (len >= 48) {
-        for (int i = 0; i < 8; i++) {
-            same &= p[24 + i] == g_sntp_nonce[i];
-        }
+    for (int i = 0; i < 8; i++) {
+        same &= p[24 + i] == g_sntp_nonce[i];
     }
-    if (len < 48 || li == 3 || (vn != 3 && vn != 4) || mode != 4 || stratum < 1 ||
+    if (li == 3 || (vn != 3 && vn != 4) || mode != 4 || stratum < 1 ||
         stratum > 15 || !same || sn_be32(p + 40) < NTP_UNIX_DELTA) {
         g_sntp_bad++;
         return;

@@ -5,7 +5,7 @@ Tanggal: 2026-10-27. Alat: clang 22.1.8 (CentOS), libFuzzer + ASan + UBSan
 
 ## Cara menjalankan
 
-    make fuzz                              # 5 target x FUZZ_TIME (bawaan 600 s)
+    make fuzz                              # 9 target x FUZZ_TIME (bawaan 600 s)
     make fuzz FUZZ_TARGETS=net FUZZ_TIME=3600
     make fuzz-regress                      # korpus awal + tests/fuzz/regress/<target>, juga di host-test/CI
 
@@ -55,3 +55,38 @@ Cakupan baris diukur dengan `-fprofile-instr-generate` atas korpus akhir putaran
   target auth. Perintah umum (`cmd.c`: uptime, metrics, dll.) tidak di-fuzz (di-stub).
 - FAT32 hanya jendela tetap (BPB, awal FAT1, cluster root); rantai panjang di luar jendela tetap
   isi mkfs asli.
+
+## Parser Fase 5 (2026-10-28)
+
+THREAT_MODEL bagian 7 mewajibkan setiap parser baru masuk daftar fuzzing; parser Fase 5 (SNTP P3-2,
+DNS P3-3, packet filter P4, DHCP P3-4) baru ditambahkan di sini. `FUZZ_TARGETS` kini 9 target dan
+`make fuzz-regress` (host-test, CI) ikut menjalankan korpus awal keempatnya.
+
+| Target | Pintu masuk | Bentuk input |
+|---|---|---|
+| dhcp | `dhcp_rx` (balasan BOOTP dari LAN), lanjut `dhcp_poll` | `[mode][isi UDP]`; mode: keadaan awal pilih/minta/perpanjang/ikat-ulang, betulkan xid/chaddr/cookie supaya option ikut teruji, lewati batas cek ARP |
+| dns | `dns_rx` untuk query perintah `dns` atau query pemantau (`dns_probe_start`) | `[mode][isi UDP]`; mode: betulkan ID, salin pertanyaan, flag balasan sah |
+| sntp | `sntp_rx` sesudah permintaan dengan nonce | `[mode][isi UDP]`; mode: salin nonce, byte 0 sah, stratum 2 |
+| filter | `filter_parse` (FILTER.CFG), `filter_execute`, `filter_ipv4` | `[mode][data]` |
+
+Invarian: DHCP: IP 0.0.0.0 selama belum terikat, selain itu alamat /24 sah; keadaan dalam rentang.
+DNS: entri cache 1..63 byte dengan sisa TTL 5..3600 s (negatif tepat 60 s), query pemantau dilaporkan
+tepat sekali dan "ada A" hanya bila entri positif tersimpan. SNTP: jam berubah hanya untuk balasan
+yang lolos semua cek, dan sama dengan transmit - 2208988800. Filter: aturan <= 16, bentuk kanonik
+stabil (tulis -> urai -> tulis sama), file hasil perintah terurai ulang dengan jumlah aturan sama,
+SYN TCP ke 7780 selalu lolos.
+
+Hasil 10 menit per target:
+
+| Target | Waktu | Eksekusi | Temuan |
+|---|---|---|---|
+| dhcp | 10 menit | 51,3 jt | - |
+| dns | 10 menit | 72,1 jt | - |
+| sntp | 10 menit sesudah perbaikan (putaran pertama berhenti di temuan) | 191,9 jt | 1, diperbaiki |
+| filter | 10 menit | 67,9 jt | - |
+
+Temuan sntp: `sntp_rx` membaca byte 0 dan 1 (LI/VN/mode/stratum) sebelum mengecek panjang >= 48,
+sehingga isi UDP 1 byte membuat `p[1]` terbaca di luar data (ASan heap-buffer-overflow, baca 1 byte).
+Di kernel bacaan itu masih di dalam buffer RX 2 KB dan balasan tetap ditolak, jadi tanpa dampak nyata,
+tapi melanggar aturan "panjang dicek dulu". Diperbaiki (cek panjang paling awal), uji host isi 0..47
+byte dengan buffer seukuran persis, input temuan di `tests/fuzz/regress/sntp/isi-1-byte`.
