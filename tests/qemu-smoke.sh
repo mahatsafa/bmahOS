@@ -633,8 +633,12 @@ timeout "$BOOT_TIMEOUT" "$QEMU" -machine q35 -m 512M -cpu max \
     -cdrom "$ISO" -nic none -display none -serial file:"$BARE" -no-reboot \
     >"$WORK/qemu-bare.out" 2>&1 &
 BPID=$!
+# M-NIC: build dev menunggu task uji A/B selesai (butuh tick SETELAH net task
+# keluar; dulu net task hlt dengan IF=0 dan seluruh sistem membeku di sini).
+BARE_DONE="RX belum di-init, net task berhenti"
+grep -q "PROD: task uji dilewati" "$LOG" || BARE_DONE="Task B selesai"
 for _ in $(seq 1 "$BOOT_TIMEOUT"); do
-    grep -q "RX belum di-init, net task berhenti" "$BARE" 2>/dev/null && break
+    grep -q "$BARE_DONE" "$BARE" 2>/dev/null && break
     kill -0 "$BPID" 2>/dev/null || break
     sleep 1
 done
@@ -642,7 +646,11 @@ sleep 2
 kill "$BPID" 2>/dev/null
 wait "$BPID" 2>/dev/null
 check "tanpa NIC: E1000 dilewati"      'grep -q "PCI-1: E1000 tidak ditemukan" "$BARE"'
-check "tanpa NIC: net task berhenti rapi" 'grep -q "RX belum di-init, net task berhenti" "$BARE"'
+check "tanpa NIC: net task berhenti rapi" 'grep -q "RX belum di-init, net task berhenti (task_exit)" "$BARE"'
+if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    check "M-NIC: tanpa NIC: task uji jalan setelah net task keluar" \
+        'sed -n "/net task berhenti (task_exit)/,\$p" "$BARE" | grep -q "^Task B selesai"'
+fi
 check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$BARE"'
 check "D7: tanpa disk: CONFIG: sumber=bawaan (tanpa disk)" \
     'grep -q "CONFIG: sumber=bawaan (tanpa disk) cli_idle=300 udp_rate=20 echo=1" "$BARE"'

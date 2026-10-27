@@ -405,10 +405,11 @@ uint64_t net_stack_used(void)
 static void net_task_entry(void)
 {
     if (!g_e1000_rx_initialized) {
-        serial_write("Net-7: RX belum di-init, net task berhenti\r\n");
-        for (;;) {
-            __asm__ volatile ("hlt");
-        }
+        // Dulu hlt selamanya dengan IF=0 (warisan context_switch, lihat sti di
+        // bawah): tick berhenti dan seluruh sistem membeku. Kini task keluar.
+        serial_write("Net-7: RX belum di-init, net task berhenti (task_exit)\r\n");
+        __asm__ volatile ("sti");
+        task_exit();
     }
 
     uint64_t rf_before;
