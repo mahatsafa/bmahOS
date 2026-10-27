@@ -349,13 +349,29 @@ register umum dump panic), maks 160 karakter.
   NXDOMAIN (cache 60 s); A/IN pertama di answer (TTL dibatasi 5..3600 s). Serial `P3: DNS <nama> <hasil>`.
   Server uji: `tests/dns-server.py HOST PORT [durasi]` (bmahos.uji -> 192.168.50.123).
 
-## Pemantau ping `pantau` (P6-1)
+## Pemantau jaringan `pantau` (P6)
 
-- `pantau` (ro): `pantau: target=N/4 (ping; NAIK = 1 balasan, TURUN = 3 gagal)`, lalu per target
-  `K: a.b.c.d <belum|naik|turun> tiap=S s kirim=N balas=N gagal_beruntun=N rtt=terakhir/min/maks ms ganti=N`.
-- Admin: `pantau tambah <oktet 1..254> [interval 5..3600, bawaan 10]` -> `OK pantau K: a.b.c.d tiap S s`;
-  `pantau hapus <K>` -> `OK pantau: target K dihapus`. Galat: `ERR: pantau: target sudah ada`, `... penuh (maks 4
-  target)`, `... tanpa NIC`, `... hapus <nomor target>`, format.
-- Paket: ARP (maks 3 x 1 s per probe), ICMP echo request id 0xB0A0+K-1, seq naik, isi `bmahOS-pantau-P6`; balasan
-  ditunggu 1 s. Serial: `P6: a.b.c.d NAIK (rtt N ms)`, `P6: a.b.c.d TURUN (3 gagal berturut-turut, terakhir:
-  tanpa balasan ping|tanpa balasan ARP|kirim gagal)`. Balasan ICMP ikut packet filter P4.
+- `pantau` (ro): `pantau: target=N/4 (NAIK = 1 berhasil, TURUN = 3 gagal berturut-turut)`, lalu `syslog: mati
+  terkirim=N dibuang=N` atau `syslog: a.b.c.d:port terkirim=N dibuang=N antre=N`, lalu per target
+  `K: <target> <belum|naik|turun> tiap=S s kirim=N balas=N gagal_beruntun=N rtt=terakhir/min/maks ms ganti=N`.
+  `<target>` = `ping a.b.c.d`, `tcp a.b.c.d:port`, atau `dns nama@a.b.c.d:port`.
+- Admin (interval 5..3600 s, bawaan 10; oktet 1..254 di /24 sendiri, bukan IP sendiri):
+  `pantau ping <oktet> [interval]`, `pantau tcp <oktet> <port> [interval]`, `pantau dns <nama> <oktet server>
+  <port> [interval]` -> `OK pantau K: <target> tiap S s`; `pantau hapus <K>` -> `OK pantau: target K dihapus`;
+  `pantau syslog <oktet> [port, bawaan 514]` -> `OK pantau: syslog ke a.b.c.d:port (pesan uji dikirim)`;
+  `pantau syslog mati` -> `OK pantau: syslog mati`. Galat: `ERR: pantau: target sudah ada`, `... penuh (maks 4
+  target)`, `... tanpa NIC`, `... hapus <nomor target>`, format per jenis.
+- ping: ARP (maks 3 x 1 s per probe), ICMP echo request id 0xB0A0+K-1, seq naik, isi `bmahOS-pantau-P6`, balasan
+  ditunggu 1 s; balasan ICMP ikut packet filter P4.
+- tcp: ARP seperti ping, lalu SYN (tanpa opsi, jendela 1024) dari port lokal acak 49152..65535 dengan nomor urut
+  acak; SYN-ACK (ACK = nomor urut + 1) = berhasil dan dibalas RST; RST|ACK = `port tertutup (RST)`; tanpa jawaban
+  1 s = `tanpa balasan TCP`.
+- dns: query A lewat klien P3-3 (ARP + query + validasi sama; tanpa cache); berhasil hanya bila ada jawaban A.
+  dns.c sedang dipakai perintah `dns` -> probe dicoba lagi 1 s kemudian (bukan kegagalan).
+- Serial (selalu sampai ke UART): `P6: <target> NAIK (rtt N ms)` (dns: `NAIK (a.b.c.d, rtt N ms)`), `P6: <target>
+  TURUN (3 gagal berturut-turut, terakhir: <alasan>)`; alasan antara lain `tanpa balasan ARP`, `tanpa balasan ping`,
+  `tanpa balasan TCP`, `port tertutup (RST)`, `kirim gagal`, `tidak ada (NXDOMAIN)`, `tanpa balasan DNS (3 s)`,
+  `tanpa hasil DNS`.
+- Syslog (UDP, port sumber 514): `<PRI>1 TIMESTAMP 192.168.50.200 bmahOS - pantau - <teks>` (RFC 5424, fasilitas
+  local0: PRI 133 NAIK, 132 TURUN, 134 pesan uji); TIMESTAMP `YYYY-MM-DDTHH:MM:SSZ` bila jam dari SNTP, selain itu
+  `-`; `<teks>` = teks baris serial tanpa `P6: `.

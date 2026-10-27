@@ -143,6 +143,10 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    cache. Hasil DNS hanya ditampilkan (belum dipakai untuk koneksi keluar).
 17. Pemantau ping (P6-1): balasan echo dicocokkan dengan IP target, id, dan seq (16 bit), jadi penyerang di LAN
    yang menyadap bisa memalsukan status NAIK; status hanya informasi (tidak memicu tindakan).
+18. Pantau tcp/dns + syslog (P6-2): SYN probe hanya ke /24 sendiri dan hanya diatur admin; SYN-ACK dibalas RST
+   (tanpa koneksi). Hasil dns tanpa DNSSEC (sama dengan P3-3). Pesan syslog teks polos lewat UDP tanpa autentikasi:
+   isinya (IP target + keadaan) terbaca di LAN dan pesan palsu bisa dikirim ke penerima, jadi penerima tidak boleh
+   menganggapnya bukti. Antrean pesan terbatas 8; tanpa tujuan syslog tidak ada yang dikirim.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

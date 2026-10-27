@@ -395,3 +395,23 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Peringatan lewat kprintf** (jalur log yang sudah ada: serial, layar, LOG.BIN, netconsole), tanpa protokol baru.
 - Header IPv4 dibangun sendiri di monitor.c (pola sama dengan balasan ICMP di net.c); digabung bila ada pemakai
   ketiga pembangun IPv4 non-UDP.
+
+## 2026-10-28 (P6-2 pantau tcp/dns + alert syslog)
+- **TCP-connect setengah terbuka**: SYN dari port lokal acak (49152..65535) dengan nomor urut acak (entropy_get).
+  SYN-ACK = berhasil; net.c membalasnya dengan RST lewat jalur "port tertutup" yang sudah ada (koneksi tidak pernah
+  dibuka, tanpa TCB dan tanpa klien TCP baru). RST|ACK = port tertutup; tanpa jawaban 1 s (port difilter) = gagal.
+  Jawaban dicocokkan dengan IP, kedua port, dan ACK = nomor urut + 1 (penyerang buta harus menebak 32 + 14 bit).
+- **DNS berkala lewat dns.c**: satu mesin query untuk `dns` dan pemantau (sibuk = coba lagi 1 s, bukan kegagalan),
+  tanpa cache, berhasil hanya bila ada jawaban A (NXDOMAIN = gagal). Query pemantau tidak mencetak baris "P3: DNS".
+- **Alert syslog RFC 5424 lewat UDP**: fasilitas local0; NAIK = notice (5), TURUN = warning (4), pesan uji saat
+  diatur = informational (6); port sumber 514; tujuan `pantau syslog <oktet> [port]` (RAM, bawaan mati). Cap waktu
+  hanya bila jam dari SNTP (UTC); jam RTC zonanya tidak diketahui -> "-" (NILVALUE). Antrean 8 pesan: penuh = pesan
+  baru dibuang; tujuan tanpa jawaban ARP 3x = isi antrean dibuang (keduanya dihitung `dibuang`). MAC tujuan
+  diperbarui dari setiap ARP pengirimnya.
+- **"Monitor sebagai task"** (ROADMAP P6) dijalankan di loop net task seperti netcon/sntp/dns, bukan task terpisah:
+  TX E1000 hanya boleh dari net task (tanpa lock). Probe tidak pernah memblok (mesin keadaan per target).
+- **Ambang tetap** (sama dengan P6-1): 1 berhasil = NAIK, 3 gagal berturut-turut = TURUN. Baris "P6:" dipaksa sampai
+  ke UART walau frame pemicunya kena pembatas log B4b, seperti baris AUDIT sah.
+- `pantau tambah` (P6-1, belum pernah di-push) diganti `pantau ping`, sejajar dengan `pantau tcp` dan `pantau dns`.
+- P6-2a: `net_ipv4_hdr()` menggantikan 5 salinan pembangun header IPv4 (aturan P6-1 "digabung bila ada pemakai
+  ketiga"); ID IP echo pantau kini dari penghitung bersama g_net_ip_id.
