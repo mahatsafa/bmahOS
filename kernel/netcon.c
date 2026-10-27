@@ -232,13 +232,20 @@ static void nc_sync(void)
     }
 }
 
+// P3-4 (dhcp.c): IP berubah -> MAC tujuan dipelajari ulang lewat ARP.
+void netcon_ip_changed(void)
+{
+    g_nc_mac_ok = 0;
+    g_nc_arp_at = 0;
+}
+
 // Dari loop net task (tiap bangun, >= 1x per tick).
 void netcon_poll(void)
 {
     nc_sync();
 
-    if (!g_netcon_on || g_nc_page_phys == 0) {
-        return;
+    if (!g_netcon_on || g_nc_page_phys == 0 || !net_ip_ready()) {
+        return;   // P3-4: tanpa IP (DHCP belum terikat) antrean ditahan
     }
 
     if (!g_nc_mac_ok) {

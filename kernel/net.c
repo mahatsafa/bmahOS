@@ -1,7 +1,7 @@
 #include "kernel.h"
 
 // ---- Net-5: konfigurasi IP statis + ARP responder + dispatch RX ----
-const uint8_t g_net_ip[4] = {192, 168, 50, 200};
+uint8_t g_net_ip[4] = {192, 168, 50, 200};   // P3-4: diubah dhcp.c bila dhcp=1
 
 // D7: nilai runtime yang bisa diubah CONFIG.CFG (config.c); awal = default.
 uint32_t g_cli_idle_s = CFG_CLI_IDLE_DEF;
@@ -90,12 +90,13 @@ static void net_handle_arp(volatile uint8_t *buf)
         return;
     }
 
+    dhcp_arp_seen(buf);     // P3-4: alamat tawaran DHCP sudah dipakai?
     netcon_arp_seen(buf);   // R2: MAC tujuan netconsole
     sntp_arp_seen(buf);     // P3-2: MAC server SNTP
     dns_arp_seen(buf);      // P3-3: MAC server DNS
     monitor_arp_seen(buf);  // P6-1: MAC target pantau
 
-    if (oper == 1 && net_ip_equal(buf + 38, g_net_ip)) {
+    if (oper == 1 && net_ip_ready() && net_ip_equal(buf + 38, g_net_ip)) {
         uint64_t lf = irq_save();
         serial_write("Net-5: ARP request untuk IP kita dari ");
         e1000_log_ip(buf + 28);
@@ -103,6 +104,13 @@ static void net_handle_arp(volatile uint8_t *buf)
         irq_restore(lf);
         net_arp_send_reply(buf);
     }
+}
+
+// P3-4: 0 selama DHCP belum terikat (IP 0.0.0.0): ARP tidak dijawab, IPv4
+// selain balasan DHCP dibuang, netcon/pantau diam.
+int net_ip_ready(void)
+{
+    return (g_net_ip[0] | g_net_ip[1] | g_net_ip[2] | g_net_ip[3]) != 0;
 }
 
 // ---- Net-6: checksum, IPv4 parse, ICMP echo reply ----
@@ -2040,6 +2048,31 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
     }
 }
 
+// P3-4: 1 = frame UDP 67 -> 68 (diserahkan ke dhcp_rx bila header IP, panjang,
+// jatah global UDP, dan checksum UDP sah).
+static int net_handle_dhcp(volatile uint8_t *buf, uint32_t ihl, uint32_t total_len)
+{
+    uint32_t r = 14 + ihl;
+
+    if (total_len < ihl + 8 || buf[r] != 0 || buf[r + 1] != 67 || buf[r + 2] != 0 ||
+        buf[r + 3] != 68) {
+        return 0;
+    }
+    uint32_t udp_len = ((uint32_t)buf[r + 4] << 8) | buf[r + 5];
+    uint32_t csum = ((uint32_t)buf[r + 6] << 8) | buf[r + 7];
+
+    if (udp_len < 8 || udp_len > total_len - ihl || net_checksum16(buf + 14, ihl) != 0 ||
+        !net_udp_budget_ok()) {
+        return 1;
+    }
+    if (csum != 0 && net_udp_checksum(buf + 26, buf + 30, buf + r, udp_len) != 0) {
+        g_net_udp_badsum++;
+        return 1;
+    }
+    dhcp_rx(buf + r + 8, udp_len - 8);
+    return 1;
+}
+
 static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
 {
     if (len < 14 + 20) {
@@ -2059,7 +2092,13 @@ static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
         return;
     }
 
-    if (!net_ip_equal(buf + 30, g_net_ip)) {
+    // P3-4: balasan DHCP selama klien menunggu: alamat tujuan apa pun (broadcast,
+    // alamat tawaran, IP kita), tanpa packet filter P4 (xid acak + MAC dicek dhcp.c).
+    if (buf[23] == 17 && dhcp_waiting() && net_handle_dhcp(buf, ihl, total_len)) {
+        return;
+    }
+
+    if (!net_ip_ready() || !net_ip_equal(buf + 30, g_net_ip)) {
         return;
     }
 

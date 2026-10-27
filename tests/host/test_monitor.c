@@ -14,8 +14,13 @@ void serial_capture_reset(void);
 
 int g_e1000_rx_initialized = 1;
 uint8_t g_e1000_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
-const uint8_t g_net_ip[4] = { 192, 168, 50, 200 };
+uint8_t g_net_ip[4] = { 192, 168, 50, 200 };
 uint64_t hhdm_offset = 0;
+
+int net_ip_ready(void)
+{
+    return (g_net_ip[0] | g_net_ip[1] | g_net_ip[2] | g_net_ip[3]) != 0;
+}
 
 static uint8_t g_page[4096] __attribute__((aligned(4096)));
 uint64_t pmm_alloc(void)

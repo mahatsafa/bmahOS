@@ -414,6 +414,18 @@ int dns_execute(const volatile uint8_t *cmd, uint32_t len);       // 1 = ditanga
 int dns_name_check(const volatile uint8_t *s, uint32_t n, char *out);   // P6-2: out >= 64 byte
 int dns_probe_start(const char *name, uint32_t host, uint32_t port, uint32_t tok);   // P6-2, 0 = OK
 
+// ---- dhcp.c (P3-4: klien DHCP bila CONFIG.CFG dhcp=1, perintah `dhcp`) ----
+extern uint32_t g_dhcp_cfg;
+void dhcp_prepare(void);                       // sesudah config_load: IP 0.0.0.0 bila dhcp=1
+void dhcp_init(void);                          // net task, sebelum modul jaringan lain
+void dhcp_poll(void);
+int dhcp_waiting(void);                        // 1 = UDP 67 -> 68 diserahkan ke dhcp_rx
+void dhcp_rx(const volatile uint8_t *d, uint32_t len);   // isi UDP (checksum sah)
+void dhcp_arp_seen(const volatile uint8_t *buf);
+int dhcp_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
+void netcon_ip_changed(void);                  // P3-4: IP baru -> MAC tujuan dipelajari ulang
+void monitor_ip_changed(void);
+
 // ---- monitor.c (P6: pemantau ping/tcp/dns + alert syslog, `pantau`, maks 4 target) ----
 void monitor_init(void);
 void monitor_poll(void);
@@ -615,7 +627,8 @@ int ct_memeq(const void *a, const void *b, uint32_t n);
 #define NET_UDP_BUDGET_PER_SEC 100
 #define NET_UDP_SRC_PER_SEC 20
 
-extern const uint8_t g_net_ip[4];
+extern uint8_t g_net_ip[4];          // P3-4: 0.0.0.0 selama DHCP belum terikat
+int net_ip_ready(void);              // P3-4: 1 bila IP sudah ada
 extern uint32_t g_net_arp_replies_sent;
 extern uint64_t g_net_tx_buf_phys;
 extern uint32_t g_net_icmp_replies_sent;

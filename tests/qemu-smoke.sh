@@ -710,6 +710,13 @@ check "R6-3: tanpa kebocoran frame/heap selama uji boot pertama (alloc-free teta
     '[ "$PMM_OUT1" -eq "$PMM_OUT0" ] && echo "$KM_L" | grep -q "^kmalloc=$KM0$" && echo "$PMM_L" | grep -q "^pmm_fail=0$"'
 
 sleep 1.2   # jendela batas laju baru (lihat di atas)
+# P3-4: dhcp=1 untuk boot kedua (qemu-rawnet.py berperan sebagai server DHCP, lalu
+# mengembalikan dhcp=0); boot ini tetap memakai IP statis sampai reboot.
+DH_SET="$($BM "set dhcp 1" 2>&1)"
+DH_ST="$($BM dhcp 2>&1)"
+check "P3-4: set dhcp 1 tersimpan; tetap IP statis sampai reboot" \
+    '[ "$DH_SET" = "OK dhcp=1 (tersimpan)" ] && [ "$DH_ST" = "dhcp: mode=statis (dhcp=1 berlaku setelah reboot) ip=192.168.50.200/24" ]'
+sleep 1.2
 check "pping -> ppong"           '[ "$($BM pping)" = "ppong" ]'
 check "reboot diterima"          '[ "$($BM reboot)" = "reboot: dimulai" ]'
 
@@ -736,8 +743,9 @@ check "D6: fsck.fat -n bersih setelah tulis (FAT, dir, FSInfo)" \
     'fsck.fat -n "$DISK" >"$WORK/fsck.out" 2>&1'
 check "D6: mtype dari host = isi yang ditulis kernel; KEY.TXT tidak berubah" \
     'mtype -i "$DISK" ::CATATAN.TXT | cmp -s - "$WORK/catatan.want" && mtype -i "$DISK" ::PANJANG.TXT | cmp -s - "$WORK/panjang.want" && mtype -i "$DISK" ::KEY.TXT | cmp -s - "$KEY"'
-printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\ncli_plain=1\nudp_admin=1\nnetcon=0\nnetcon_host=1\nnetcon_port=6666\n' \
+printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\ncli_plain=1\nudp_admin=1\nnetcon=0\nnetcon_host=1\nnetcon_port=6666\ndhcp=1\n' \
     > "$WORK/config.want"
+sed 's/^dhcp=1$/dhcp=0/' "$WORK/config.want" > "$WORK/config2.want"   # P3-4: rawnet set dhcp 0
 mcopy -n -i "$DISK" ::LOG.BIN "$WORK/log1.bin" 2>/dev/null
 python3 "$ROOT/tools/logdump.py" "$WORK/log1.bin" > "$WORK/log1.txt" 2>&1
 echo "info  R4: $(python3 "$ROOT/tools/logdump.py" --status "$WORK/log1.bin" 2>&1)"
@@ -761,7 +769,7 @@ if [ "$RAW_RC" -ne 0 ] && ! echo "$RAW_OUT" | grep -q '^FAIL'; then
 fi
 # D7: boot kedua menulis CONFIG.CFG lewat UDP (set echo/udp_rate, dikembalikan).
 check "D7: setelah boot kedua: fsck.fat -n bersih, CONFIG.CFG kanonik" \
-    'fsck.fat -n "$DISK" >"$WORK/fsck2.out" 2>&1 && mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1'
+    'fsck.fat -n "$DISK" >"$WORK/fsck2.out" 2>&1 && mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config2.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1'
 
 # Tahap 3: boot tanpa NIC dan tanpa disk (seperti hardware tanpa driver yang
 # cocok). Kernel harus melewati driver yang tidak ada tanpa exception.

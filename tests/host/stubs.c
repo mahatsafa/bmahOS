@@ -147,6 +147,32 @@ WEAK int monitor_execute(const volatile uint8_t *cmd, uint32_t len)
     return 0;
 }
 
+// P3-4: dhcp.c hanya di uji dhcp.
+WEAK uint32_t g_dhcp_cfg = 0;
+
+WEAK int dhcp_waiting(void)
+{
+    return 0;
+}
+
+WEAK void dhcp_rx(const volatile uint8_t *d, uint32_t len)
+{
+    (void)d;
+    (void)len;
+}
+
+WEAK void dhcp_arp_seen(const volatile uint8_t *buf)
+{
+    (void)buf;
+}
+
+WEAK int dhcp_execute(const volatile uint8_t *cmd, uint32_t len)
+{
+    (void)cmd;
+    (void)len;
+    return 0;
+}
+
 WEAK int monitor_tcp_seen(const volatile uint8_t *buf, uint32_t r)
 {
     (void)buf;

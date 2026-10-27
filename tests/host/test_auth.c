@@ -730,7 +730,7 @@ static void test_tcp_role(void)
     CHECK(g_cli_role_denied == d0 + 4 && g_exec[0] == 0);
     static const char *const okc[] = { "help", "ping", "uptime", "mem", "log", "irq",
                                        "stats", "metrics", "mac", "ip", "tasks", "pci", "waktu",
-                                       "filter", "dns", "pantau" };
+                                       "filter", "dns", "pantau", "dhcp" };
     int all = 1;
     for (size_t i = 0; i < sizeof(okc) / sizeof(okc[0]); i++) {
         auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)okc[i], (uint32_t)strlen(okc[i]),

@@ -313,11 +313,24 @@ static void mon_start_dns(mon_t *m, uint64_t now)
     m->waiting = 1;
 }
 
+// P3-4 (dhcp.c): IP berubah (prefiks /24 bisa lain) -> semua MAC dipelajari ulang.
+void monitor_ip_changed(void)
+{
+    for (int k = 0; k < MON_MAX; k++) {
+        g_mon[k].mac_ok = 0;
+    }
+    g_sl.mac_ok = 0;
+}
+
 void monitor_poll(void)
 {
     static const char *const timeout[] = { "tanpa balasan ping", "tanpa balasan TCP",
                                            "tanpa hasil DNS" };
     uint64_t now = timer_ticks;
+
+    if (!net_ip_ready()) {
+        return;   // P3-4: tanpa IP (DHCP belum terikat) tidak ada probe/syslog
+    }
 
     for (int k = 0; k < MON_MAX; k++) {
         mon_t *m = &g_mon[k];

@@ -12,7 +12,7 @@
 // Nilai di RAM hanya berubah bila file berhasil ditulis.
 
 #define CFG_FILE_MAX 512
-#define CFG_NKEYS    8
+#define CFG_NKEYS    9
 #define CFG_K_CLI_PLAIN 3
 #define CFG_K_UDP_ADMIN 4
 
@@ -31,6 +31,7 @@ static const cfg_key_t g_cfg_keys[CFG_NKEYS] = {
     { "netcon", 0, 1, 0, &g_netcon_on },                             // R2: netconsole UDP
     { "netcon_host", 1, 254, NETCON_HOST_DEF, &g_netcon_host },      // R2: 192.168.50.x
     { "netcon_port", 1024, 65535, NETCON_PORT_DEF, &g_netcon_port }, // R2
+    { "dhcp", 0, 1, 0, &g_dhcp_cfg },                                // P3-4: berlaku saat boot
 };
 
 // D9: tanpa TLS aktif, cli_plain=0 + udp_admin=0 menutup semua jalur admin
@@ -252,9 +253,9 @@ void config_load(void)
 
     cfg_src_str(src, sizeof(src));
     ksnprintf(line, sizeof(line), "CONFIG: sumber=%s cli_idle=%u udp_rate=%u echo=%u "
-              "cli_plain=%u udp_admin=%u netcon=%u netcon_host=%u netcon_port=%u\r\n", src,
-              g_cli_idle_s, g_net_src_rate, g_net_echo, g_cli_plain, g_udp_admin, g_netcon_on,
-              g_netcon_host, g_netcon_port);
+              "cli_plain=%u udp_admin=%u netcon=%u netcon_host=%u netcon_port=%u dhcp=%u\r\n",
+              src, g_cli_idle_s, g_net_src_rate, g_net_echo, g_cli_plain, g_udp_admin, g_netcon_on,
+              g_netcon_host, g_netcon_port, g_dhcp_cfg);
     serial_write(line);
 }
 
@@ -287,7 +288,7 @@ static void cfg_set(const uint8_t *c, uint32_t n)
 
     if (k < 0) {
         cmd_puts("ERR: config: kunci tak dikenal (cli_idle udp_rate echo cli_plain udp_admin "
-                 "netcon netcon_host netcon_port)\n");
+                 "netcon netcon_host netcon_port dhcp)\n");
         return;
     }
 

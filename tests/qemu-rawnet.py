@@ -26,8 +26,10 @@ HOST_MAC = bytes.fromhex("020000000001")
 GUEST_IP = bytes([192, 168, 50, 200])
 CMD_PORT = 7778
 ECHO_PORT = 7777
-NC_DEF = "netcon=0\nnetcon_host=1\nnetcon_port=6666\n"
+NC_DEF = "netcon=0\nnetcon_host=1\nnetcon_port=6666\ndhcp=0\n"   # + P3-4 (set dhcp 0)
 NC_MAC = bytes.fromhex("020000000099")
+DHCP_SRV = bytes([192, 168, 50, 1])
+BCAST_MAC = b"\xff" * 6
 
 results = []
 
@@ -453,6 +455,114 @@ def test_dns(net, cli):
     check("P3-3: query A sah (RD, QDCOUNT 1); balasan jahat diabaikan (3), yang sah masuk cache",
           ok_q and c is not None and re.match(r"^uji\.lokal = 10\.9\.8\.7 sisa=(1[01][0-9]|120) s \(cache\)$", c.strip())
           is not None and st is not None and "diabaikan=3" in st, repr((q, c, st)))
+
+
+def bootp_out(f):
+    """Pesan BOOTP dari tamu (UDP 68 -> 67), atau None."""
+    if len(f) < 42 + 240 or f[12:14] != b"\x08\x00" or f[23] != 17:
+        return None
+    u = 14 + (f[14] & 0x0F) * 4
+    if struct.unpack("!HH", f[u:u + 4]) != (68, 67):
+        return None
+    return f[u + 8:u + struct.unpack("!H", f[u + 4:u + 6])[0]]
+
+
+def dhcp_opts(b):
+    o, i = {}, 240
+    while i + 1 < len(b) and b[i] != 255:
+        if b[i] == 0:
+            i += 1
+            continue
+        o[b[i]] = bytes(b[i + 2:i + 2 + b[i + 1]])
+        i += 2 + b[i + 1]
+    return o
+
+
+def dhcp_type(f):
+    b = bootp_out(f)
+    return dhcp_opts(b).get(53, b"\0")[0] if b else 0
+
+
+def dhcp_reply(xid, yiaddr, opts):
+    """Frame BOOTREPLY dari server .1:67 ke 255.255.255.255:68 (broadcast)."""
+    b = bytearray(240)
+    b[0:3] = b"\x02\x01\x06"
+    b[4:8] = xid
+    b[16:20] = yiaddr
+    b[28:34] = GUEST_MAC
+    b[236:240] = b"\x63\x82\x53\x63"
+    for c, v in opts:
+        b += bytes([c, len(v)]) + v
+    payload = bytes(b + b"\xff")
+    dst = b"\xff" * 4
+    udp_len = 8 + len(payload)
+    pseudo = DHCP_SRV + dst + struct.pack("!BBH", 0, 17, udp_len)
+    c = csum16(pseudo + struct.pack("!HHHH", 67, 68, udp_len, 0) + payload) or 0xFFFF
+    udp = struct.pack("!HHHH", 67, 68, udp_len, c) + payload
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + udp_len, 0x1236, 0, 64, 17, 0,
+                     DHCP_SRV, dst)
+    ip = ip[:10] + struct.pack("!H", csum16(ip)) + ip[12:]
+    return BCAST_MAC + HOST_MAC + b"\x08\x00" + ip + udp
+
+
+def test_dhcp(net, cli, log):
+    """P3-4: boot pertama menyimpan dhcp=1, jadi boot ini mulai dengan IP 0.0.0.0 dan
+    skrip ini berperan sebagai server DHCP 192.168.50.1. Alamat yang diberikan =
+    192.168.50.200 (sama dengan IP statis) supaya uji berikutnya tidak berubah;
+    sesudahnya `set dhcp 0` (berlaku di boot berikutnya, CONFIG.CFG kanonik lagi)."""
+    lease = struct.pack("!I", 3600)
+    good = [(53, b"\x02"), (54, DHCP_SRV), (51, lease), (1, bytes([255, 255, 255, 0])),
+            (3, DHCP_SRV), (6, DHCP_SRV)]
+    fs = net.collect(30, lambda f: dhcp_type(f) == 1, limit=1)
+    b = bootp_out(fs[0]) if fs else b""
+    o = dhcp_opts(b) if b else {}
+    check("P3-4: DISCOVER: 0.0.0.0:68 -> 255.255.255.255:67 broadcast, op 1, chaddr, "
+          "flag BROADCAST, opt 55, >= 300 byte",
+          bool(fs) and fs[0][0:6] == BCAST_MAC and fs[0][26:30] == bytes(4) and
+          fs[0][30:34] == b"\xff" * 4 and b[0:3] == b"\x01\x01\x06" and b[10] == 0x80 and
+          b[28:34] == GUEST_MAC and len(b) >= 300 and o.get(55) == bytes([1, 3, 6, 51]) and
+          50 not in o and 54 not in o, repr((fs[0][:42].hex() if fs else None, o)))
+    net.send(arp_frame(HOST_MAC, DHCP_SRV, GUEST_IP, 1))   # tanpa IP: tidak dijawab
+    arp = net.collect(0.5, lambda f: f[12:14] == b"\x08\x06" and f[20:22] == b"\x00\x02",
+                      limit=1)
+    req, xid = None, b[4:8]
+    for _ in range(3):
+        # Tawaran rusak (mask /16, xid lain, tanpa server) lalu tawaran sah.
+        net.send(dhcp_reply(xid, bytes([192, 168, 50, 201]),
+                            good[:3] + [(1, bytes([255, 255, 0, 0]))]))
+        net.send(dhcp_reply(bytes(x ^ 1 for x in xid), bytes([192, 168, 50, 202]), good))
+        net.send(dhcp_reply(xid, bytes([192, 168, 50, 203]), [good[0]] + good[2:]))
+        net.send(dhcp_reply(xid, GUEST_IP, good))
+        fs = net.collect(3, lambda f: dhcp_type(f) in (1, 3), limit=1)
+        if fs and dhcp_type(fs[0]) == 3:
+            req = bootp_out(fs[0])
+            break
+        if fs:   # DISCOVER baru (xid baru) sebelum tawaran diproses: ulangi
+            xid = bootp_out(fs[0])[4:8]
+    ro = dhcp_opts(req) if req else {}
+    check("P3-4: tawaran rusak diabaikan; tawaran sah -> REQUEST .200 ke server .1; "
+          "ARP tanpa IP tidak dijawab",
+          req is not None and req[4:8] == xid and ro.get(50) == GUEST_IP and
+          ro.get(54) == DHCP_SRV and req[12:16] == bytes(4) and not arp, repr((ro, arp)))
+    net.send(dhcp_reply(xid, GUEST_IP, [(53, b"\x05")] + good[1:]))
+    probe = net.collect(2, lambda f: f[12:14] == b"\x08\x06" and f[20:22] == b"\x00\x01" and
+                        f[38:42] == GUEST_IP, limit=1)
+    want = b"P3: DHCP terikat 192.168.50.200/24 dari 192.168.50.1 sewa 3600 s"
+    end, bound = time.time() + 5, False
+    while time.time() < end and not bound:
+        bound = want in open(log, "rb").read()
+        time.sleep(0.2)
+    check("P3-4: ACK -> probe ARP .200 (pengirim 0.0.0.0) -> terikat (serial)",
+          bool(probe) and probe[0][28:32] == bytes(4) and bound,
+          repr((probe[0][:42].hex() if probe else None, bound)))
+    time.sleep(0.3)
+    r = cli.cmd("dhcp")
+    r2 = cli.cmd("set dhcp 0")
+    check("P3-4: perintah dhcp: terikat, sewa 3600 s; set dhcp 0 untuk boot berikutnya",
+          r is not None and r.startswith("dhcp: mode=dhcp keadaan=terikat ip=192.168.50.200/24 "
+                                         "server=192.168.50.1 sewa=3600 s sisa=") and
+          "tawaran=1 ack=1 nak=0 decline=0 " in r and r2 == "OK dhcp=0 (tersimpan)\n",
+          repr((r, r2)))
 
 
 def arp_frame(sender_mac, sender_ip, target_ip, oper):
@@ -1141,6 +1251,8 @@ def main():
         net.drain()
         cli = Client(net, key, bytes([192, 168, 50, 1]))
 
+        test_dhcp(net, cli, log)
+        time.sleep(1.2)
         test_counters(net, cli)
         time.sleep(1.2)
         test_fs_persist(net, cli)

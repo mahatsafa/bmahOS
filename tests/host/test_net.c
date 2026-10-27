@@ -241,6 +241,28 @@ static uint16_t ref_l4_csum(const uint8_t *ip_hdr, uint8_t proto, const uint8_t 
 
 static void fix_csums(uint8_t *f, size_t n);
 
+// P3-4: kait DHCP (dhcp.c tidak ikut di uji ini).
+static int g_dh_wait, g_dh_rx_n, g_dh_arp_n;
+static uint32_t g_dh_rx_len;
+static uint8_t g_dh_rx0;
+int dhcp_waiting(void)
+{
+    return g_dh_wait;
+}
+
+void dhcp_rx(const volatile uint8_t *d, uint32_t len)
+{
+    g_dh_rx_n++;
+    g_dh_rx_len = len;
+    g_dh_rx0 = d[0];
+}
+
+void dhcp_arp_seen(const volatile uint8_t *buf)
+{
+    (void)buf;
+    g_dh_arp_n++;
+}
+
 // P6-2: kait jawaban probe TCP pantau (monitor.c tidak ikut di uji ini).
 static int g_probe_ret, g_probe_calls;
 int monitor_tcp_seen(const volatile uint8_t *buf, uint32_t r)
@@ -2733,6 +2755,55 @@ static void test_tcp_probe(void)
     tcp_reset();
 }
 
+// P3-4: tanpa IP (DHCP belum terikat) ARP tidak dijawab dan IPv4 dibuang;
+// balasan DHCP (UDP 67 -> 68) ke alamat tujuan mana pun diserahkan ke dhcp_rx
+// selama klien menunggu, bila checksum sah.
+static size_t mk_dhcp(uint8_t *f, uint16_t dport, const char *data)
+{
+    size_t n = mk_udp(f, 67, dport, data, 0);
+    memset(f + 30, 255, 4);
+    fix_csums(f, n);
+    return n;
+}
+
+static void test_dhcp_hooks(void)
+{
+    uint8_t f[600];
+    static const uint8_t zero[4] = { 0, 0, 0, 0 };
+
+    g_dh_arp_n = 0;
+    rx(f, mk_arp(f, OUR_IP));
+    CHECK(g_tx_n == 1 && g_dh_arp_n == 1 && net_ip_ready());
+    memset(g_net_ip, 0, 4);
+    CHECK(!net_ip_ready());
+    rx(f, mk_arp(f, OUR_IP));
+    CHECK(g_tx_n == 0 && g_dh_arp_n == 2);
+    rx(f, mk_arp(f, zero));                        // ARP untuk 0.0.0.0
+    CHECK(g_tx_n == 0);
+    size_t n = mk_icmp_echo(f, "x", 0);
+    memset(f + 30, 0, 4);                          // ping ke 0.0.0.0
+    fix_csums(f, n);
+    rx(f, n);
+    CHECK(g_tx_n == 0);
+
+    g_dh_wait = 1;
+    g_dh_rx_n = 0;
+    rx(f, mk_dhcp(f, 68, "bootp"));
+    CHECK(g_dh_rx_n == 1 && g_dh_rx_len == 5 && g_dh_rx0 == 'b' && g_tx_n == 0);
+    rx(f, mk_dhcp(f, 69, "x"));                    // port lain
+    n = mk_dhcp(f, 68, "x");
+    f[40] ^= 0xFF;                                 // checksum UDP rusak
+    rx(f, n);
+    n = mk_dhcp(f, 68, "x");
+    f[24] ^= 0xFF;                                 // checksum IP rusak
+    rx(f, n);
+    CHECK(g_dh_rx_n == 1);
+    g_dh_wait = 0;
+    rx(f, mk_dhcp(f, 68, "x"));                    // klien tidak menunggu
+    CHECK(g_dh_rx_n == 1);
+    memcpy(g_net_ip, OUR_IP, 4);
+}
+
 int main(void)
 {
     test_checksum();
@@ -2763,6 +2834,7 @@ int main(void)
     test_fuzz();
     test_netcon();
     test_tcp_probe();
+    test_dhcp_hooks();
     return test_done("net");
 }
 #endif
