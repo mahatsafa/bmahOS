@@ -686,6 +686,19 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         done
         return 1
     }
+    # bm_p PERINTAH: kirim lewat UDP; bila tak dijawab (CPU host sibuk) dan
+    # baris AUDIT perintah itu belum ada di serial (= belum dieksekusi, jadi
+    # aman diulang tanpa panic ganda), kirim ulang, maks 3 percobaan.
+    bm_p() {
+        local r
+        for _ in 1 2 3; do
+            r="$($BM "$1" 2>&1)" && break
+            sleep 3
+            grep -a "^AUDIT " "$PLOG" | grep -qF " $1" && break
+            echo "info  boot keempat: '$1' tak dijawab, diulang" >&2
+        done
+        echo "$r"
+    }
     PANIC_REPLY=""
     PANIC_WAIT=""
     # R2: netcon=1 tersimpan di disk -> berlaku juga setelah tiap reboot.
@@ -705,7 +718,7 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         wait_n "Entropi: siap" "$i" || break
         wait_n "net task dimulai" "$i" || break
         sleep 1
-        PANIC_REPLY="$PANIC_REPLY$($BM "panic $kind" 2>&1)
+        PANIC_REPLY="$PANIC_REPLY$(bm_p "panic $kind")
 "
         wait_n "PANIC: reboot otomatis dalam 10 detik" "$i" || break
         t0=$(date +%s)
@@ -735,7 +748,7 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         n=$((n + 1))
         wait_n "R5: watchdog aktif" "$n" || break
         sleep 1.2
-        WD_REPLY="$WD_REPLY$($BM "wdtest $kind" 2>&1)
+        WD_REPLY="$WD_REPLY$(bm_p "wdtest $kind")
 "
         t0=$(date +%s)
         wait_n "PANIC: watchdog: " "$((n - 3))" || break
@@ -747,7 +760,7 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     STK_REPLY=""
     if wait_n "R5: watchdog aktif" 6; then
         sleep 1.2
-        STK_REPLY="$($BM "panic stack" 2>&1)"
+        STK_REPLY="$(bm_p "panic stack")"
         wait_n "stack guard dilanggar" 1 && wait_n "ACPI-R: reboot via register reset FADT" 6
     fi
     wait_n "R5: watchdog aktif" 7
