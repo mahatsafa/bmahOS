@@ -10,6 +10,9 @@ berulang TCP 7 / 7779 / 7780, UDP CHAL) tanpa panic, reboot, atau kebocoran memo
 - `client/soak.py`: generator beban + pencatat metrik (Python 3, pustaka standar + `bmctl.py`).
   Satu proses, langkah berurutan, paling banyak 2 koneksi TCP sekaligus (batas kernel 2 TCB per IP).
   Windows: menahan sleep lewat `SetThreadExecutionState` selama proses hidup.
+- `client/soak-mulai.ps1 [-Durasi detik]`: mulai soak di VMware dari Windows (menolak bila soak.py masih jalan,
+  Power Off/On VM, tunggu 7780, cek serial, jalankan soak.py di jendela kecil). Satu baris:
+  `powershell -ExecutionPolicy Bypass -File "D:\Shared Folders VM\CentOS Terminal\soak-mulai.ps1"`.
 - `tests/soak/qemu-soak.sh [durasi] [interval]`: pra-uji di QEMU (TCG, hostfwd slirp, tanpa ICMP).
 - `tests/soak/analisis.py DIR [--serial LOG] [--pemanasan S]`: laporan Markdown + putusan (kode keluar 0 = lulus).
 
