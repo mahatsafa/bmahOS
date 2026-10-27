@@ -37,6 +37,8 @@ Belum pernah diuji di hardware asli.
   warna dari mask Limine, gulir setengah layar); tanpa framebuffer -> nonaktif
 - Jam (P3): RTC CMOS dibaca saat boot (`waktu`, zona host); `waktu sinkron <oktet> [port]` (admin) mengambil
   jam UTC dari server SNTP di /24 sendiri (balasan divalidasi nonce, lihat `PROTOCOL.md`)
+- DHCP (P3): `set dhcp 1` lalu reboot -> alamat dari server DHCP (/24 saja; tanpa sewa 30 s -> IP statis);
+  `dhcp` menampilkan keadaan dan sewa
 - DNS (P3): `dns <nama> [oktet [port]]` (admin) query A ke server di /24 sendiri, cache 8 entri dengan TTL;
   `dns` menampilkan status dan isi cache
 - Pemantau jaringan (P6): `pantau ping <oktet>`, `pantau tcp <oktet> <port>`, `pantau dns <nama> <oktet> <port>`
@@ -137,7 +139,7 @@ dan tanpa disk memastikan driver yang tidak ada dilewati tanpa exception. Semua 
 
 ## Konfigurasi saat ini (hardcode)
 
-- IP: `192.168.50.200` (jaringan VMnet2 host-only VMware)
+- IP: `192.168.50.200` (jaringan VMnet2 host-only VMware); dengan `dhcp=1` dari server DHCP (P3-4)
 - Disk FAT32 harus berisi `KEY.TXT` (kunci autentikasi, 16 sampai 64 byte). Tanpa file ini semua
   perintah ditolak. **Jangan commit kunci.** `testdisk/` ada di `.gitignore`.
 

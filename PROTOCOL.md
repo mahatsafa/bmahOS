@@ -182,7 +182,7 @@ Hanya root directory (cluster root pertama), nama 8.3 `A-Z 0-9 _ -` (huruf kecil
 ## Konfigurasi persisten (D7)
 
 File `CONFIG.CFG` di root FAT32, dibaca sekali saat boot (serial: `CONFIG: sumber=... cli_idle=..
-udp_rate=.. echo=.. cli_plain=.. udp_admin=.. netcon=.. netcon_host=.. netcon_port=..`). Teks ASCII, satu `kunci=nilai` per baris (LF; CR di akhir baris dibuang), baris
+udp_rate=.. echo=.. cli_plain=.. udp_admin=.. netcon=.. netcon_host=.. netcon_port=.. dhcp=..`). Teks ASCII, satu `kunci=nilai` per baris (LF; CR di akhir baris dibuang), baris
 kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 
 | Kunci | Rentang | Default | Arti |
@@ -195,6 +195,7 @@ kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 | `netcon` | 0..1 | 0 | R2: 1: baris log dikirim lewat UDP (lihat Netconsole) |
 | `netcon_host` | 1..254 | 1 | R2: tujuan 192.168.50.`netcon_host` |
 | `netcon_port` | 1024..65535 | 6666 | R2: port UDP tujuan |
+| `dhcp` | 0..1 | 0 | P3-4: 1: alamat dari server DHCP mulai boot berikutnya (lihat DHCP) |
 
 - D9 pengaman: tanpa TLS aktif, `cli_plain=0` + `udp_admin=0` bersamaan menutup semua jalur admin jaringan.
   `set` yang menghasilkan kombinasi itu ditolak (`ERR: config: TLS nonaktif, ...`); file di disk dengan
@@ -335,6 +336,22 @@ register umum dump panic), maks 160 karakter.
   diubah lewat `tulis`/`hapus`/`ganti`.
 - Saat boot: `P4: filter sumber=disk aturan=N`, `P4: filter tanpa aturan (tanpa file|tanpa disk|galat baca
   disk)`, atau `P4: FILTER.CFG ditolak baris N (alasan), tanpa aturan`.
+
+## DHCP `dhcp` (P3-4)
+
+- Hanya bila `dhcp=1` saat boot. Serial: `P3: DHCP mulai (IP 0.0.0.0 sampai terikat, maks 30 s)`, lalu
+  `P3: DHCP terikat a.b.c.d/24 dari <server> sewa <N s|tanpa-batas> router <r> dns <d>`, atau `P3: DHCP tanpa
+  sewa dalam 30 s -> IP statis 192.168.50.200 (DHCP berhenti sampai reboot)`. Perpanjangan: `P3: DHCP diperpanjang
+  ...`; sewa hilang: `P3: DHCP <NAK|sewa habis|ACK perpanjangan dengan alamat lain> -> IP a.b.c.d dilepas, DISCOVER
+  lagi`; bentrok: `P3: DHCP alamat a.b.c.d sudah dipakai <MAC> -> DECLINE`.
+- Pesan keluar: UDP 68 -> 67, Ethernet broadcast ke 255.255.255.255, minimal 300 byte, chaddr = MAC E1000,
+  option 53, 55 (1 3 6 51), 12 `bmahos`; DISCOVER/REQUEST awal dengan flag BROADCAST dan sumber 0.0.0.0; REQUEST
+  awal + DECLINE membawa 50 (alamat) + 54 (server); perpanjangan membawa ciaddr tanpa 50/54.
+- Balasan diterima: op 2, Ethernet/6, xid sama, chaddr = MAC kita, magic cookie, option 53 + 54; OFFER/ACK juga
+  51 (sewa) dan 1 = 255.255.255.0, alamat bukan 0.x/127.x/>=224.x, oktet terakhir 1..254.
+- `dhcp` (ro): `dhcp: mode=statis ip=a.b.c.d/24` (dengan `(dhcp=1 berlaku setelah reboot)` bila sudah di-set),
+  atau `dhcp: mode=dhcp keadaan=<mulai|pilih|minta|cek-arp|terikat|perpanjang|ikat-ulang|statis> ip=.. server=..
+  sewa=.. sisa=N s router=.. dns=..` + `dhcp: kirim=N tawaran=N ack=N nak=N decline=N diabaikan=N terakhir=..`.
 
 ## DNS `dns` (P3-3)
 

@@ -147,6 +147,11 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    (tanpa koneksi). Hasil dns tanpa DNSSEC (sama dengan P3-3). Pesan syslog teks polos lewat UDP tanpa autentikasi:
    isinya (IP target + keadaan) terbaca di LAN dan pesan palsu bisa dikirim ke penerima, jadi penerima tidak boleh
    menganggapnya bukti. Antrean pesan terbatas 8; tanpa tujuan syslog tidak ada yang dikirim.
+19. DHCP (P3-4, hanya bila `dhcp=1`): server DHCP palsu di LAN bisa memberi alamat lain atau NAK (perangkat
+   pindah alamat / kehilangan alamat sampai jatuh ke IP statis 30 s kemudian); xid 32 bit acak mencegah
+   pemalsuan buta, tidak mencegah penyerang yang membaca broadcast DISCOVER/REQUEST. Hanya alamat /24 yang
+   diterima, router/DNS tidak dipakai, jadi lalu lintas tidak bisa dibelokkan ke luar /24 lewat DHCP.
+   Kunci HMAC/TLS tetap melindungi perintah walau alamat dibajak. Bawaan `dhcp=0`.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

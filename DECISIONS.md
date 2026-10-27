@@ -415,3 +415,22 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - `pantau tambah` (P6-1, belum pernah di-push) diganti `pantau ping`, sejajar dengan `pantau tcp` dan `pantau dns`.
 - P6-2a: `net_ipv4_hdr()` menggantikan 5 salinan pembangun header IPv4 (aturan P6-1 "digabung bila ada pemakai
   ketiga"); ID IP echo pantau kini dari penghitung bersama g_net_ip_id.
+
+## 2026-10-28 (P3-4 klien DHCP)
+- **Pilihan, bawaan mati**: CONFIG.CFG `dhcp=1` (berlaku saat boot); bawaan tetap IP statis 192.168.50.200 supaya
+  skrip dan uji yang sudah ada tidak berubah, dan supaya jaringan tanpa server DHCP tetap bekerja.
+- **Hanya /24**: OFFER/ACK wajib membawa mask 255.255.255.0 (semua modul menganggap /24 sendiri tanpa gateway);
+  mask lain = tawaran ditolak. Router dan DNS dari server hanya dicatat (tanpa routing).
+- **Tanpa IP sebelum terikat**: IP 0.0.0.0 sejak `dhcp_prepare` (sesudah config_load, sebelum paket IP pertama):
+  ARP tidak dijawab, IPv4 selain balasan DHCP dibuang, netcon/pantau diam. Balasan DHCP (UDP 67 -> 68) diterima
+  ke alamat tujuan mana pun selama klien menunggu, sebelum packet filter P4 (seperti SNTP/DNS); keasliannya
+  hanya xid acak 32 bit + chaddr (LAN tepercaya sebagian, THREAT_MODEL item 19).
+- **Cek ARP sebelum memakai alamat** (RFC 2131 "SHOULD"): satu probe dengan pengirim 0.0.0.0, tunggu 1 s; ada
+  pengirim lain dengan alamat itu -> DECLINE, mulai lagi 10 s kemudian.
+- **Gagal tertutup tapi tetap bisa dicapai**: belum terikat 30 s sejak mulai -> IP statis 192.168.50.200 dan
+  DHCP berhenti sampai reboot (perangkat headless tetap bisa diurus). Sewa hilang (NAK, sewa habis, ACK dengan
+  alamat lain) -> IP dilepas dan DISCOVER lagi (aturan 30 s yang sama).
+- **Penyederhanaan RFC 2131 yang dicatat**: perpanjangan dikirim broadcast (bukan unicast ke server) tiap 10 s
+  mulai T1; T1/T2 dihitung sendiri (sewa/2, sewa*7/8; option 58/59 diabaikan); sewa < 60 s dianggap 60 s;
+  option overload (52) tidak didukung. IP berubah -> MAC tujuan netcon/pantau dipelajari ulang; koneksi TCP
+  lama habis lewat batas waktu biasa.
