@@ -412,6 +412,13 @@ int dns_wants(const volatile uint8_t *src_ip, uint16_t sport, uint16_t dport);
 void dns_rx(const volatile uint8_t *p, uint32_t len);            // isi UDP (checksum sah)
 int dns_execute(const volatile uint8_t *cmd, uint32_t len);       // 1 = ditangani
 
+// ---- monitor.c (P6-1: pemantau ping, `pantau`, maks 4 target di /24 sendiri) ----
+void monitor_init(void);
+void monitor_poll(void);
+void monitor_arp_seen(const volatile uint8_t *buf);
+void monitor_icmp_reply(const volatile uint8_t *buf, uint32_t ihl, uint32_t icmp_len);
+int monitor_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
+
 // ---- filter.c (P4: packet filter, aturan di FILTER.CFG) ----
 extern uint64_t g_filter_drop;
 void filter_load(void);                        // saat boot, setelah config_load

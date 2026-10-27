@@ -127,6 +127,26 @@ WEAK int dns_execute(const volatile uint8_t *cmd, uint32_t len)
     return 0;
 }
 
+// P6-1: monitor.c tidak ikut di uji lain.
+WEAK void monitor_arp_seen(const volatile uint8_t *buf)
+{
+    (void)buf;
+}
+
+WEAK void monitor_icmp_reply(const volatile uint8_t *buf, uint32_t ihl, uint32_t icmp_len)
+{
+    (void)buf;
+    (void)ihl;
+    (void)icmp_len;
+}
+
+WEAK int monitor_execute(const volatile uint8_t *cmd, uint32_t len)
+{
+    (void)cmd;
+    (void)len;
+    return 0;
+}
+
 WEAK int g_logdisk_syncs = 0;
 
 WEAK void logdisk_sync(int panic)

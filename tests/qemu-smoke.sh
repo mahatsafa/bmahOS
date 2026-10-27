@@ -644,6 +644,23 @@ check "P3-3: dns lewat server uji: A masuk cache, NXDOMAIN jadi cache negatif" \
     'echo "$DNS1" | grep -q "^OK: DNS bmahos.uji ke 192.168.50.1:$DNSPORT dimulai" && echo "$DNS2" | grep -q "^bmahos.uji = 192.168.50.123 sisa=[0-9]* s (cache)$" && echo "$DNS3" | grep -q "^OK: DNS tidakada.uji " && echo "$DNS4" | grep -q "^dns: diam terakhir=tidakada.uji = tidak ada (NXDOMAIN) ok=2 gagal=0 diabaikan=0 cache=2/8$" && grep -aq "P3: DNS bmahos.uji = 192.168.50.123" "$LOG"'
 sleep 1.2
 
+# P6-1: pemantau ping. slirp menjawab ping ke gateway 192.168.50.1 (NAIK); .9 tidak
+# menjawab ARP -> 3 probe gagal (tiap 5 s) -> TURUN. Target dihapus lagi sesudahnya.
+sleep 1.2
+MON_A="$($BM "pantau tambah 1 5" 2>&1)"
+sleep 1.2
+MON_B="$($BM "pantau tambah 9 5" 2>&1)"
+sleep 16
+MON_L="$($BM pantau 2>&1)"
+sleep 1.2
+MON_D="$($BM "pantau hapus 2" 2>&1)"
+sleep 1.2
+MON_D="$MON_D $($BM "pantau hapus 1" 2>&1)"
+echo "info  P6-1: $(echo "$MON_L" | tr '\n' '|')"
+check "P6-1: pantau: .1 NAIK (balasan ping), .9 TURUN (3 gagal ARP), peringatan di serial" \
+    '[ "$MON_A" = "OK pantau 1: 192.168.50.1 tiap 5 s" ] && [ "$MON_B" = "OK pantau 2: 192.168.50.9 tiap 5 s" ] && echo "$MON_L" | grep -q "^1: 192.168.50.1 naik tiap=5 s kirim=[1-9][0-9]* balas=[1-9]" && echo "$MON_L" | grep -q "^2: 192.168.50.9 turun tiap=5 s kirim=0 balas=0 gagal_beruntun=[3-9]" && grep -aq "P6: 192.168.50.1 NAIK (rtt [0-9]* ms)" "$LOG" && grep -aq "P6: 192.168.50.9 TURUN (3 gagal berturut-turut, terakhir: tanpa balasan ARP)" "$LOG" && echo "$MON_D" | grep -q "OK pantau: target 2 dihapus OK pantau: target 1 dihapus"'
+sleep 1.2
+
 # R5: watchdog perangkat lunak: net task menepuk, IRQ timer hanya memeriksa.
 # Di titik ini boot pertama sudah melewati TLS, tulis FAT32, dan echo 1 MB.
 sleep 1.2

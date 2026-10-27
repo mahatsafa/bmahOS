@@ -93,6 +93,7 @@ static void net_handle_arp(volatile uint8_t *buf)
     netcon_arp_seen(buf);   // R2: MAC tujuan netconsole
     sntp_arp_seen(buf);     // P3-2: MAC server SNTP
     dns_arp_seen(buf);      // P3-3: MAC server DNS
+    monitor_arp_seen(buf);  // P6-1: MAC target pantau
 
     if (oper == 1 && net_ip_equal(buf + 38, g_net_ip)) {
         uint64_t lf = irq_save();
@@ -2130,6 +2131,11 @@ static void net_handle_ipv4(volatile uint8_t *buf, uint32_t len)
 
     if (net_checksum16(buf + 14 + ihl, icmp_len) != 0) {
         serial_write("Net-6: ICMP checksum salah, drop\r\n");
+        return;
+    }
+
+    if (buf[14 + ihl] == 0 && buf[14 + ihl + 1] == 0) {
+        monitor_icmp_reply(buf, ihl, icmp_len);   // P6-1: balasan ping pantau
         return;
     }
 
