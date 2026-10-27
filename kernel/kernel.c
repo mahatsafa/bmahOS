@@ -443,6 +443,7 @@ static void net_task_entry(void)
     // C3a: butuh interrupt aktif (memakai task_sleep), ~0,5 s.
     ktimer_selftest();
     netcon_init();   // R2
+    sntp_init();     // P3-2
     logdisk_init();  // R4
 
     for (;;) {
@@ -472,6 +473,7 @@ static void net_task_entry(void)
         entropy_poll();
         ktimer_run();
         netcon_poll();
+        sntp_poll();      // P3-2
         logdisk_poll();   // R4
         sem_wait(&g_net_rx_sem);
     }

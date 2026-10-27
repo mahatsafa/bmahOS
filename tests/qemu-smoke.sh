@@ -24,6 +24,7 @@ TPORT="${BMTEST_TCP_PORT:-17007}"   # C4: echo TCP port 7
 CPORT="${BMTEST_CLI_PORT:-17779}"   # D1: CLI TCP port 7779
 SPORT="${BMTEST_TLS_PORT:-17780}"   # D9: CLI TLS port 7780
 NCPORT="${BMTEST_NETCON_PORT:-17666}"   # R2: penerima netconsole (slirp .1 -> 127.0.0.1)
+NTPPORT="${BMTEST_NTP_PORT:-17123}"   # P3-2: server SNTP uji (slirp .1 -> 127.0.0.1)
 BOOT_TIMEOUT="${BMTEST_BOOT_TIMEOUT:-180}"
 
 PASS=0
@@ -604,6 +605,24 @@ check "P4: tanpa FILTER.CFG -> tanpa aturan; filter tambah tersimpan dan terdaft
 check "P4: peran read-only boleh membaca filter, tidak boleh mengubah" \
     'echo "$FLT_RO" | grep -q "^filter: aturan=1 " && echo "$FLT_RO" | grep -q "^ERR: peran read-only"'
 sleep 2.5
+
+# P3-2: SNTP ke server uji di 127.0.0.1:$NTPPORT (= 192.168.50.1 dari tamu lewat
+# slirp) yang jamnya digeser +1000 s: tamu harus memakai jam server (sumber=sntp).
+python3 "$ROOT/tests/sntp-server.py" 127.0.0.1 "$NTPPORT" 1000 30 > "$WORK/sntp-server.out" 2>&1 &
+NTPPID=$!
+sleep 1.2
+SNTP_GO="$($BM "waktu sinkron 1 $NTPPORT" 2>&1)"
+sleep 4
+SNTP_L="$($BM waktu 2>&1)"
+kill "$NTPPID" 2>/dev/null
+wait "$NTPPID" 2>/dev/null
+SNTP_E="$(echo "$SNTP_L" | sed -n "s/^waktu: .* epoch=\([0-9]*\) sumber=sntp oktet=1 stratum=2 (UTC) koreksi=[-0-9]* s$/\1/p")"
+SNTP_K="$(echo "$SNTP_L" | sed -n "s/^waktu: .* koreksi=\([-0-9]*\) s$/\1/p")"
+SNTP_D=$(( ${SNTP_E:-0} - $(date +%s) - 1000 ))
+echo "info  P3-2: $SNTP_GO | $(echo "$SNTP_L" | tr '\n' '|') selisih ${SNTP_D} s"
+check "P3-2: waktu sinkron ke server uji (+1000 s): jam = server, koreksi ~1000 s, sumber=sntp" \
+    'echo "$SNTP_GO" | grep -q "^OK: SNTP ke 192.168.50.1:$NTPPORT dimulai" && [ -n "$SNTP_E" ] && [ "${SNTP_D#-}" -le 5 ] && [ "${SNTP_K:-0}" -ge 990 ] && [ "${SNTP_K:-0}" -le 1010 ] && echo "$SNTP_L" | grep -q "^sntp: diam terakhir=ok ok=1 gagal=0 diabaikan=0$" && grep -aq "P3: SNTP ok dari 192.168.50.1 stratum 2 koreksi " "$LOG"'
+sleep 1.2
 
 # R5: watchdog perangkat lunak: net task menepuk, IRQ timer hanya memeriksa.
 # Di titik ini boot pertama sudah melewati TLS, tulis FAT32, dan echo 1 MB.

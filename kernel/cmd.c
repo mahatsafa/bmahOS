@@ -86,7 +86,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks config tls "
                  "netcon logdisk wd pci acpi waktu filter\n");
         cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti set "
-                 "filter tambah|hapus|kosong\n");
+                 "filter tambah|hapus|kosong waktu sinkron\n");
         cmd_puts("berprivilege: pping reboot audit (audit gagal)\n");
         cmd_puts("kirim CHAL, lalu <nonce> <perintah> <hmac>\n");
 #ifdef BMAHOS_LEGACYCTR
@@ -284,6 +284,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         netcon_status();   // R2
     } else if (net_cmd_is(cmd, len, "waktu")) {
         rtc_status(cmd_puts);   // P3-1
+        sntp_status(cmd_puts);  // P3-2
     } else if (net_cmd_is(cmd, len, "acpi")) {
         acpi_list(cmd_puts);   // P2
     } else if (net_cmd_is(cmd, len, "pci")) {

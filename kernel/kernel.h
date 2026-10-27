@@ -389,6 +389,19 @@ uint64_t rtc_raw_to_epoch(const uint8_t raw[6], uint8_t status_b);   // 0 = tida
 void rtc_init(void);
 uint64_t rtc_now(void);                       // epoch sekarang, 0 bila RTC tidak sah
 void rtc_status(void (*out)(const char *));   // perintah `waktu`
+int64_t rtc_set_sntp(uint64_t epoch, uint32_t host, uint32_t stratum);   // P3-2, koreksi detik
+extern uint32_t g_time_src;                   // P3-2: 0 = RTC, 1 = SNTP
+
+// ---- sntp.c (P3-2: klien SNTP sekali jalan, `waktu sinkron <oktet> [port]`) ----
+extern uint64_t g_sntp_ok, g_sntp_fail, g_sntp_bad;
+void sntp_init(void);                          // net task, setelah NIC siap
+void sntp_poll(void);                          // tiap putaran net task
+void sntp_arp_seen(const volatile uint8_t *buf);
+int sntp_start(uint32_t host, uint32_t port, const char **why);   // 0 OK
+int sntp_wants(const volatile uint8_t *src_ip, uint16_t sport, uint16_t dport);
+void sntp_rx(const volatile uint8_t *p, uint32_t len);            // isi UDP (checksum sah)
+void sntp_status(void (*out)(const char *));                       // baris kedua `waktu`
+int sntp_execute(const volatile uint8_t *cmd, uint32_t len);       // 1 = ditangani
 
 // ---- filter.c (P4: packet filter, aturan di FILTER.CFG) ----
 extern uint64_t g_filter_drop;

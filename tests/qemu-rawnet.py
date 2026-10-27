@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import hmac
 import os
+import re
 import socket
 import struct
 import subprocess
@@ -157,8 +158,9 @@ class Net:
             if limit is not None and len(out) >= limit:
                 return out
 
-    def collect(self, timeout, pred):
-        """Semua frame dari tamu yang memenuhi pred(frame) selama timeout detik."""
+    def collect(self, timeout, pred, limit=None):
+        """Semua frame dari tamu yang memenuhi pred(frame) selama timeout detik
+        (atau sampai `limit` frame terkumpul)."""
         out = []
         end = time.time() + timeout
         while True:
@@ -172,6 +174,8 @@ class Net:
                 return out
             if pred(f):
                 out.append(f)
+                if limit is not None and len(out) >= limit:
+                    return out
 
     def request(self, src_ip, sport, dport, payload, timeout=10.0):
         self.send(udp_frame(src_ip, sport, dport, payload))
@@ -351,6 +355,58 @@ def test_filter(net, cli, log):
         eb = net.request(a, 48002, ECHO_PORT, b"a2", timeout=5)
         check("P4: filter kosong: .66 dibalas lagi",
               r8 == "OK filter: semua aturan dihapus (tersimpan)\n" and eb == b"a2", repr((r8, eb)))
+
+
+def test_sntp(net, cli, log):
+    """P3-2: tamu ARP ke server, kirim NTP v4 mode 3 (transmit = nonce); balasan
+    originate salah / mode salah diabaikan, balasan dari port lain tidak ditunggu,
+    yang sah dipakai (jam 2030-01-01, sumber=sntp); tanpa jawaban ARP -> gagal."""
+    srv_ip, srv_mac = bytes([192, 168, 50, 77]), bytes([0x02, 0, 0, 0, 0, 0x77])
+    r = cli.cmd("waktu sinkron 77 12300")
+    arp = net.collect(2.5, lambda f: len(f) >= 42 and f[12:14] == b"\x08\x06" and
+                      f[21] == 1 and f[38:42] == srv_ip, limit=1)
+    net.send(arp_frame(srv_mac, srv_ip, GUEST_IP, 2))
+    req = net.collect(2.5, lambda f: len(f) >= 90 and f[12:14] == b"\x08\x00" and
+                      f[23] == 17 and f[30:34] == srv_ip and
+                      struct.unpack("!H", f[36:38])[0] == 12300, limit=1)
+    ok_req = (r is not None and r.startswith("OK: SNTP ke 192.168.50.77:12300 dimulai") and
+              len(arp) >= 1 and len(req) == 1 and req[0][0:6] == srv_mac and req[0][42] == 0x23)
+    check("P3-2: waktu sinkron: ARP ke .77, lalu NTP v4 mode 3 ke MAC dari ARP", ok_req,
+          repr((r, len(arp), len(req))))
+    if not ok_req:
+        return
+    f = req[0]
+    sport = struct.unpack("!H", f[34:36])[0]
+    nonce = bytes(f[82:90])
+    t2030 = 1893456000 + 2208988800
+
+    def reply(b0, orig, src_port=12300):
+        ts = struct.pack("!II", t2030, 0)
+        pl = bytes([b0, 2, 6, 0xEC]) + b"\0" * 12 + ts + orig + ts + ts
+        net.send(udp_frame(srv_ip, src_port, sport, pl))
+
+    reply(0x24, bytes(8))                 # originate bukan nonce
+    reply(0x24, nonce, src_port=12301)    # port sumber lain: tidak ditunggu
+    reply(0x23, nonce)                    # mode 3
+    time.sleep(0.5)
+    reply(0x24, nonce)                    # sah
+    time.sleep(1.2)
+    w = cli.cmd("waktu")
+    m = re.search(r"^waktu: 2030-01-01 00:00:0[0-9] epoch=(\d+) sumber=sntp oktet=77 "
+                  r"stratum=2 \(UTC\) koreksi=-?\d+ s$", w or "", re.M)
+    check("P3-2: balasan palsu diabaikan (2), yang sah dipakai: jam 2030-01-01, sumber=sntp",
+          m is not None and 1893456000 <= int(m.group(1)) <= 1893456010 and
+          "sntp: diam terakhir=ok ok=1 gagal=0 diabaikan=2" in w, repr(w))
+    time.sleep(1.2)
+    r = cli.cmd("waktu sinkron 78")
+    time.sleep(4)
+    w = cli.cmd("waktu")
+    text = open(log, "rb").read()
+    check("P3-2: tanpa jawaban ARP: gagal setelah 3 percobaan, jam tetap dari SNTP sebelumnya",
+          r is not None and r.startswith("OK: SNTP ke 192.168.50.78:123 dimulai") and
+          w is not None and "sntp: diam terakhir=tanpa balasan ARP ok=1 gagal=1" in w and
+          "sumber=sntp oktet=77" in w and b"P3: SNTP gagal: tanpa balasan ARP" in text,
+          repr((r, w)))
 
 
 def arp_frame(sender_mac, sender_ip, target_ip, oper):
@@ -1049,6 +1105,8 @@ def main():
         time.sleep(1.2)
         test_filter(net, cli, log)
         time.sleep(2.2)
+        test_sntp(net, cli, log)
+        time.sleep(1.2)
         test_netcon(net, cli)
         time.sleep(1.2)
         test_src_limit(net, cli)

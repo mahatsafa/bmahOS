@@ -422,6 +422,8 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         // D7: config (juga read-only) / set (admin)
     } else if (filter_execute(cmd, len)) {
         // P4: filter (juga read-only) / filter tambah|hapus|kosong (admin)
+    } else if (sntp_execute(cmd, len)) {
+        // P3-2: waktu sinkron <oktet> [port] (admin; `waktu` saja = baca)
     } else if (fscmd_execute(cmd, len)) {
         // D6: ls/baca/tulis/tambah (admin; tidak di g_ro_cmds)
     } else {

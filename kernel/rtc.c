@@ -13,6 +13,9 @@
 uint64_t g_rtc_boot_epoch;   // epoch (detik sejak 1970-01-01) saat timer_ticks = g_rtc_boot_tick
 uint64_t g_rtc_boot_tick;
 int g_rtc_ok;
+uint32_t g_time_src;          // P3-2: 0 = RTC (zona host), 1 = SNTP (UTC)
+static uint32_t g_time_host, g_time_stratum;
+static int64_t g_time_adj;    // koreksi SNTP terakhir (detik, baru - lama)
 
 static uint8_t rtc_bcd(uint8_t v)
 {
@@ -135,10 +138,26 @@ uint64_t rtc_now(void)
     return g_rtc_boot_epoch + (timer_ticks - g_rtc_boot_tick) / 100;
 }
 
+// P3-2: jam dinding dari SNTP (UTC), mulai tick sekarang. Mengembalikan
+// koreksi (baru - lama) dalam detik; 0 bila sebelumnya tidak ada jam sah.
+int64_t rtc_set_sntp(uint64_t epoch, uint32_t host, uint32_t stratum)
+{
+    int64_t adj = g_rtc_ok ? (int64_t)epoch - (int64_t)rtc_now() : 0;
+
+    g_rtc_boot_tick = timer_ticks;
+    g_rtc_boot_epoch = epoch;
+    g_rtc_ok = 1;
+    g_time_src = 1;
+    g_time_host = host;
+    g_time_stratum = stratum;
+    g_time_adj = adj;
+    return adj;
+}
+
 // Perintah `waktu`.
 void rtc_status(void (*out)(const char *))
 {
-    char line[96];
+    char line[128];
     rtc_time_t t;
     uint64_t now = rtc_now();
 
@@ -147,8 +166,15 @@ void rtc_status(void (*out)(const char *))
         return;
     }
     rtc_civil_from_epoch(now, &t);
-    ksnprintf(line, sizeof(line),
-              "waktu: %04u-%02u-%02u %02u:%02u:%02u epoch=%lu sumber=rtc (zona host)\n",
-              t.year, t.month, t.day, t.hour, t.min, t.sec, now);
+    if (g_time_src == 1) {
+        ksnprintf(line, sizeof(line),
+                  "waktu: %04u-%02u-%02u %02u:%02u:%02u epoch=%lu sumber=sntp oktet=%u stratum=%u "
+                  "(UTC) koreksi=%ld s\n", t.year, t.month, t.day, t.hour, t.min, t.sec, now,
+                  g_time_host, g_time_stratum, g_time_adj);
+    } else {
+        ksnprintf(line, sizeof(line),
+                  "waktu: %04u-%02u-%02u %02u:%02u:%02u epoch=%lu sumber=rtc (zona host)\n",
+                  t.year, t.month, t.day, t.hour, t.min, t.sec, now);
+    }
     out(line);
 }
