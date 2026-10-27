@@ -141,6 +141,8 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    atau keputusan keamanan).
 16. DNS (P3-3): tanpa DNSSEC; penyerang di LAN yang membaca query (ID + port) bisa memasukkan jawaban palsu ke
    cache. Hasil DNS hanya ditampilkan (belum dipakai untuk koneksi keluar).
+17. Pemantau ping (P6-1): balasan echo dicocokkan dengan IP target, id, dan seq (16 bit), jadi penyerang di LAN
+   yang menyadap bisa memalsukan status NAIK; status hanya informasi (tidak memicu tindakan).
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

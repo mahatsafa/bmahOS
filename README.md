@@ -39,6 +39,8 @@ Belum pernah diuji di hardware asli.
   jam UTC dari server SNTP di /24 sendiri (balasan divalidasi nonce, lihat `PROTOCOL.md`)
 - DNS (P3): `dns <nama> [oktet [port]]` (admin) query A ke server di /24 sendiri, cache 8 entri dengan TTL;
   `dns` menampilkan status dan isi cache
+- Pemantau ping (P6-1): `pantau tambah <oktet> [interval]` (admin, maks 4 target); status NAIK/TURUN, RTT,
+  dan peringatan `P6: ... NAIK|TURUN` di log; `pantau` menampilkan semuanya
 - Packet filter (P4): `FILTER.CFG`, maks 16 aturan cocok-pertama
   `<izinkan|tolak> <semua|tcp|udp|icmp> <semua|a.b.c.d[/n]> [port A[-B]] [laju N]` untuk UDP, ICMP, dan
   SYN TCP baru; TCP 7780 selalu lolos. Perintah `filter`, `filter tambah|hapus <n>|kosong` (admin)

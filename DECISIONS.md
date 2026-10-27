@@ -386,3 +386,12 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   CONFIG.CFG. Gagal-tertutup ditolak karena mengunci admin; dicatat sebagai keterbatasan.
 - **laju N**: per aturan (total, bukan per IP), jendela 100 tick, hanya untuk `izinkan`.
 - Filter diperiksa sebelum batas laju UDP per IP, jadi paket yang ditolak tidak memakan jatah klien lain.
+
+## 2026-10-28 (P6-1 pemantau ping)
+- **Sebagian P6**: hanya ping (ICMP echo) ke target di /24 sendiri; TCP-connect butuh klien TCP (bmahOS hanya
+  server), DNS berkala dan alert syslog UDP menyusul. Target hanya di RAM (tanpa file), maks 4.
+- **Ambang tetap**: 1 balasan = NAIK, 3 gagal berturut-turut = TURUN (MAC dilupakan supaya host yang berganti
+  kartu terdeteksi lewat ARP baru). Tanpa jawaban ARP dihitung sebagai satu kegagalan probe.
+- **Peringatan lewat kprintf** (jalur log yang sudah ada: serial, layar, LOG.BIN, netconsole), tanpa protokol baru.
+- Header IPv4 dibangun sendiri di monitor.c (pola sama dengan balasan ICMP di net.c); digabung bila ada pemakai
+  ketiga pembangun IPv4 non-UDP.

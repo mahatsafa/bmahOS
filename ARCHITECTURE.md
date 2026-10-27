@@ -49,6 +49,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `rtc.c` | P3-1: RTC CMOS saat boot (UIP, dua bacaan sama, BCD/12 jam) -> epoch + tick; P3-2: `rtc_set_sntp`; perintah `waktu` | kprintf |
 | `sntp.c` | P3-2: klien SNTP sekali jalan (`waktu sinkron`): ARP, permintaan dengan nonce, validasi balasan, batas waktu; hook di net_handle_arp/udp dan loop net task | net (`net_udp_build`), e1000, entropy, rtc, pmm, cmd |
 | `dns.c` | P3-3: klien DNS A sekali jalan (`dns <nama>`), validasi balasan (ID, pertanyaan identik, nama answer hanya dilompati), cache 8 entri TTL 5..3600 s | net (`net_udp_build`, `net_arp_request_build`), e1000, entropy, pmm, cmd |
+| `monitor.c` | P6-1: pemantau ping (maks 4 target, ARP + ICMP echo tiap interval, NAIK/TURUN dengan ambang, peringatan kprintf), perintah `pantau` | net (`net_checksum16`, `net_arp_request_build`), e1000, pmm, cmd, kprintf |
 | `filter.c` | P4: packet filter (maks 16 aturan cocok-pertama dari `FILTER.CFG`, UDP/ICMP/SYN TCP, laju per aturan, TCP 7780 selalu lolos), perintah `filter` | fat32 (`read_name`/`replace_name`), cmd, kprintf |
 | `netcon.c` | R2: netconsole UDP (antrean statis 4 KB dari `log_capture`, ARP tujuan, batas 20 datagram/s, kirim langsung saat panic, perintah `netcon`) | net (`net_udp_build`), e1000, pmm, cmd, kprintf |
 | `tls.c` | D9: server TLS 1.2 BearSSL untuk CLI 7780 (`tls_load` identitas TLSKEY/TLSCERT.DER, pool 2 sesi statis, pembungkus engine untuk net.c, perintah `tls`) | BearSSL, fat32, entropy, cmd, kprintf |
