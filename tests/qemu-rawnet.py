@@ -398,8 +398,28 @@ def test_src_limit(net, cli):
             net.send(udp_frame(flood, 42000 + sent, ECHO_PORT, b"banjir"))
             sent += 1
         time.sleep(0.02)
-    got = net.request(other, 43000, ECHO_PORT, b"lain", timeout=5)
-    time.sleep(0.5)
+    net.send(udp_frame(other, 43000, ECHO_PORT, b"lain"))
+    # Batas 20/s per IP diukur saat tamu memproses paket. Di TCG yang sibuk
+    # antrean banjir bisa diproses melewati beberapa jendela 1 s, jadi batas
+    # echo dihitung dari rentang waktu balasan banjir yang benar-benar tiba.
+    got = None
+    stamps = []
+    end = time.time() + 15   # berhenti setelah 1,5 s tanpa balasan
+    while time.time() < end:
+        net.sock.settimeout(1.5)
+        try:
+            f = net.sock.recv(65536)
+        except socket.timeout:
+            break
+        if len(f) < 42 or f[12:14] != b"\x08\x00" or f[23] != 17:
+            continue
+        u = 14 + (f[14] & 0x0F) * 4
+        if struct.unpack("!H", f[u:u + 2])[0] != ECHO_PORT:
+            continue
+        if f[30:34] == flood:
+            stamps.append(time.time())
+        elif f[30:34] == other:
+            got = f[u + 8:u + struct.unpack("!H", f[u + 4:u + 6])[0]]
     net.drain()
     m1 = cli.metrics()
     if m1 is None:
@@ -408,10 +428,15 @@ def test_src_limit(net, cli):
     d_src = m1["udp_src_dropped"] - m0["udp_src_dropped"]
     d_glob = m1["udp_dropped"] - m0["udp_dropped"]
     d_echo = m1["udp_echo"] - m0["udp_echo"]
-    info = "kirim=%d echo=%d dibuang_sumber=%d dibuang_global=%d" % (sent, d_echo, d_src, d_glob)
+    span = stamps[-1] - stamps[0] if stamps else 0.0
+    allowed = 20 * (int(span) + 2)
+    info = ("kirim=%d echo=%d (banjir %d dalam %.1f s, batas %d) dibuang_sumber=%d dibuang_global=%d"
+            % (sent, d_echo, len(stamps), span, allowed, d_src, d_glob))
     print("info  B4: " + info)
     check("B4: IP lain tetap dilayani saat banjir", got == b"lain", repr(got))
-    check("B4: banjir dibatasi per sumber", d_src >= 50 and d_echo - 1 <= 40, info)
+    check("B4: banjir dibatasi per sumber (per jendela 1 s yang dilalui)",
+          0 < len(stamps) <= allowed and d_src > 0 and d_src + len(stamps) == sent
+          and d_echo == len(stamps) + 1, info)
     check("B4: jatah global tidak habis", d_glob == 0, info)
 
 
