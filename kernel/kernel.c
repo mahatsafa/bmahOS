@@ -783,6 +783,7 @@ static void nx_selftest(uint64_t kernel_pml4, uint64_t user_pml4,
 void kmain(void)
 {
     serial_init();
+    fbcon_init();   // P1
     cpu_features_init();
     kprintf_selftest();
     entropy_init();

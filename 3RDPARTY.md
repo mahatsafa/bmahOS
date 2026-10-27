@@ -18,3 +18,15 @@
   mem*/strlen. `make host-test` menjalankan `test_crypto` upstream untuk implementasi profil D9.
 - Memperbarui: ganti seluruh direktori dari commit baru, perbarui baris di atas, jalankan `make host-test` dan
   `make test`, catat alasannya di DECISIONS.md.
+
+## Font konsol 8x16 (`kernel/fbfont.h`, P1)
+
+- Asal: tabel `builtin_font[]` di flanterm yang ikut Limine (`tools/limine/flanterm/src/flanterm_backends/fb.c`,
+  Limine commit `fdc6d566072cc78a543cef44ef370729fe91fe2e`, 2026-07-22, sha256 fb.c `1f4b82176881534a...`).
+  Komentar upstream: diambil dari `TOSH-SAT.F16` (koleksi vga-text-mode-fonts, dump font BIOS Toshiba).
+- Isi: hanya glyph ASCII 0x20..0x7E (95 x 16 byte), byte tidak diubah; bit 7 = piksel kiri.
+- Lisensi: BSD-2-Clause flanterm (`tools/limine/flanterm/LICENSE`), Copyright (C) 2022-2026 Mintsuki and
+  contributors. Status hak cipta font BIOS aslinya tidak diketahui; bila jadi masalah, ganti dengan font
+  berlisensi jelas (mis. Spleen, BSD-2) tanpa mengubah format `g_fbfont[95][16]`.
+- Membuat ulang: ambil `builtin_font[0x20*16 .. 0x7F*16)` dari fb.c (skrip ekstraksi di catatan sesi
+  2026-10-27, CLAUDE.md), tulis sebagai `g_fbfont`; `make host-test` (test_fbcon) memeriksa render.

@@ -27,6 +27,9 @@ void serial_putc(char c)
     }
 
     uint64_t lf = irq_save();
+    if (!g_serial_mute) {
+        fbcon_putc(c);   // P1: layar ikut UART (termasuk mute B4b)
+    }
     log_capture(c);
     irq_restore(lf);
 }

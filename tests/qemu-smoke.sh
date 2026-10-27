@@ -83,6 +83,7 @@ cp "$OVMF_VARS" "$WORK/vars.fd"
     -object filter-dump,id=fd0,netdev=n0,file="$WORK/net.pcap" \
     -device e1000,netdev=n0 \
     -display none -serial file:"$LOG" -no-reboot \
+    -monitor unix:"$WORK/mon.sock",server,nowait \
     >"$WORK/qemu.out" 2>&1 &
 QPID=$!
 
@@ -101,6 +102,14 @@ until grep -q "net task dimulai" "$LOG" 2>/dev/null; do
     waited=$((waited + 1))
 done
 echo "boot selesai dalam ~${waited} s"
+
+# P1: konsol framebuffer aktif (QEMU std VGA lewat GOP OVMF), layar berisi teks.
+check "P1: fbcon aktif (bpp 32, mask dari Limine)" \
+    'grep -aq "P1: fbcon aktif [0-9]*x[0-9]* bpp=32 pitch=[0-9]* teks [0-9]*x[0-9]* mask r=8@" "$LOG"'
+FB_OUT="$(python3 "$ROOT/tests/fb-check.py" "$WORK/mon.sock" "$WORK/fb.ppm" 2>&1)"
+FB_RC=$?
+echo "info  $FB_OUT"
+check "P1: screendump: teks fbcon (c0c0c0 di atas hitam) tampil di layar" '[ "$FB_RC" = 0 ]'
 
 BM="python3 $ROOT/client/bmctl.py --key $KEY --host 127.0.0.1 --port $PORT --timeout 10"
 
@@ -632,7 +641,7 @@ cp "$OVMF_VARS" "$WORK/vars-bare.fd"
 timeout "$BOOT_TIMEOUT" "$QEMU" -machine q35 -m 512M -cpu max \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$WORK/vars-bare.fd" \
-    -cdrom "$ISO" -nic none -display none -serial file:"$BARE" -no-reboot \
+    -cdrom "$ISO" -nic none -vga none -display none -serial file:"$BARE" -no-reboot \
     >"$WORK/qemu-bare.out" 2>&1 &
 BPID=$!
 # M-NIC: build dev menunggu task uji A/B selesai (butuh tick SETELAH net task
@@ -656,6 +665,7 @@ fi
 check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$BARE"'
 check "D7: tanpa disk: CONFIG: sumber=bawaan (tanpa disk)" \
     'grep -q "CONFIG: sumber=bawaan (tanpa disk) cli_idle=300 udp_rate=20 echo=1" "$BARE"'
+check "P1: tanpa VGA: fbcon nonaktif, boot lanjut" 'grep -aq "P1: fbcon nonaktif (tanpa framebuffer)" "$BARE"'
 check "D9: tanpa disk: TLS nonaktif" 'grep -q "TLS: nonaktif (TLSKEY.DER tidak ada)" "$BARE"'
 
 # R1: panic handler (build dev saja). Satu QEMU TANPA -no-reboot: panic pf ->

@@ -118,6 +118,26 @@ void serial_write_hex(uint64_t value);
 void serial_write_nolog(const char *s);
 extern volatile int g_serial_mute;
 
+// ---- fbcon.c (P1: konsol framebuffer, cermin serial_putc) ----
+typedef struct {
+    uint8_t *base;
+    uint64_t w, h, pitch;          // piksel, piksel, byte per baris
+    uint32_t bypp;                 // byte per piksel (2, 3, 4)
+    uint8_t rsz, rsh, gsz, gsh, bsz, bsh;
+    uint32_t cols, rows;           // ukuran teks (sel 8x16)
+    uint32_t col, row;             // posisi kursor
+    uint32_t fg;                   // warna teks terkemas; latar selalu 0
+    uint64_t chars, scrolls;
+    int active;
+} fbcon_t;
+int fbcon_setup(fbcon_t *f, uint8_t *base, uint64_t w, uint64_t h, uint64_t pitch,
+                uint16_t bpp, uint8_t rsz, uint8_t rsh, uint8_t gsz, uint8_t gsh,
+                uint8_t bsz, uint8_t bsh);   // 0 OK, -1 mode tidak didukung
+void fbcon_putc_on(fbcon_t *f, char c);
+void fbcon_init(void);                        // baca request framebuffer Limine
+void fbcon_putc(char c);                      // no-op bila nonaktif
+const fbcon_t *fbcon_state(void);
+
 // ---- kernel.c (ring log; dipakai serial_putc) ----
 void log_capture(char c);
 
