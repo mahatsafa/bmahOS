@@ -100,6 +100,33 @@ WEAK int sntp_execute(const volatile uint8_t *cmd, uint32_t len)
     return 0;
 }
 
+// P3-3: dns.c tidak ikut di uji lain.
+WEAK void dns_arp_seen(const volatile uint8_t *buf)
+{
+    (void)buf;
+}
+
+WEAK int dns_wants(const volatile uint8_t *src_ip, uint16_t sport, uint16_t dport)
+{
+    (void)src_ip;
+    (void)sport;
+    (void)dport;
+    return 0;
+}
+
+WEAK void dns_rx(const volatile uint8_t *p, uint32_t len)
+{
+    (void)p;
+    (void)len;
+}
+
+WEAK int dns_execute(const volatile uint8_t *cmd, uint32_t len)
+{
+    (void)cmd;
+    (void)len;
+    return 0;
+}
+
 WEAK int g_logdisk_syncs = 0;
 
 WEAK void logdisk_sync(int panic)

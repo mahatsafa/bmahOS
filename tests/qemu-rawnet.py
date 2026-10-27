@@ -409,6 +409,49 @@ def test_sntp(net, cli, log):
           repr((r, w)))
 
 
+def test_dns(net, cli):
+    """P3-3: tamu ARP ke server .53, kirim query A (ID + port acak); balasan ID
+    salah / QR=0 / pertanyaan lain diabaikan, yang sah masuk cache."""
+    srv_ip, srv_mac = bytes([192, 168, 50, 53]), bytes([0x02, 0, 0, 0, 0, 0x53])
+    r = cli.cmd("dns uji.lokal 53 5353")
+    net.collect(2.5, lambda f: len(f) >= 42 and f[12:14] == b"\x08\x06" and
+                f[21] == 1 and f[38:42] == srv_ip, limit=1)
+    net.send(arp_frame(srv_mac, srv_ip, GUEST_IP, 2))
+    req = net.collect(2.5, lambda f: len(f) >= 42 + 8 + 12 and f[12:14] == b"\x08\x00" and
+                      f[23] == 17 and f[30:34] == srv_ip and
+                      struct.unpack("!H", f[36:38])[0] == 5353, limit=1)
+    ok_req = (r is not None and r.startswith("OK: DNS uji.lokal ke 192.168.50.53:5353 dimulai") and
+              len(req) == 1 and req[0][0:6] == srv_mac)
+    check("P3-3: dns: ARP ke .53, lalu query A ke MAC dari ARP", ok_req, repr((r, len(req))))
+    if not ok_req:
+        return
+    f = req[0]
+    sport = struct.unpack("!H", f[34:36])[0]
+    ulen = struct.unpack("!H", f[38:40])[0]
+    q = bytes(f[42:34 + ulen])
+    ok_q = q[2] == 0x01 and q[4:6] == b"\x00\x01" and q[12:] == b"\x03uji\x05lokal\x00\x00\x01\x00\x01"
+
+    def reply(qq, flags=0x8180, ans=True):
+        hdr = qq[0:2] + struct.pack("!HHHHH", flags, 1, 1 if ans else 0, 0, 0)
+        pl = hdr + qq[12:]
+        if ans:
+            pl += b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 120, 4) + bytes([10, 9, 8, 7])
+        net.send(udp_frame(srv_ip, 5353, sport, pl))
+
+    reply(bytes([q[0] ^ 1]) + q[1:])                       # ID salah
+    reply(q, flags=0x0180)                                 # QR = 0
+    reply(q[:13] + b"x" + q[14:])                          # pertanyaan lain
+    time.sleep(0.5)
+    reply(q)                                               # sah
+    time.sleep(1.2)
+    c = cli.cmd("dns uji.lokal")
+    time.sleep(1.2)
+    st = cli.cmd("dns")
+    check("P3-3: query A sah (RD, QDCOUNT 1); balasan jahat diabaikan (3), yang sah masuk cache",
+          ok_q and c is not None and re.match(r"^uji\.lokal = 10\.9\.8\.7 sisa=(1[01][0-9]|120) s \(cache\)$", c.strip())
+          is not None and st is not None and "diabaikan=3" in st, repr((q, c, st)))
+
+
 def arp_frame(sender_mac, sender_ip, target_ip, oper):
     eth = GUEST_MAC + sender_mac + b"\x08\x06"
     arp = (struct.pack("!HHBBH", 1, 0x0800, 6, 4, oper) + sender_mac + sender_ip +
@@ -1106,6 +1149,8 @@ def main():
         test_filter(net, cli, log)
         time.sleep(2.2)
         test_sntp(net, cli, log)
+        time.sleep(1.2)
+        test_dns(net, cli)
         time.sleep(1.2)
         test_netcon(net, cli)
         time.sleep(1.2)

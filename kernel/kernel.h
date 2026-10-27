@@ -403,6 +403,15 @@ void sntp_rx(const volatile uint8_t *p, uint32_t len);            // isi UDP (ch
 void sntp_status(void (*out)(const char *));                       // baris kedua `waktu`
 int sntp_execute(const volatile uint8_t *cmd, uint32_t len);       // 1 = ditangani
 
+// ---- dns.c (P3-3: klien DNS A sekali jalan + cache 8 entri, `dns [nama [oktet [port]]]`) ----
+extern uint64_t g_dns_ok, g_dns_fail, g_dns_bad;
+void dns_init(void);
+void dns_poll(void);
+void dns_arp_seen(const volatile uint8_t *buf);
+int dns_wants(const volatile uint8_t *src_ip, uint16_t sport, uint16_t dport);
+void dns_rx(const volatile uint8_t *p, uint32_t len);            // isi UDP (checksum sah)
+int dns_execute(const volatile uint8_t *cmd, uint32_t len);       // 1 = ditangani
+
 // ---- filter.c (P4: packet filter, aturan di FILTER.CFG) ----
 extern uint64_t g_filter_drop;
 void filter_load(void);                        // saat boot, setelah config_load

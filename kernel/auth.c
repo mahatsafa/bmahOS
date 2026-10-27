@@ -424,6 +424,8 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         // P4: filter (juga read-only) / filter tambah|hapus|kosong (admin)
     } else if (sntp_execute(cmd, len)) {
         // P3-2: waktu sinkron <oktet> [port] (admin; `waktu` saja = baca)
+    } else if (dns_execute(cmd, len)) {
+        // P3-3: dns (status + cache, juga read-only) / dns <nama> [oktet [port]] (admin)
     } else if (fscmd_execute(cmd, len)) {
         // D6: ls/baca/tulis/tambah (admin; tidak di g_ro_cmds)
     } else {
@@ -688,7 +690,7 @@ int auth_tcp_cmd(const uint8_t nonce[16], int role, uint64_t seq,
 // g_ro_cmds (perintah baru otomatis ditolak); lainnya "ERR: peran read-only".
 static const char *const g_ro_cmds[] = {
     "help", "ping", "uptime", "mem", "log", "irq", "stats", "metrics", "mac",
-    "ip", "tasks", "config", "tls", "netcon", "logdisk", "wd", "pci", "acpi", "waktu", "filter",
+    "ip", "tasks", "config", "tls", "netcon", "logdisk", "wd", "pci", "acpi", "waktu", "filter", "dns",
 };
 
 // D5: juga dipakai net.c untuk menentukan jenis entri audit sebelum exec.

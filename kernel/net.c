@@ -92,6 +92,7 @@ static void net_handle_arp(volatile uint8_t *buf)
 
     netcon_arp_seen(buf);   // R2: MAC tujuan netconsole
     sntp_arp_seen(buf);     // P3-2: MAC server SNTP
+    dns_arp_seen(buf);      // P3-3: MAC server DNS
 
     if (oper == 1 && net_ip_equal(buf + 38, g_net_ip)) {
         uint64_t lf = irq_save();
@@ -2019,6 +2020,17 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
             return;
         }
         sntp_rx(buf + r + 8, udp_len - 8);
+        return;
+    }
+
+    if (dns_wants(buf + 26, (uint16_t)src_port, (uint16_t)dst_port)) {
+        // P3-3: balasan DNS yang sedang ditunggu (satu datagram, tanpa batas laju).
+        if (csum != 0 &&
+            net_udp_checksum(buf + 26, buf + 30, buf + r, udp_len) != 0) {
+            g_net_udp_badsum++;
+            return;
+        }
+        dns_rx(buf + r + 8, udp_len - 8);
         return;
     }
 

@@ -444,6 +444,7 @@ static void net_task_entry(void)
     ktimer_selftest();
     netcon_init();   // R2
     sntp_init();     // P3-2
+    dns_init();      // P3-3
     logdisk_init();  // R4
 
     for (;;) {
@@ -474,6 +475,7 @@ static void net_task_entry(void)
         ktimer_run();
         netcon_poll();
         sntp_poll();      // P3-2
+        dns_poll();       // P3-3
         logdisk_poll();   // R4
         sem_wait(&g_net_rx_sem);
     }
