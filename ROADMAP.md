@@ -206,7 +206,7 @@ Linux, dan klien Python.
   alokasi vs pelepasan di metrik.
   Selesai 2026-10-20 (02aeb24, 60646b7, 003aae9): SYS_WRITE maks 1024, fault user hanya menghentikan task,
   guard page stack kernel/user, oom_panic, KHEAP_MAX, counter pmm_*/kmalloc*; VMware lulus.
-- [ ] **R7** Fuzzing parser paket di host (AFL++ atau libFuzzer) dan perbaiki temuan.
+- [x] **R7** (2026-10-27, b716c57 R7-1, 1e35d22 R7-2; libFuzzer 5 target, tanpa temuan, docs/fuzz-R7.md) Fuzzing parser paket di host (AFL++ atau libFuzzer) dan perbaiki temuan.
 - [ ] **R8** Soak test 24 jam di VM: banjir paket, koneksi berulang, tanpa kebocoran memori. Laporan di `docs/`.
 
 **Setelah R8 lulus: M-A tercapai.**
