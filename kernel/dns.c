@@ -49,6 +49,8 @@ static uint8_t g_dns_q[DNS_QMAX];          // query lengkap (header + pertanyaan
 static uint32_t g_dns_qlen;
 static char g_dns_last[96] = "belum pernah";
 uint64_t g_dns_ok, g_dns_fail, g_dns_bad;
+static int g_dns_probe;                    // P6-2: query milik pemantau (`pantau dns`)
+static uint32_t g_dns_probe_tok;
 
 static void dn_ip(uint8_t ip[4])
 {
@@ -159,7 +161,10 @@ static void dn_store(const char *name, const uint8_t ip[4], int neg, uint32_t tt
     e->expires = timer_ticks + (uint64_t)ttl * 100;
 }
 
-static void dn_done(int ok, const char *what)
+// ok = server menjawab (A atau NXDOMAIN); a = ada jawaban A. P6-2: query milik
+// pemantau dilaporkan ke monitor_dns_done tanpa baris log (pemantau mencatat
+// perubahan NAIK/TURUN saja).
+static void dn_done(int ok, int a, const char *what)
 {
     g_dns_state = DNS_IDLE;
     if (ok) {
@@ -168,6 +173,11 @@ static void dn_done(int ok, const char *what)
         g_dns_fail++;
     }
     ksnprintf(g_dns_last, sizeof(g_dns_last), "%s %s", g_dns_name, what);
+    if (g_dns_probe) {
+        g_dns_probe = 0;
+        monitor_dns_done(g_dns_probe_tok, a, what);
+        return;
+    }
     kprintf("P3: DNS %s %s\r\n", g_dns_name, what);
 }
 
@@ -190,7 +200,7 @@ static void dn_send_query(void)
     uint32_t len = net_udp_build(p, g_dns_mac, ip, g_dns_lport, g_dns_port, g_dns_qlen);
 
     if (!e1000_tx_send(g_dns_page_phys, len)) {
-        dn_done(0, "kirim gagal");
+        dn_done(0, 0, "kirim gagal");
         return;
     }
     g_dns_state = DNS_SENT;
@@ -237,6 +247,35 @@ static int dn_start(const char *name, const uint8_t *qname, uint32_t qnlen, uint
     g_dns_arp_n = 0;
     g_dns_at = 0;
     g_dns_state = DNS_ARP;
+    g_dns_probe = 0;
+    return 0;
+}
+
+// P6-2: nama -> huruf kecil di out (>= DNS_NAME_MAX + 1 byte). 1 = sah.
+int dns_name_check(const volatile uint8_t *s, uint32_t n, char *out)
+{
+    uint8_t q[DNS_NAME_MAX + 2];
+    uint32_t qn;
+
+    return dn_encode(s, n, out, q, &qn);
+}
+
+// P6-2: query untuk pemantau (tanpa cache; hasil ke monitor_dns_done(tok, ...),
+// tanpa baris log). 0 = dimulai; -1 = tidak bisa sekarang (query lain berjalan,
+// tanpa NIC, entropi, nama/server tidak sah).
+int dns_probe_start(const char *name, uint32_t host, uint32_t port, uint32_t tok)
+{
+    char n[DNS_NAME_MAX + 1];
+    uint8_t q[DNS_NAME_MAX + 2];
+    uint32_t qn;
+    const char *why;
+
+    if (!dn_encode((const volatile uint8_t *)name, (uint32_t)strlen(name), n, q, &qn) ||
+        dn_start(n, q, qn, host, port, &why) != 0) {
+        return -1;
+    }
+    g_dns_probe = 1;
+    g_dns_probe_tok = tok;
     return 0;
 }
 
@@ -273,7 +312,7 @@ void dns_poll(void)
             dn_send_query();
         } else if (timer_ticks >= g_dns_at) {
             if (g_dns_arp_n >= DNS_ARP_TRIES) {
-                dn_done(0, "gagal: tanpa balasan ARP");
+                dn_done(0, 0, "gagal: tanpa balasan ARP");
                 return;
             }
             g_dns_arp_n++;
@@ -281,7 +320,7 @@ void dns_poll(void)
             dn_send_arp();
         }
     } else if (g_dns_state == DNS_SENT && timer_ticks >= g_dns_at) {
-        dn_done(0, "gagal: tanpa balasan DNS (3 s)");
+        dn_done(0, 0, "gagal: tanpa balasan DNS (3 s)");
     }
 }
 
@@ -367,12 +406,12 @@ void dns_rx(const volatile uint8_t *p, uint32_t len)
 
     if (rcode == 3) {
         dn_store(g_dns_name, none, 1, DNS_NEG_TTL);
-        dn_done(1, "= tidak ada (NXDOMAIN)");
+        dn_done(1, 0, "= tidak ada (NXDOMAIN)");
         return;
     }
     if (rcode != 0) {
         ksnprintf(what, sizeof(what), "gagal: rcode %u", rcode);
-        dn_done(0, what);
+        dn_done(0, 0, what);
         return;
     }
     uint32_t an = dn_be16(p + 6), off = g_dns_qlen;
@@ -396,12 +435,12 @@ void dns_rx(const volatile uint8_t *p, uint32_t len)
             uint8_t ip[4] = { p[off], p[off + 1], p[off + 2], p[off + 3] };
             dn_store(g_dns_name, ip, 0, ttl);
             ksnprintf(what, sizeof(what), "= %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
-            dn_done(1, what);
+            dn_done(1, 1, what);
             return;
         }
         off += rdlen;
     }
-    dn_done(0, "gagal: tanpa jawaban A");
+    dn_done(0, 0, "gagal: tanpa jawaban A");
 }
 
 static void dn_line(const dns_entry_t *e, const char *tail)

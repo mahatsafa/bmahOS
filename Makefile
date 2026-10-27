@@ -178,7 +178,7 @@ host_srcs_sntp    := $(KERNEL_DIR)/kprintf.c $(KERNEL_DIR)/rtc.c
 host_deps_sntp    := $(KERNEL_DIR)/sntp.c      # P3-2: di-#include oleh test_sntp.c
 host_srcs_dns     := $(KERNEL_DIR)/kprintf.c
 host_deps_dns     := $(KERNEL_DIR)/dns.c       # P3-3: di-#include oleh test_dns.c
-host_srcs_monitor := $(KERNEL_DIR)/kprintf.c
+host_srcs_monitor := $(KERNEL_DIR)/kprintf.c $(KERNEL_DIR)/rtc.c
 host_deps_monitor := $(KERNEL_DIR)/monitor.c   # P6-1: di-#include oleh test_monitor.c
 
 # D9a: BearSSL versi host (clang + ASan/UBSan) dan test_crypto upstream untuk

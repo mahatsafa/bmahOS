@@ -427,7 +427,7 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     } else if (dns_execute(cmd, len)) {
         // P3-3: dns (status + cache, juga read-only) / dns <nama> [oktet [port]] (admin)
     } else if (monitor_execute(cmd, len)) {
-        // P6-1: pantau (juga read-only) / pantau tambah|hapus (admin)
+        // P6: pantau (juga read-only) / pantau ping|tcp|dns|hapus|syslog (admin)
     } else if (fscmd_execute(cmd, len)) {
         // D6: ls/baca/tulis/tambah (admin; tidak di g_ro_cmds)
     } else {

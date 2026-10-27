@@ -26,6 +26,9 @@ SPORT="${BMTEST_TLS_PORT:-17780}"   # D9: CLI TLS port 7780
 NCPORT="${BMTEST_NETCON_PORT:-17666}"   # R2: penerima netconsole (slirp .1 -> 127.0.0.1)
 NTPPORT="${BMTEST_NTP_PORT:-17123}"   # P3-2: server SNTP uji (slirp .1 -> 127.0.0.1)
 DNSPORT="${BMTEST_DNS_PORT:-17053}"   # P3-3: server DNS uji (slirp .1 -> 127.0.0.1)
+MTPORT="${BMTEST_PANTAU_TCP_PORT:-17080}"   # P6-2: pendengar TCP uji (pantau tcp -> NAIK)
+MCPORT="${BMTEST_PANTAU_TUTUP_PORT:-17081}"   # P6-2: port tanpa pendengar (RST -> TURUN)
+SLPORT="${BMTEST_SYSLOG_PORT:-17514}"   # P6-2: penerima syslog uji
 BOOT_TIMEOUT="${BMTEST_BOOT_TIMEOUT:-180}"
 
 PASS=0
@@ -644,21 +647,48 @@ check "P3-3: dns lewat server uji: A masuk cache, NXDOMAIN jadi cache negatif" \
     'echo "$DNS1" | grep -q "^OK: DNS bmahos.uji ke 192.168.50.1:$DNSPORT dimulai" && echo "$DNS2" | grep -q "^bmahos.uji = 192.168.50.123 sisa=[0-9]* s (cache)$" && echo "$DNS3" | grep -q "^OK: DNS tidakada.uji " && echo "$DNS4" | grep -q "^dns: diam terakhir=tidakada.uji = tidak ada (NXDOMAIN) ok=2 gagal=0 diabaikan=0 cache=2/8$" && grep -aq "P3: DNS bmahos.uji = 192.168.50.123" "$LOG"'
 sleep 1.2
 
-# P6-1: pemantau ping. slirp menjawab ping ke gateway 192.168.50.1 (NAIK); .9 tidak
-# menjawab ARP -> 3 probe gagal (tiap 5 s) -> TURUN. Target dihapus lagi sesudahnya.
+# P6: pemantau. Putaran 1: ping .1 (slirp menjawab ping ke gateway -> NAIK), ping .9
+# (tanpa jawaban ARP -> TURUN), tcp .1:$MTPORT (pendengar uji di 127.0.0.1 -> SYN-ACK ->
+# NAIK), tcp .1:$MCPORT (tanpa pendengar -> RST dari slirp -> TURUN); alert syslog ke
+# penerima uji 127.0.0.1:$SLPORT. Putaran 2: dns lewat server uji: bmahos.uji -> NAIK,
+# tidakada.uji (NXDOMAIN) -> TURUN. Target dihapus sesudah tiap putaran.
 sleep 1.2
-MON_A="$($BM "pantau tambah 1 5" 2>&1)"
+python3 "$ROOT/tests/tcp-listen.py" "$MTPORT" 40 > "$WORK/tcp-listen.out" 2>&1 &
+MTPID=$!
+rm -f "$WORK/syslog.out"
+python3 "$ROOT/tests/netcon-listen.py" "$SLPORT" "$WORK/syslog.out" 75 &
+SLPID=$!
 sleep 1.2
-MON_B="$($BM "pantau tambah 9 5" 2>&1)"
+MON_A="$($BMT --key "$KEY" "pantau syslog 1 $SLPORT" "pantau ping 1 5" "pantau ping 9 5" "pantau tcp 1 $MTPORT 5" "pantau tcp 1 $MCPORT 5" 2>&1)"
 sleep 16
-MON_L="$($BM pantau 2>&1)"
+MON_L="$($BMT --key "$KEY" pantau "pantau hapus 1" "pantau hapus 2" "pantau hapus 3" "pantau hapus 4" 2>&1)"
+kill "$MTPID" 2>/dev/null
+wait "$MTPID" 2>/dev/null
+echo "info  P6: $(echo "$MON_A" | tr '\n' '|')"
+echo "info  P6: $(echo "$MON_L" | tr '\n' '|') $(tail -1 "$WORK/tcp-listen.out")"
+check "P6-1: pantau ping: .1 NAIK (balasan ping), .9 TURUN (3 gagal ARP), peringatan di serial" \
+    'echo "$MON_A" | grep -q "^OK pantau 1: ping 192.168.50.1 tiap 5 s$" && echo "$MON_A" | grep -q "^OK pantau 2: ping 192.168.50.9 tiap 5 s$" && echo "$MON_L" | grep -q "^1: ping 192.168.50.1 naik tiap=5 s kirim=[1-9][0-9]* balas=[1-9]" && echo "$MON_L" | grep -q "^2: ping 192.168.50.9 turun tiap=5 s kirim=0 balas=0 gagal_beruntun=[3-9]" && grep -aq "P6: ping 192.168.50.1 NAIK (rtt [0-9]* ms)" "$LOG" && grep -aq "P6: ping 192.168.50.9 TURUN (3 gagal berturut-turut, terakhir: tanpa balasan ARP)" "$LOG"'
+check "P6-2: pantau tcp: pendengar -> NAIK (koneksi diterima), port tertutup -> TURUN (RST), tanpa log port tertutup" \
+    'echo "$MON_A" | grep -q "^OK pantau 3: tcp 192.168.50.1:$MTPORT tiap 5 s$" && echo "$MON_L" | grep -q "^3: tcp 192.168.50.1:$MTPORT naik tiap=5 s kirim=[1-9][0-9]* balas=[1-9]" && echo "$MON_L" | grep -q "^4: tcp 192.168.50.1:$MCPORT turun tiap=5 s kirim=[3-9] balas=0 gagal_beruntun=[3-9]" && grep -q "^koneksi [1-9]" "$WORK/tcp-listen.out" && grep -aq "P6: tcp 192.168.50.1:$MTPORT NAIK (rtt [0-9]* ms)" "$LOG" && grep -aq "P6: tcp 192.168.50.1:$MCPORT TURUN (3 gagal berturut-turut, terakhir: port tertutup (RST))" "$LOG" && ! grep -aEq "C1: TCP port tertutup dari 192.168.50.1 flags=0x0+12 " "$LOG" && echo "$MON_L" | grep -q "OK pantau: target 4 dihapus"'
+sleep 2.5
+python3 "$ROOT/tests/dns-server.py" 127.0.0.1 "$DNSPORT" 30 > "$WORK/dns-server2.out" 2>&1 &
+DNSPID=$!
 sleep 1.2
-MON_D="$($BM "pantau hapus 2" 2>&1)"
-sleep 1.2
-MON_D="$MON_D $($BM "pantau hapus 1" 2>&1)"
-echo "info  P6-1: $(echo "$MON_L" | tr '\n' '|')"
-check "P6-1: pantau: .1 NAIK (balasan ping), .9 TURUN (3 gagal ARP), peringatan di serial" \
-    '[ "$MON_A" = "OK pantau 1: 192.168.50.1 tiap 5 s" ] && [ "$MON_B" = "OK pantau 2: 192.168.50.9 tiap 5 s" ] && echo "$MON_L" | grep -q "^1: 192.168.50.1 naik tiap=5 s kirim=[1-9][0-9]* balas=[1-9]" && echo "$MON_L" | grep -q "^2: 192.168.50.9 turun tiap=5 s kirim=0 balas=0 gagal_beruntun=[3-9]" && grep -aq "P6: 192.168.50.1 NAIK (rtt [0-9]* ms)" "$LOG" && grep -aq "P6: 192.168.50.9 TURUN (3 gagal berturut-turut, terakhir: tanpa balasan ARP)" "$LOG" && echo "$MON_D" | grep -q "OK pantau: target 2 dihapus OK pantau: target 1 dihapus"'
+MON_E="$($BMT --key "$KEY" "pantau dns bmahos.uji 1 $DNSPORT 5" "pantau dns tidakada.uji 1 $DNSPORT 5" 2>&1)"
+sleep 16
+MON_M="$($BMT --key "$KEY" pantau "pantau hapus 1" "pantau hapus 2" "pantau syslog mati" 2>&1)"
+kill "$DNSPID" 2>/dev/null
+wait "$DNSPID" 2>/dev/null
+sleep 1
+kill "$SLPID" 2>/dev/null
+wait "$SLPID" 2>/dev/null
+echo "info  P6: $(echo "$MON_M" | tr '\n' '|')"
+check "P6-2: pantau dns lewat server uji: A -> NAIK, NXDOMAIN 3x -> TURUN" \
+    'echo "$MON_E" | grep -q "^OK pantau 1: dns bmahos.uji@192.168.50.1:$DNSPORT tiap 5 s$" && echo "$MON_M" | grep -q "^1: dns bmahos.uji@192.168.50.1:$DNSPORT naik tiap=5 s kirim=[1-9][0-9]* balas=[1-9]" && echo "$MON_M" | grep -q "^2: dns tidakada.uji@192.168.50.1:$DNSPORT turun tiap=5 s kirim=[3-9] balas=0 gagal_beruntun=[3-9]" && grep -aq "P6: dns bmahos.uji@192.168.50.1:$DNSPORT NAIK (192.168.50.123, rtt [0-9]* ms)" "$LOG" && grep -aq "P6: dns tidakada.uji@192.168.50.1:$DNSPORT TURUN (3 gagal berturut-turut, terakhir: tidak ada (NXDOMAIN))" "$LOG" && echo "$MON_M" | grep -q "^OK pantau: syslog mati$"'
+SL_P="1 [-0-9T:Z]* 192.168.50.200 bmahOS - pantau - "   # RFC 5424 sesudah <PRI>
+echo "info  P6: syslog $(wc -c < "$WORK/syslog.out" 2>/dev/null) byte, $(grep -ao '<1[0-9][0-9]>1 ' "$WORK/syslog.out" | wc -l) pesan"
+check "P6-2: alert syslog RFC 5424 ke penerima uji: pesan uji, NAIK/TURUN ping, tcp, dns" \
+    'grep -aq "<134>${SL_P}syslog pantau aktif ke 192.168.50.1:$SLPORT" "$WORK/syslog.out" && grep -aq "<133>${SL_P}ping 192.168.50.1 NAIK (rtt" "$WORK/syslog.out" && grep -aq "<132>${SL_P}ping 192.168.50.9 TURUN (3 gagal" "$WORK/syslog.out" && grep -aq "<133>${SL_P}tcp 192.168.50.1:$MTPORT NAIK" "$WORK/syslog.out" && grep -aq "<132>${SL_P}tcp 192.168.50.1:$MCPORT TURUN" "$WORK/syslog.out" && grep -aq "<133>${SL_P}dns bmahos.uji@192.168.50.1:$DNSPORT NAIK" "$WORK/syslog.out" && grep -aq "<132>${SL_P}dns tidakada.uji@192.168.50.1:$DNSPORT TURUN" "$WORK/syslog.out"'
 sleep 1.2
 
 # R5: watchdog perangkat lunak: net task menepuk, IRQ timer hanya memeriksa.

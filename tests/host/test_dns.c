@@ -72,6 +72,18 @@ int entropy_get(uint8_t *out, uint32_t len)
     return 1;
 }
 
+// P6-2: hasil query pemantau (monitor.c tidak ikut di uji ini).
+static int g_md_n, g_md_a;
+static uint32_t g_md_tok;
+static char g_md_what[96];
+void monitor_dns_done(uint32_t tok, int a, const char *what)
+{
+    g_md_n++;
+    g_md_tok = tok;
+    g_md_a = a;
+    snprintf(g_md_what, sizeof(g_md_what), "%s", what);
+}
+
 static char g_out[CMD_OUT_MAX + 1];
 uint32_t g_cmd_len = 0;
 void cmd_puts(const char *s)
@@ -324,11 +336,74 @@ static void test_cache_full_and_timeouts(void)
     CHECK_STR(run("dnsx"), "(tidak ditangani)");
 }
 
+// Jawab ARP lalu kirim query yang sudah dimulai (oleh perintah atau pemantau).
+static int pump(void)
+{
+    g_ntx = 0;
+    dns_poll();
+    arp_from(g_dns_host);
+    dns_poll();
+    return g_dns_state == DNS_SENT && g_ntx == 2;
+}
+
+// P6-2: query milik pemantau: tanpa cache, tanpa baris log, hasil + token ke
+// monitor_dns_done; a = 1 hanya bila ada jawaban A.
+static void test_probe(void)
+{
+    char out[64];
+
+    reset();
+    CHECK(dns_name_check((const uint8_t *)"Bmahos.UJI", 10, out) && strcmp(out, "bmahos.uji") == 0);
+    CHECK(!dns_name_check((const uint8_t *)"a_b", 3, out) && !dns_name_check((const uint8_t *)"", 0, out));
+
+    CHECK(start("dns bmahos.uji"));                // nama masuk cache lewat perintah biasa
+    rep_begin(0x8180, 1);
+    rep_rr(PTR_Q, 2, 1, 100, IP1, 4);
+    dns_rx(g_r, g_rl);
+    CHECK(g_md_n == 0 && g_dns_state == DNS_IDLE);
+
+    serial_capture_reset();
+    CHECK(dns_probe_start("bmahos.uji", 1, 53, 77) == 0);   // di cache, tetap ditanya
+    CHECK(dns_probe_start("lain.uji", 1, 53, 78) == -1);    // query lain berjalan
+    CHECK(pump());
+    rep_begin(0x8180, 1);
+    rep_rr(PTR_Q, 2, 1, 100, IP1, 4);
+    dns_rx(g_r, g_rl);
+    CHECK(g_md_n == 1 && g_md_tok == 77 && g_md_a == 1 && strcmp(g_md_what, "= 192.168.50.123") == 0);
+    CHECK(strstr(g_serial_cap, "P3: DNS") == NULL && g_dns_ok == 2);
+
+    CHECK(dns_probe_start("tidakada.uji", 1, 53, 79) == 0);
+    CHECK(pump());
+    rep_begin(0x8183, 0);
+    dns_rx(g_r, g_rl);
+    CHECK(g_md_n == 2 && g_md_tok == 79 && g_md_a == 0 &&
+          strcmp(g_md_what, "= tidak ada (NXDOMAIN)") == 0);
+
+    CHECK(dns_probe_start("x.uji", 1, 53, 80) == 0);
+    CHECK(pump());
+    timer_ticks += 300;
+    dns_poll();
+    CHECK(g_md_n == 3 && g_md_tok == 80 && g_md_a == 0 &&
+          strcmp(g_md_what, "gagal: tanpa balasan DNS (3 s)") == 0);
+    CHECK(strstr(g_serial_cap, "P3: DNS") == NULL);
+
+    // Perintah `dns` sesudahnya: baris log lagi, tanpa laporan ke pemantau.
+    CHECK(start("dns y.uji"));
+    rep_begin(0x8183, 0);
+    dns_rx(g_r, g_rl);
+    CHECK(g_md_n == 3 && strstr(g_serial_cap, "P3: DNS y.uji = tidak ada (NXDOMAIN)") != NULL);
+
+    CHECK(dns_probe_start("a_b", 1, 53, 81) == -1);         // nama tidak sah
+    CHECK(dns_probe_start("z.uji", 200, 53, 81) == -1);     // IP sendiri
+    CHECK(g_dns_state == DNS_IDLE && g_md_n == 3);
+}
+
 int main(void)
 {
     dns_init();
     test_names();
     test_query_and_answers();
     test_cache_full_and_timeouts();
+    test_probe();
     return test_done("dns");
 }

@@ -147,6 +147,20 @@ WEAK int monitor_execute(const volatile uint8_t *cmd, uint32_t len)
     return 0;
 }
 
+WEAK int monitor_tcp_seen(const volatile uint8_t *buf, uint32_t r)
+{
+    (void)buf;
+    (void)r;
+    return 0;
+}
+
+WEAK void monitor_dns_done(uint32_t tok, int a, const char *what)
+{
+    (void)tok;
+    (void)a;
+    (void)what;
+}
+
 WEAK int g_logdisk_syncs = 0;
 
 WEAK void logdisk_sync(int panic)

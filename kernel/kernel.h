@@ -411,12 +411,16 @@ void dns_arp_seen(const volatile uint8_t *buf);
 int dns_wants(const volatile uint8_t *src_ip, uint16_t sport, uint16_t dport);
 void dns_rx(const volatile uint8_t *p, uint32_t len);            // isi UDP (checksum sah)
 int dns_execute(const volatile uint8_t *cmd, uint32_t len);       // 1 = ditangani
+int dns_name_check(const volatile uint8_t *s, uint32_t n, char *out);   // P6-2: out >= 64 byte
+int dns_probe_start(const char *name, uint32_t host, uint32_t port, uint32_t tok);   // P6-2, 0 = OK
 
-// ---- monitor.c (P6-1: pemantau ping, `pantau`, maks 4 target di /24 sendiri) ----
+// ---- monitor.c (P6: pemantau ping/tcp/dns + alert syslog, `pantau`, maks 4 target) ----
 void monitor_init(void);
 void monitor_poll(void);
 void monitor_arp_seen(const volatile uint8_t *buf);
 void monitor_icmp_reply(const volatile uint8_t *buf, uint32_t ihl, uint32_t icmp_len);
+int monitor_tcp_seen(const volatile uint8_t *buf, uint32_t r);   // P6-2: 1 = jawaban probe tcp
+void monitor_dns_done(uint32_t tok, int a, const char *what);    // P6-2: dari dns.c
 int monitor_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
 
 // ---- filter.c (P4: packet filter, aturan di FILTER.CFG) ----
@@ -679,6 +683,9 @@ extern uint64_t g_net_log_muted;
 uint16_t net_checksum16(volatile uint8_t *p, uint32_t len);
 void net_ipv4_hdr(uint8_t *p, const volatile uint8_t *dst_mac, const volatile uint8_t *dst_ip,
                   uint8_t proto, uint32_t l4_len);   // P6-2a: Ethernet + IPv4 20 byte
+uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
+                           const volatile uint8_t *dst_ip, uint16_t sport,
+                           uint16_t dport, uint32_t seq);   // P6-2: SYN probe pantau
 void e1000_stats_poll(void);
 uint16_t net_udp_checksum(const volatile uint8_t *src_ip, const volatile uint8_t *dst_ip, const volatile uint8_t *udp, uint32_t udp_len);
 uint32_t net_arp_request_build(uint8_t *p, const volatile uint8_t *ip);   // P3-3a, return 60

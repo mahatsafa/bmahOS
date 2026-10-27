@@ -241,6 +241,16 @@ static uint16_t ref_l4_csum(const uint8_t *ip_hdr, uint8_t proto, const uint8_t 
 
 static void fix_csums(uint8_t *f, size_t n);
 
+// P6-2: kait jawaban probe TCP pantau (monitor.c tidak ikut di uji ini).
+static int g_probe_ret, g_probe_calls;
+int monitor_tcp_seen(const volatile uint8_t *buf, uint32_t r)
+{
+    (void)buf;
+    (void)r;
+    g_probe_calls++;
+    return g_probe_ret;
+}
+
 // ---- tangkapan TX + invarian frame keluar ----
 #define TX_MAX 8
 static uint8_t g_tx[TX_MAX][2048];
@@ -2676,6 +2686,53 @@ static void test_tls_limit(void)
 }
 
 #ifndef BMAHOS_FUZZ   // R7: tests/fuzz/fuzz_net.c memakai helper file ini
+// P6-2: SYN probe pantau, dan jawaban SYN-ACK/RST yang diakui kait monitor_tcp_seen.
+static void test_tcp_probe(void)
+{
+    uint8_t f[600];
+    uint8_t *p = malloc(64);
+    static const uint8_t mac[6] = { 0x02, 0, 0, 0, 0, 0x07 };
+    static const uint8_t ip[4] = { 192, 168, 50, 7 };
+
+    tcp_reset();
+    CHECK(net_tcp_syn_build(p, mac, ip, 50000, 80, 0x01020304) == 60);
+    CHECK(memcmp(p, mac, 6) == 0 && memcmp(p + 6, g_e1000_mac, 6) == 0 && p[12] == 0x08 &&
+          p[13] == 0);
+    CHECK(p[16] == 0 && p[17] == 40 && p[23] == 6 && memcmp(p + 26, OUR_IP, 4) == 0 &&
+          memcmp(p + 30, ip, 4) == 0 && ref_csum(p + 14, 20, 0) == 0);
+    CHECK(ref_l4_csum(p + 14, 6, p + 34, 20) == 0);
+    CHECK(p[34] == 0xC3 && p[35] == 0x50 && p[36] == 0 && p[37] == 80 &&
+          get32(p + 38) == 0x01020304 && get32(p + 42) == 0);
+    CHECK(p[46] == 0x50 && p[47] == F_SYN && p[48] == 0x04 && p[49] == 0 && p[52] == 0);
+    int bad0 = g_tx_bad;
+    g_tx_n = 0;
+    e1000_tx_send((uint64_t)(uintptr_t)p, 60);
+    CHECK(g_tx_bad == bad0);
+    free(p);
+
+    // SYN-ACK milik probe: dibalas RST (seq = ack mereka) tanpa baris log port tertutup.
+    g_probe_calls = 0;
+    g_probe_ret = 1;
+    serial_capture_reset();
+    rx(f, mk_tcp(f, 80, 50000, 9000, 0x01020305, F_SYN | F_ACK, ""));
+    CHECK(g_probe_calls == 1 && g_tx_n == 1 && g_tx[0][34 + 13] == F_RST &&
+          get32(g_tx[0] + 38) == 0x01020305);
+    CHECK(strstr(g_serial_cap, "port tertutup") == NULL);
+    // RST milik probe: tidak dibalas.
+    rx(f, mk_tcp(f, 80, 50000, 0, 0x01020305, F_RST | F_ACK, ""));
+    CHECK(g_probe_calls == 2 && g_tx_n == 0);
+    // Bukan milik probe: perilaku lama (baris log + RST).
+    g_probe_ret = 0;
+    serial_capture_reset();
+    rx(f, mk_tcp(f, 80, 50000, 9000, 0x01020305, F_SYN | F_ACK, ""));
+    CHECK(g_probe_calls == 3 && g_tx_n == 1 && g_tx[0][34 + 13] == F_RST &&
+          strstr(g_serial_cap, "C1: TCP port tertutup dari ") != NULL);
+    // Segmen untuk port dengar (SYN ke port 7) tidak sampai ke kait.
+    rx(f, mk_tcp(f, 4001, 7, 7000, 0, F_SYN, ""));
+    CHECK(g_probe_calls == 3 && g_tx_n == 1 && g_tx[0][34 + 13] == (F_SYN | F_ACK));
+    tcp_reset();
+}
+
 int main(void)
 {
     test_checksum();
@@ -2705,6 +2762,7 @@ int main(void)
     test_truncation();
     test_fuzz();
     test_netcon();
+    test_tcp_probe();
     return test_done("net");
 }
 #endif

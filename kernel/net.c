@@ -647,6 +647,34 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
     }
 }
 
+// P6-2: SYN probe TCP pantau (tanpa opsi, jendela 1024) dari sport ke
+// dst_ip:dport dengan nomor urut seq. Return = panjang frame (60).
+uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
+                           const volatile uint8_t *dst_ip, uint16_t sport,
+                           uint16_t dport, uint32_t seq)
+{
+    for (uint32_t i = 0; i < 60; i++) {
+        p[i] = 0;
+    }
+    net_ipv4_hdr(p, dst_mac, dst_ip, 6, 20);
+    p[34] = (uint8_t)(sport >> 8);
+    p[35] = (uint8_t)(sport & 0xFF);
+    p[36] = (uint8_t)(dport >> 8);
+    p[37] = (uint8_t)(dport & 0xFF);
+    p[38] = (uint8_t)(seq >> 24);
+    p[39] = (uint8_t)(seq >> 16);
+    p[40] = (uint8_t)(seq >> 8);
+    p[41] = (uint8_t)seq;
+    p[46] = 0x50;
+    p[47] = TCP_SYN;
+    p[48] = 0x04;   // jendela 1024
+
+    uint16_t tc = net_tcp_checksum(p + 26, p + 30, p + 34, 20);
+    p[50] = (uint8_t)(tc >> 8);
+    p[51] = (uint8_t)(tc & 0xFF);
+    return 60;
+}
+
 // ---- C2/C3b/C5a: koneksi TCP (port 7) ----
 // C5a: tabel statis TCP_MAX_CONN TCB, masing-masing dengan buffer dan timer
 // retransmisi sendiri. SYN baru: IP sumber yang sudah memegang TCP_MAX_PER_IP
@@ -1899,6 +1927,9 @@ static void net_handle_tcp(volatile uint8_t *buf, uint32_t ihl,
         return;
     }
 
+    // P6-2: SYN-ACK/RST jawaban probe TCP pantau ke port lokal probe.
+    int probe = monitor_tcp_seen(buf, r);
+
     // Segmen RST tidak pernah dibalas.
     if (flags & TCP_RST) {
         return;
@@ -1914,13 +1945,16 @@ static void net_handle_tcp(volatile uint8_t *buf, uint32_t ihl,
         seg_len++;
     }
 
-    uint64_t lf = irq_save();
-    serial_write("C1: TCP port tertutup dari ");
-    e1000_log_ip(buf + 26);
-    serial_write(" flags=");
-    serial_write_hex((uint64_t)flags);
-    serial_write(" -> RST\r\n");
-    irq_restore(lf);
+    // P6-2: SYN-ACK probe dibalas RST (koneksi setengah terbuka ditutup) tanpa log.
+    if (!probe) {
+        uint64_t lf = irq_save();
+        serial_write("C1: TCP port tertutup dari ");
+        e1000_log_ip(buf + 26);
+        serial_write(" flags=");
+        serial_write_hex((uint64_t)flags);
+        serial_write(" -> RST\r\n");
+        irq_restore(lf);
+    }
 
     net_tcp_send_rst(buf, ihl, seg_len);
 }
