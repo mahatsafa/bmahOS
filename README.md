@@ -121,7 +121,7 @@ Hasil: `build/bmahOS.iso`.
     make test           # build lalu jalankan tests/qemu-smoke.sh
     make test PROD=1    # flag build lain juga bisa dipakai
     make host-test      # uji unit di host (kripto, kprintf, parser paket, parser perintah), ASan + UBSan
-    make fuzz           # R7: fuzzing libFuzzer di host, 10 menit per target (docs/fuzz-R7.md)
+    make fuzz           # R7: fuzzing libFuzzer di host, 9 target x 10 menit (docs/fuzz-R7.md)
 
 `make host-test` butuh `clang` (atau `HOST_CC=gcc` bila `libasan` dan `libubsan` terpasang), tidak butuh QEMU.
 

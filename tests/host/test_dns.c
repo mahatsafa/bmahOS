@@ -398,6 +398,7 @@ static void test_probe(void)
     CHECK(g_dns_state == DNS_IDLE && g_md_n == 3);
 }
 
+#ifndef BMAHOS_FUZZ   // tests/fuzz/fuzz_dns.c memakai helper file ini
 int main(void)
 {
     dns_init();
@@ -407,3 +408,4 @@ int main(void)
     test_probe();
     return test_done("dns");
 }
+#endif

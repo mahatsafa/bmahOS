@@ -335,6 +335,7 @@ static void test_cmd(void)
     CHECK(g_sntp_state == SNTP_IDLE);
 }
 
+#ifndef BMAHOS_FUZZ   // tests/fuzz/fuzz_sntp.c memakai helper file ini
 int main(void)
 {
     test_start_errors();
@@ -343,3 +344,4 @@ int main(void)
     test_cmd();
     return test_done("sntp");
 }
+#endif

@@ -570,6 +570,7 @@ static void test_lease_limits_and_fallback(void)
     g_dh_page_phys = 0;
 }
 
+#ifndef BMAHOS_FUZZ   // tests/fuzz/fuzz_dhcp.c memakai helper file ini
 int main(void)
 {
     test_off();
@@ -581,3 +582,4 @@ int main(void)
     test_lease_limits_and_fallback();
     return test_done("dhcp");
 }
+#endif

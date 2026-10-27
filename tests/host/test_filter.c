@@ -363,6 +363,7 @@ static void test_cmds(void)
     CHECK(g_writes > 0);
 }
 
+#ifndef BMAHOS_FUZZ   // tests/fuzz/fuzz_filter.c memakai helper file ini
 int main(void)
 {
     test_parse();
@@ -372,3 +373,4 @@ int main(void)
     test_cmds();
     return test_done("filter");
 }
+#endif

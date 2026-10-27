@@ -229,7 +229,7 @@ host-test: $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS)) $(HOST_BUILD)/bearssl_
 #   make fuzz [FUZZ_TARGETS="net auth"] [FUZZ_TIME=600]: tiap target FUZZ_TIME detik,
 #     korpus kerja build/fuzz/corpus/X, temuan build/fuzz/crash-X-*, log build/fuzz/X.log
 #   make fuzz-regress: korpus awal + tests/fuzz/regress/X (temuan yang sudah diperbaiki)
-FUZZ_TARGETS ?= net auth config fat32 logdisk
+FUZZ_TARGETS ?= net auth config fat32 logdisk dhcp dns sntp filter   # + parser Fase 5
 FUZZ_TIME    ?= 600
 FUZZ_BUILD   := $(BUILD_DIR)/fuzz
 FUZZ_CFLAGS   = $(HOST_CFLAGS) -DBMAHOS_FUZZ -Wno-unused-function -Itests/fuzz
