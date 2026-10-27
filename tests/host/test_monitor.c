@@ -63,6 +63,31 @@ uint16_t net_checksum16(volatile uint8_t *p, uint32_t len)
     return (uint16_t)~sum;
 }
 
+void net_ipv4_hdr(uint8_t *p, const volatile uint8_t *dst_mac, const volatile uint8_t *dst_ip,
+                  uint8_t proto, uint32_t l4_len)
+{
+    for (int i = 0; i < 6; i++) {
+        p[i] = dst_mac[i];
+        p[6 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0;
+    memset(p + 14, 0, 20);
+    p[14] = 0x45;
+    p[16] = (uint8_t)((20 + l4_len) >> 8);
+    p[17] = (uint8_t)(20 + l4_len);
+    p[20] = 0x40;
+    p[22] = 64;
+    p[23] = proto;
+    for (int i = 0; i < 4; i++) {
+        p[26 + i] = g_net_ip[i];
+        p[30 + i] = dst_ip[i];
+    }
+    uint16_t c = net_checksum16(p + 14, 20);
+    p[24] = (uint8_t)(c >> 8);
+    p[25] = (uint8_t)c;
+}
+
 static char g_out[CMD_OUT_MAX + 1];
 uint32_t g_cmd_len = 0;
 void cmd_puts(const char *s)

@@ -133,6 +133,43 @@ uint16_t net_checksum16(volatile uint8_t *p, uint32_t len)
     return (uint16_t)(~sum);
 }
 
+// P6-2a: header Ethernet (ke dst_mac, tipe IPv4) + IPv4 20 byte tanpa options
+// (DF, TTL 64, ID dari g_net_ip_id, checksum diisi) untuk muatan l4_len byte
+// protokol proto. Muatan di p[34..] tidak disentuh.
+void net_ipv4_hdr(uint8_t *p, const volatile uint8_t *dst_mac, const volatile uint8_t *dst_ip,
+                  uint8_t proto, uint32_t l4_len)
+{
+    for (int i = 0; i < 6; i++) {
+        p[i] = dst_mac[i];
+        p[6 + i] = g_e1000_mac[i];
+    }
+    p[12] = 0x08;
+    p[13] = 0x00;
+
+    p[14] = 0x45;
+    p[15] = 0x00;
+    p[16] = (uint8_t)((20 + l4_len) >> 8);
+    p[17] = (uint8_t)((20 + l4_len) & 0xFF);
+    p[18] = (uint8_t)(g_net_ip_id >> 8);
+    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
+    g_net_ip_id++;
+    p[20] = 0x40;
+    p[21] = 0x00;
+    p[22] = 64;
+    p[23] = proto;
+    p[24] = 0;
+    p[25] = 0;
+
+    for (int i = 0; i < 4; i++) {
+        p[26 + i] = g_net_ip[i];
+        p[30 + i] = dst_ip[i];
+    }
+
+    uint16_t ipc = net_checksum16(p + 14, 20);
+    p[24] = (uint8_t)(ipc >> 8);
+    p[25] = (uint8_t)(ipc & 0xFF);
+}
+
 // req = awal frame Ethernet request (IPv4 header di offset 14),
 // ihl = panjang header IP request (byte), icmp_len = panjang pesan ICMP.
 static void net_icmp_send_echo_reply(volatile uint8_t *req, uint32_t ihl,
@@ -161,37 +198,7 @@ static void net_icmp_send_echo_reply(volatile uint8_t *req, uint32_t ihl,
         p[i] = 0;
     }
 
-    // Ethernet
-    for (int i = 0; i < 6; i++) {
-        p[i] = req[6 + i];
-        p[6 + i] = g_e1000_mac[i];
-    }
-    p[12] = 0x08;
-    p[13] = 0x00;
-
-    // IPv4 header (20 byte, tanpa options)
-    p[14] = 0x45;
-    p[15] = 0x00;
-    p[16] = (uint8_t)((20 + icmp_len) >> 8);
-    p[17] = (uint8_t)((20 + icmp_len) & 0xFF);
-    p[18] = (uint8_t)(g_net_ip_id >> 8);
-    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
-    g_net_ip_id++;
-    p[20] = 0x40;
-    p[21] = 0x00;
-    p[22] = 64;
-    p[23] = 1;
-    p[24] = 0;
-    p[25] = 0;
-
-    for (int i = 0; i < 4; i++) {
-        p[26 + i] = g_net_ip[i];
-        p[30 + i] = req[26 + i];
-    }
-
-    uint16_t ipc = net_checksum16(p + 14, 20);
-    p[24] = (uint8_t)(ipc >> 8);
-    p[25] = (uint8_t)(ipc & 0xFF);
+    net_ipv4_hdr(p, req + 6, req + 26, 1, icmp_len);
 
     // ICMP: salin pesan request, ubah type -> 0 (echo reply)
     for (uint32_t i = 0; i < icmp_len; i++) {
@@ -481,37 +488,7 @@ uint32_t net_udp_build(uint8_t *p, const volatile uint8_t *dst_mac, const volati
         p[i] = 0;
     }
 
-    // Ethernet
-    for (int i = 0; i < 6; i++) {
-        p[i] = dst_mac[i];
-        p[6 + i] = g_e1000_mac[i];
-    }
-    p[12] = 0x08;
-    p[13] = 0x00;
-
-    // IPv4 header, protocol 17
-    p[14] = 0x45;
-    p[15] = 0x00;
-    p[16] = (uint8_t)((20 + udp_len) >> 8);
-    p[17] = (uint8_t)((20 + udp_len) & 0xFF);
-    p[18] = (uint8_t)(g_net_ip_id >> 8);
-    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
-    g_net_ip_id++;
-    p[20] = 0x40;
-    p[21] = 0x00;
-    p[22] = 64;
-    p[23] = 17;
-    p[24] = 0;
-    p[25] = 0;
-
-    for (int i = 0; i < 4; i++) {
-        p[26 + i] = g_net_ip[i];
-        p[30 + i] = dst_ip[i];
-    }
-
-    uint16_t ipc = net_checksum16(p + 14, 20);
-    p[24] = (uint8_t)(ipc >> 8);
-    p[25] = (uint8_t)(ipc & 0xFF);
+    net_ipv4_hdr(p, dst_mac, dst_ip, 17, udp_len);
 
     // UDP
     p[34] = (uint8_t)(sport >> 8);
@@ -644,31 +621,7 @@ static void net_tcp_send_rst(volatile uint8_t *req, uint32_t ihl,
         p[i] = 0;
     }
 
-    for (int i = 0; i < 6; i++) {
-        p[i] = req[6 + i];
-        p[6 + i] = g_e1000_mac[i];
-    }
-    p[12] = 0x08;
-    p[13] = 0x00;
-
-    p[14] = 0x45;
-    p[16] = 0;
-    p[17] = 40;
-    p[18] = (uint8_t)(g_net_ip_id >> 8);
-    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
-    g_net_ip_id++;
-    p[20] = 0x40;
-    p[22] = 64;
-    p[23] = 6;
-
-    for (int i = 0; i < 4; i++) {
-        p[26 + i] = g_net_ip[i];
-        p[30 + i] = req[26 + i];
-    }
-
-    uint16_t ipc = net_checksum16(p + 14, 20);
-    p[24] = (uint8_t)(ipc >> 8);
-    p[25] = (uint8_t)(ipc & 0xFF);
+    net_ipv4_hdr(p, req + 6, req + 26, 6, 20);
 
     p[34] = req[r + 2];
     p[35] = req[r + 3];
@@ -945,31 +898,7 @@ static void net_tcp_send_seg(tcp_tcb_t *t, uint32_t seq, uint32_t ack,
         p[i] = 0;
     }
 
-    for (int i = 0; i < 6; i++) {
-        p[i] = mac[i];
-        p[6 + i] = g_e1000_mac[i];
-    }
-    p[12] = 0x08;
-    p[13] = 0x00;
-
-    p[14] = 0x45;
-    p[16] = (uint8_t)((20 + hl + dlen) >> 8);
-    p[17] = (uint8_t)((20 + hl + dlen) & 0xFF);
-    p[18] = (uint8_t)(g_net_ip_id >> 8);
-    p[19] = (uint8_t)(g_net_ip_id & 0xFF);
-    g_net_ip_id++;
-    p[20] = 0x40;
-    p[22] = 64;
-    p[23] = 6;
-
-    for (int i = 0; i < 4; i++) {
-        p[26 + i] = g_net_ip[i];
-        p[30 + i] = ip[i];
-    }
-
-    uint16_t ipc = net_checksum16(p + 14, 20);
-    p[24] = (uint8_t)(ipc >> 8);
-    p[25] = (uint8_t)(ipc & 0xFF);
+    net_ipv4_hdr(p, mac, ip, 6, hl + dlen);
 
     p[34] = (uint8_t)(sport >> 8);
     p[35] = (uint8_t)(sport & 0xFF);

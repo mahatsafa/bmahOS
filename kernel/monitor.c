@@ -37,7 +37,6 @@ typedef struct {
 
 static mon_t g_mon[MON_MAX];
 static uint64_t g_mon_page_phys;
-static uint16_t g_mon_ip_id = 0x6000;
 static const char *const g_mon_state[] = { "belum", "naik", "turun" };
 
 void monitor_init(void)
@@ -74,35 +73,14 @@ static int mon_send_echo(mon_t *m, uint16_t id)
 
     mon_ip(m, ip);
     memset(p, 0, 60);
-    for (int i = 0; i < 6; i++) {
-        p[i] = m->mac[i];
-        p[6 + i] = g_e1000_mac[i];
-    }
-    p[12] = 0x08;
-    p[13] = 0x00;
-    p[14] = 0x45;
-    p[16] = (uint8_t)((20 + icmp_len) >> 8);
-    p[17] = (uint8_t)(20 + icmp_len);
-    p[18] = (uint8_t)(g_mon_ip_id >> 8);
-    p[19] = (uint8_t)g_mon_ip_id;
-    g_mon_ip_id++;
-    p[20] = 0x40;   // DF
-    p[22] = 64;
-    p[23] = 1;      // ICMP
-    for (int i = 0; i < 4; i++) {
-        p[26 + i] = g_net_ip[i];
-        p[30 + i] = ip[i];
-    }
-    uint16_t c = net_checksum16(p + 14, 20);
-    p[24] = (uint8_t)(c >> 8);
-    p[25] = (uint8_t)c;
+    net_ipv4_hdr(p, m->mac, ip, 1, icmp_len);
     p[34] = 8;      // echo request
     p[38] = (uint8_t)(id >> 8);
     p[39] = (uint8_t)id;
     p[40] = (uint8_t)(m->seq >> 8);
     p[41] = (uint8_t)m->seq;
     memcpy(p + 42, "bmahOS-pantau-P6", MON_PAYLOAD);
-    c = net_checksum16(p + 34, icmp_len);
+    uint16_t c = net_checksum16(p + 34, icmp_len);
     p[36] = (uint8_t)(c >> 8);
     p[37] = (uint8_t)c;
     return e1000_tx_send(g_mon_page_phys, 34 + icmp_len < 60 ? 60 : 34 + icmp_len);
