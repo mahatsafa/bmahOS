@@ -99,12 +99,18 @@ const pci_dev_t *pci_find_id(uint16_t vendor, uint16_t device)
     return 0;
 }
 
-// Satu baris per perangkat: "BB:DD.F vvvv:dddd kelas KK:SS:PP hdr H".
-void pci_list(void (*out)(const char *))
+// Satu baris per perangkat: "BB:DD.F vvvv:dddd kelas KK:SS:PP hdr H", perangkat
+// [start, start + max); sisa -> baris "pci_lanjut=<i>" (perintah `pci <i>`).
+void pci_list_page(void (*out)(const char *), uint32_t start, uint32_t max)
 {
     char line[64];
 
-    for (uint32_t i = 0; i < g_pci_ndevs; i++) {
+    for (uint32_t i = start; i < g_pci_ndevs; i++) {
+        if (i - start >= max) {
+            ksnprintf(line, sizeof(line), "pci_lanjut=%u\n", i);
+            out(line);
+            break;
+        }
         const pci_dev_t *d = &g_pci_devs[i];
 
         ksnprintf(line, sizeof(line), "%02x:%02x.%u %04x:%04x kelas %02x:%02x:%02x hdr %u\n",
@@ -115,6 +121,11 @@ void pci_list(void (*out)(const char *))
     ksnprintf(line, sizeof(line), "pci: %u perangkat, tidak muat %u\n",
               g_pci_ndevs, g_pci_dropped);
     out(line);
+}
+
+void pci_list(void (*out)(const char *))
+{
+    pci_list_page(out, 0, PCI_MAX_DEVS);
 }
 
 static void pci_out_serial(const char *s)

@@ -1316,6 +1316,10 @@ static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
         g_cli_reboot = 1;
         g_cli_reboot_at = timer_ticks;
     }
+    // Keluaran yang terpotong di tengah baris tidak boleh menelan baris END.
+    if (n > 0 && t->out[n - 1] != '\n') {
+        t->out[n++] = '\n';
+    }
     n += (uint32_t)ksnprintf((char *)t->out + n, TCP_CLI_OUT_MAX - n, "END %lu\n",
                              t->cmd_seq);
     t->out_len = n;

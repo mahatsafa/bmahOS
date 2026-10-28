@@ -1746,7 +1746,7 @@ static void test_tcp_shell(void)
     CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_FIN | F_ACK) &&
           g_tcbs[0].state == TCP_FIN_WAIT_1);
 
-    // B. Keluaran 1306 byte (> buffer 1024) dialirkan bertahap; baris yang
+    // B. Keluaran 1307 byte (> buffer 1024) dialirkan bertahap; baris yang
     // datang selama keluaran belum habis tidak dibaca dan tidak di-ACK.
     una = cli_login(22000, 23000);
     cli_send(cmd_line("big", 1), una);
@@ -1759,7 +1759,7 @@ static void test_tcp_shell(void)
     cli_send(cmd_line("ping", 2), una);
     CHECK(g_tcbs[0].rcv_nxt == rn && g_tcbs[0].cmd_seq == 1);
     g_pseq = rn;
-    for (int i = 0; i < 5 && glen < 1306; i++) {
+    for (int i = 0; i < 5 && glen < 1307; i++) {
         rx(f, mk_tcp_w(f, g_pseq, una + glen, F_ACK, 0, 0, 4096));
         s = tx_seg(0);
         if (g_tx_n != 1 || s.len == 0 || s.seq != una + glen) {
@@ -1768,7 +1768,8 @@ static void test_tcp_shell(void)
         memcpy(got + glen, s.data, s.len);
         glen += s.len;
     }
-    int pat = glen == 1306 && memcmp(got + 1300, "END 1\n", 6) == 0;
+    // "big" tanpa '\n' di akhir: net.c menambahkannya sebelum END (temuan VMware `pci`).
+    int pat = glen == 1307 && memcmp(got + 1300, "\nEND 1\n", 7) == 0;
     for (uint32_t i = 0; pat && i < 1300; i++) {
         pat = got[i] == 'a' + i % 26;
     }
@@ -2604,8 +2605,8 @@ static void test_tls_session(uint16_t suite)
     for (int i = 0; i < 1300; i++) {
         want[i] = (char)('a' + i % 26);
     }
-    memcpy(want + 1300, "END 2\n", 7);
-    CHECK(g_app_len == 1306 && memcmp(g_app, want, 1306) == 0);
+    memcpy(want + 1300, "\nEND 2\n", 8);
+    CHECK(g_app_len == 1307 && memcmp(g_app, want, 1307) == 0);
 
     // Tidak ada plaintext di kabel.
     CHECK(!raw_has("bmahOS login") && !raw_has("nonce:") && !raw_has("OK login") &&

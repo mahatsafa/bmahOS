@@ -288,7 +288,18 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     } else if (net_cmd_is(cmd, len, "acpi")) {
         acpi_list(cmd_puts);   // P2
     } else if (net_cmd_is(cmd, len, "pci")) {
-        pci_list(cmd_puts);   // P2
+        pci_list_page(cmd_puts, 0, PCI_PAGE);   // P2: berhalaman (VMware 46 perangkat)
+    } else if (len > 4 && len <= 6 && net_cmd_is(cmd, 4, "pci ")) {
+        uint32_t st = 0, ok = 1;
+        for (uint32_t i = 4; i < len; i++) {
+            ok &= cmd[i] >= '0' && cmd[i] <= '9';
+            st = st * 10 + (uint32_t)(cmd[i] - '0');
+        }
+        if (ok) {
+            pci_list_page(cmd_puts, st, PCI_PAGE);
+        } else {
+            cmd_puts("ERR: format: pci [mulai]\n");
+        }
     } else if (net_cmd_is(cmd, len, "wd")) {
         watchdog_status();   // R5
     } else if (net_cmd_is(cmd, len, "logdisk") ||

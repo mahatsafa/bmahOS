@@ -708,6 +708,7 @@ int auth_cmd_allowed(int role, const uint8_t *cmd, uint32_t len)
     }
     // R3: metrics dengan argumen (awalan/mulai) juga baca saja.
     allowed |= len > 8 && net_cmd_is(cmd, 8, "metrics ");
+    allowed |= len > 4 && net_cmd_is(cmd, 4, "pci ");       // pci <mulai>
     allowed |= len > 8 && net_cmd_is(cmd, 8, "logdisk ");   // R4: logdisk <seq>
     return allowed;
 }

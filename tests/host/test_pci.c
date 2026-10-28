@@ -115,6 +115,19 @@ static void test_full_table(void)
     pci_list(out_cat);
     CHECK(strstr(g_out, "pci: 64 perangkat, tidak muat 16\n") != 0);
 
+    // Halaman: 30 baris + pci_lanjut, halaman terakhir tanpa lanjut; <= 1400 byte.
+    g_out[0] = 0;
+    pci_list_page(out_cat, 0, PCI_PAGE);
+    CHECK(strlen(g_out) <= 1400 && strstr(g_out, "pci_lanjut=30\n") != 0 &&
+          strstr(g_out, "00:1d.0 10ec:001d") != 0 && strstr(g_out, "00:1e.0 10ec:001e") == 0);
+    g_out[0] = 0;
+    pci_list_page(out_cat, 60, PCI_PAGE);
+    CHECK(strstr(g_out, "pci_lanjut") == 0 && strstr(g_out, "01:1f.0 10ec:003f") != 0 &&
+          strstr(g_out, "pci: 64 perangkat, tidak muat 16\n") != 0);
+    g_out[0] = 0;
+    pci_list_page(out_cat, 99, PCI_PAGE);
+    CHECK(strcmp(g_out, "pci: 64 perangkat, tidak muat 16\n") == 0);
+
     run(f, 0);   // tanpa perangkat: tabel kosong, enumerasi ulang mengosongkan
     CHECK(g_pci_ndevs == 0 && g_pci_dropped == 0 && pci_find_class(0x020000) == 0);
 }

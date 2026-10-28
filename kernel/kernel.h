@@ -367,7 +367,9 @@ extern uint32_t (*g_pci_read)(uint8_t, uint8_t, uint8_t, uint8_t);
 void pci_enumerate(void);
 const pci_dev_t *pci_find_class(uint32_t cls);
 const pci_dev_t *pci_find_id(uint16_t vendor, uint16_t device);
-void pci_list(void (*out)(const char *));   // perintah `pci` dan log boot
+void pci_list(void (*out)(const char *));   // log boot (semua perangkat)
+#define PCI_PAGE 30                         // perintah `pci [mulai]`: 30 baris x <= 42 byte
+void pci_list_page(void (*out)(const char *), uint32_t start, uint32_t max);
 // P2: ACPI tervalidasi (checksum/panjang), HPET, jumlah CPU dari MADT.
 extern uint32_t g_acpi_bad, g_acpi_cpus;
 extern uint64_t g_hpet_base;
