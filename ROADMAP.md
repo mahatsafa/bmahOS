@@ -213,14 +213,14 @@ Linux, dan klien Python.
 
 ### Fase 5: Platform server
 
-- [ ] **P1** Konsol framebuffer (request Limine, font bitmap 8x16, pakai `pitch` bukan lebar×4, baca mask
+- [x] **P1** (2026-10-27, e7b2077; VMware 1024x768) Konsol framebuffer (request Limine, font bitmap 8x16, pakai `pitch` bukan lebar×4, baca mask
   warna) yang di-cermin dengan serial lewat `kprintf`. Berguna di VM dan wajib di mesin tanpa serial.
-- [ ] **P2** Enumerasi PCI generik (tidak hardcode bus/dev/fn) dan parsing ACPI (RSDP, XSDT, MADT, HPET).
-- [ ] **P3** DHCP client, DNS client + cache kecil, SNTP + RTC (cap waktu log yang benar).
-- [ ] **P4** Packet filter: aturan port/IP/laju.
+- [x] **P2** (2026-10-27/29, 6bfebf2 + 63b76a2 `pci` berhalaman; VMware 46 perangkat, HPET) Enumerasi PCI generik (tidak hardcode bus/dev/fn) dan parsing ACPI (RSDP, XSDT, MADT, HPET).
+- [x] **P3** (2026-10-27/28, 562ef10 RTC, 1c9ca4f + bc84714 SNTP, 02e0a61 DNS, 2ef5c8f DHCP; VMware lulus, DHCP diuji jalur tanpa sewa) DHCP client, DNS client + cache kecil, SNTP + RTC (cap waktu log yang benar).
+- [x] **P4** (2026-10-27, 5a3b24b; VMware lulus) Packet filter: aturan port/IP/laju.
 - [ ] **P5** Socket API untuk user mode agar program di disk bisa memakai TCP/UDP. Daftar syscall stabil
   dan terdokumentasi.
-- [ ] **P6** Monitor jaringan sebagai task: ping, TCP-connect, DNS berkala, ambang "naik/turun", alert via syslog UDP.
+- [x] **P6** (2026-10-28, 5100c30 + c51ca56; VMware lulus, syslog 7 pesan) Monitor jaringan sebagai task: ping, TCP-connect, DNS berkala, ambang "naik/turun", alert via syslog UDP.
 - [ ] **P7** OTA A/B: dua slot kernel, verifikasi tanda tangan digital (library teruji), boot percobaan dengan
   penghitung, rollback otomatis. Syarat: R5 dan D6 selesai.
 
