@@ -207,9 +207,9 @@ Linux, dan klien Python.
   Selesai 2026-10-20 (02aeb24, 60646b7, 003aae9): SYS_WRITE maks 1024, fault user hanya menghentikan task,
   guard page stack kernel/user, oom_panic, KHEAP_MAX, counter pmm_*/kmalloc*; VMware lulus.
 - [x] **R7** (2026-10-27, b716c57 R7-1, 1e35d22 R7-2; libFuzzer 5 target, tanpa temuan, docs/fuzz-R7.md) Fuzzing parser paket di host (AFL++ atau libFuzzer) dan perbaiki temuan.
-- [ ] **R8** Soak test 24 jam di VM: banjir paket, koneksi berulang, tanpa kebocoran memori. Laporan di `docs/`.
+- [x] **R8** (2026-10-29, docs/soak-R8.md; VMware 24 jam LULUS, 1440 putaran, 0 gagal, tanpa kebocoran) Soak test 24 jam di VM: banjir paket, koneksi berulang, tanpa kebocoran memori. Laporan di `docs/`.
 
-**Setelah R8 lulus: M-A tercapai.**
+**Setelah R8 lulus: M-A tercapai.** (tercapai 2026-10-29)
 
 ### Fase 5: Platform server
 
