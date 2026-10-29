@@ -1,6 +1,6 @@
 # R8: soak test 24 jam
 
-Status: alat siap (R8-1), jalan 24 jam di VMware belum dilakukan.
+Status: LULUS di VMware 24 jam (2026-10-28 09:13 s.d. 2026-10-29 09:14).
 
 ## Tujuan
 ROADMAP Fase 4 R8: bmahOS berjalan 24 jam di VM di bawah beban jaringan berulang (banjir paket, koneksi
@@ -54,5 +54,21 @@ banjir = batas 20/s per IP). Pra-uji 10 menit pertama menemukan dua salah uji di
 slirp menerima connect() koneksi ke-3 di sisi host (kini dicek dengan echo 1 byte), dan jalur gagal `tolak`
 melewatkan jeda TIME_WAIT sehingga `login_salah` kena batas 2 TCB per IP.
 
-## Hasil VMware 24 jam
-(diisi setelah jalan)
+## Hasil VMware 24 jam (2026-10-28/29, ISO PROD 9711b026, kode bc84714)
+Mulai `soak-mulai.ps1 -Iso bmahOS-prod.iso` 2026-10-28 09:13:25, selesai 2026-10-29 09:14:11.
+`analisis.py --pemanasan 3600`: **LULUS**, 20/20 kriteria, 145 sampel tanpa celah (jarak 600..639 s).
+
+- 1440 putaran, 0 langkah gagal: echo 4320, shell 2880, tls 1440, udp 7200, uecho 1440, ping 1440,
+  banjir 1440, tolak 1440, login_salah 1440, diam 288.
+- Tanpa panic/reboot: uptime +86411 s vs jam dinding +86440 s; serial `PCI-1:` 2, `PANIC` 0, fault 0.
+- Memori sama dari sampel awal sampai akhir: frame bebas 121599, heap_used 5168, pmm_netto 114,
+  kmalloc_netto 4; pmm_fail 0, kmalloc_fail 2 dan pmm_bad_free 1 tidak naik (sudah ada saat boot).
+- Akhir: tcp_conn_active 1, cli_sess_active 1, tls_sess_active 0; stack_net_used 4656 (tetap sejak
+  sampel pertama di bawah beban).
+- Counter: tcp_conn_open +13392, tcp_retx 0, tcp_timeout 0, tcp_conn_dropped 0, rx_missed 0, rx_nobuf 0,
+  cli_cmd_fail 0, tls_fail 0, udp_src_dropped +259200 (banjir: tepat 20 balasan per banjir),
+  tcp_src_full +7200 (tolak), audit_seq +28800, logdisk_written +35279.
+- wd_gap_max 2 -> 24 di 10 menit pertama, lalu 34 pada sampel 2026-10-29 04:04 (bertepatan dengan
+  gangguan jaringan di host Windows yang dilaporkan pengguna; VMnet2 host-only, tidak ada langkah gagal).
+  Batas kriteria 100, batas watchdog 1000.
+- logdisk_lost 496 sudah ada pada sampel awal (t=3 s) dan tidak naik selama soak.
