@@ -187,6 +187,36 @@ WEAK void monitor_dns_done(uint32_t tok, int a, const char *what)
     (void)what;
 }
 
+// P5-1: sock.c hanya di-#include oleh test_sock (net.c/auth.c memanggil kaitnya).
+WEAK int sock_wants(uint16_t dport)
+{
+    (void)dport;
+    return 0;
+}
+
+WEAK void sock_rx(const volatile uint8_t *src_mac, const volatile uint8_t *src_ip, uint16_t sport,
+                  uint16_t dport, const volatile uint8_t *data, uint32_t len)
+{
+    (void)src_mac;
+    (void)src_ip;
+    (void)sport;
+    (void)dport;
+    (void)data;
+    (void)len;
+}
+
+WEAK void sock_arp_seen(const volatile uint8_t *buf)
+{
+    (void)buf;
+}
+
+WEAK int sock_execute(const volatile uint8_t *cmd, uint32_t len)
+{
+    (void)cmd;
+    (void)len;
+    return 0;
+}
+
 WEAK int g_logdisk_syncs = 0;
 
 WEAK void logdisk_sync(int panic)

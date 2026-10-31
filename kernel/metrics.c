@@ -260,6 +260,12 @@ static const metric_t g_metrics[] = {
     M64("kfree", g_kfree_n),
     M64("kfree_noop", g_kfree_noop),
     M64("kmalloc_fail", g_kmalloc_fail),
+    // P5-1
+    M64("sock_rx", g_sock_rx),
+    M64("sock_tx", g_sock_tx),
+    M64("sock_drop", g_sock_drop),
+    M64("sock_err", g_sock_err),
+    M64("sock_noarp", g_sock_noarp),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

@@ -55,7 +55,7 @@ LDFLAGS := -nostdlib -static -m elf_x86_64 -z max-page-size=0x1000 -T linker.ld
 
 C_SRCS := $(wildcard $(KERNEL_DIR)/*.c)
 HDRS   := $(wildcard $(KERNEL_DIR)/*.h)
-S_SRCS := $(KERNEL_DIR)/gdt.S $(KERNEL_DIR)/interrupt.S $(KERNEL_DIR)/task.S
+S_SRCS := $(KERNEL_DIR)/gdt.S $(KERNEL_DIR)/interrupt.S $(KERNEL_DIR)/task.S $(KERNEL_DIR)/userbin.S
 
 C_OBJS := $(patsubst $(KERNEL_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SRCS))
 S_OBJS := $(patsubst $(KERNEL_DIR)/%.S,$(BUILD_DIR)/%.o,$(S_SRCS))
@@ -78,6 +78,23 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.c $(HDRS)
 $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.S
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@
+
+# P5-1: program user (userspace/*.c) -> biner datar di 0x400000, ditanam lewat
+# kernel/userbin.S. -O2 boleh (bukan kode kernel); tanpa SSE, tanpa panggilan mem*.
+USER_CFLAGS := -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -m64 \
+               -march=x86-64 -mno-mmx -mno-sse -mno-sse2 -O2 -fno-tree-loop-distribute-patterns \
+               -fno-asynchronous-unwind-tables -Wall -Wextra -Werror
+USER_PROGS  := udpgema
+
+$(BUILD_DIR)/user/%.elf: userspace/%.c userspace/bm.h userspace/user.ld
+	@mkdir -p $(BUILD_DIR)/user
+	$(CC) $(USER_CFLAGS) -c $< -o $(BUILD_DIR)/user/$*.o
+	$(LD) -nostdlib -static -m elf_x86_64 -T userspace/user.ld $(BUILD_DIR)/user/$*.o -o $@
+
+$(BUILD_DIR)/user/%.bin: $(BUILD_DIR)/user/%.elf
+	objcopy -O binary -j .text $< $@
+
+$(BUILD_DIR)/userbin.o: $(addprefix $(BUILD_DIR)/user/,$(addsuffix .bin,$(USER_PROGS)))
 
 # D9a: BearSSL (third_party/bearssl, commit tercatat di 3RDPARTY.md, tidak diubah).
 # Semua src/*.c -> build/libbearssl.a dengan -O2 (kode kernel sendiri tetap tanpa -O).
@@ -136,7 +153,7 @@ HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host -Ithird_party/bearssl/inc
 HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config panic metrics logdisk \
-               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp
+               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
@@ -182,6 +199,8 @@ host_srcs_monitor := $(KERNEL_DIR)/kprintf.c $(KERNEL_DIR)/rtc.c
 host_deps_monitor := $(KERNEL_DIR)/monitor.c   # P6-1: di-#include oleh test_monitor.c
 host_srcs_dhcp    := $(KERNEL_DIR)/kprintf.c
 host_deps_dhcp    := $(KERNEL_DIR)/dhcp.c      # P3-4: di-#include oleh test_dhcp.c
+host_srcs_sock    := $(KERNEL_DIR)/kprintf.c
+host_deps_sock    := $(KERNEL_DIR)/sock.c      # P5-1: di-#include oleh test_sock.c
 
 # D9a: BearSSL versi host (clang + ASan/UBSan) dan test_crypto upstream untuk
 # implementasi yang dipakai profil TLS D9. -fno-sanitize=function: vtable BearSSL

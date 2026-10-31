@@ -95,6 +95,7 @@ static void net_handle_arp(volatile uint8_t *buf)
     sntp_arp_seen(buf);     // P3-2: MAC server SNTP
     dns_arp_seen(buf);      // P3-3: MAC server DNS
     monitor_arp_seen(buf);  // P6-1: MAC target pantau
+    sock_arp_seen(buf);     // P5-1: MAC tujuan sendto
 
     if (oper == 1 && net_ip_ready() && net_ip_equal(buf + 38, g_net_ip)) {
         uint64_t lf = irq_save();
@@ -2007,6 +2008,20 @@ static void net_handle_udp(volatile uint8_t *buf, uint32_t ihl,
             return;
         }
         dns_rx(buf + r + 8, udp_len - 8);
+        return;
+    }
+
+    if (sock_wants((uint16_t)dst_port)) {
+        // P5-1: port soket program user (jatah laju + checksum sama seperti 7777/7778).
+        if (!net_udp_src_budget_ok(buf + 26) || !net_udp_budget_ok()) {
+            return;
+        }
+        if (csum != 0 &&
+            net_udp_checksum(buf + 26, buf + 30, buf + r, udp_len) != 0) {
+            g_net_udp_badsum++;
+            return;
+        }
+        sock_rx(buf + 6, buf + 26, (uint16_t)src_port, (uint16_t)dst_port, buf + r + 8, udp_len - 8);
         return;
     }
 

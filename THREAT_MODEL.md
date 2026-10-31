@@ -66,6 +66,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Netconsole UDP (R2) | Log polos di LAN, tujuan dibelokkan lewat ARP palsu, banjir log | Bawaan mati; hanya baris ring log (tanpa AUDIT, tanpa register umum panic, tanpa teks perintah/kunci); tujuan hanya di /24 sendiri; antrean statis 4 KB, maks 20 datagram/s, penuh -> baris dibuang + penanda; tidak ada data masuk yang diproses selain ARP dari IP tujuan |
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |
 | Syscall | Pointer jahat dari user mode | Validasi pointer (R6) |
+| Soket UDP user (P5-1) | Program user menghabiskan soket/antrean, mengirim ke mana saja, membaca port sistem; datagram jaringan ke program | Maks 4 soket statis, antrean 4 x 1472 per soket (penuh -> buang), fd hanya milik task pembuat dan ditutup saat task mati; bind hanya 1024..49151 selain port sistem; kirim hanya ke /24 sendiri (bukan .0/.255/diri sendiri), maks 1472 byte, lewat net task; semua pointer user dicek (buf, cap, alamat 8 byte writable); datagram masuk lewat filter P4, batas laju UDP per IP + global, dan checksum seperti port sistem |
 | Klien SNTP (P3-2), DNS (P3-3), DHCP (belum) | Balasan palsu menggeser jam / meracuni cache, parser nama DNS (pointer kompresi) | SNTP dan DNS hanya atas perintah admin, server di /24 sendiri, port sumber acak, SNTP: nonce 8 byte (transmit = originate), mode/versi/LI/stratum dicek; DNS: ID acak, pertanyaan harus identik, nama answer hanya dilompati (pointer tidak diikuti), batas label/panjang, cache statis 8 entri dengan TTL 5..3600 s; balasan lain diabaikan dan dihitung, batas waktu 3 s |
 | Jalur OTA | Kernel palsu | Tanda tangan digital + slot A/B + rollback (P7) |
 
@@ -152,6 +153,10 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    pemalsuan buta, tidak mencegah penyerang yang membaca broadcast DISCOVER/REQUEST. Hanya alamat /24 yang
    diterima, router/DNS tidak dipakai, jadi lalu lintas tidak bisa dibelokkan ke luar /24 lewat DHCP.
    Kunci HMAC/TLS tetap melindungi perintah walau alamat dibajak. Bawaan `dhcp=0`.
+20. Soket UDP user (P5-1): tanpa autentikasi di tingkat soket (urusan program); siapa pun di LAN bisa mengirim
+   ke port program dan mengisi antreannya (4 datagram, sisanya dibuang). Program bisa mengirim UDP ke host mana
+   pun di /24 dan membuat ARP request (maks 3 per kirim). Cache MAC soket bisa diracuni ARP palsu untuk alamat
+   yang sedang ditunggu (sama dengan modul lain). Belum ada izin per program: setiap task user boleh membuat soket.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

@@ -553,6 +553,7 @@ void task_exit(void)
 {
     uint64_t flags = irq_save();
 
+    sock_task_exit(current_index);   // P5-1
     tasks[current_index].status = TASK_DEAD;
     schedule();
 
@@ -588,6 +589,18 @@ void task_sleep(uint64_t ticks)
     // langsung setelah schedule() dipanggil di atas. Sama seperti
     // task_exit(): jangan mengandalkan kode setelah schedule() untuk
     // jalan seketika kalau context switch berhasil terjadi.
+    irq_restore(flags);
+}
+
+// P5-1: bangunkan task yang sedang task_sleep() sebelum waktunya (data soket
+// masuk / kirim selesai). Task lain yang tidak tidur tidak berubah.
+void task_wake(size_t idx)
+{
+    uint64_t flags = irq_save();
+
+    if (idx < task_count && tasks[idx].status == TASK_SLEEPING) {
+        tasks[idx].status = TASK_READY;
+    }
     irq_restore(flags);
 }
 

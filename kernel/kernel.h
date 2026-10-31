@@ -425,6 +425,41 @@ int dhcp_waiting(void);                        // 1 = UDP 67 -> 68 diserahkan ke
 void dhcp_rx(const volatile uint8_t *d, uint32_t len);   // isi UDP (checksum sah)
 void dhcp_arp_seen(const volatile uint8_t *buf);
 int dhcp_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
+
+// ---- sock.c (P5-1: soket UDP untuk program user, syscall 3..7, docs/SYSCALL.md) ----
+#define SOCK_MAX         4      // soket terbuka di seluruh sistem
+#define SOCK_UDP         2
+#define SOCK_DGRAM_MAX   1472   // isi datagram maks (tanpa fragmentasi IP)
+#define SOCK_EIO          (-5)
+#define SOCK_EBADF        (-9)
+#define SOCK_EAGAIN       (-11)
+#define SOCK_EACCES       (-13)
+#define SOCK_EFAULT       (-14)
+#define SOCK_EINVAL       (-22)
+#define SOCK_EMFILE       (-24)
+#define SOCK_EMSGSIZE     (-90)
+#define SOCK_EADDRINUSE   (-98)
+#define SOCK_ENETDOWN     (-100)
+#define SOCK_EHOSTUNREACH (-113)
+// alamat soket = IPv4 a.b.c.d (bit 47..16) + port (bit 15..0)
+#define SOCK_ADDR(a, b, c, d, port) \
+    (((uint64_t)(a) << 40) | ((uint64_t)(b) << 32) | ((uint64_t)(c) << 24) | \
+     ((uint64_t)(d) << 16) | (uint64_t)(port))
+extern uint64_t g_sock_rx, g_sock_tx, g_sock_drop, g_sock_err, g_sock_noarp;
+void sock_init(void);                          // kmain, sebelum task user dibuat
+void sock_poll(void);                          // tiap putaran net task (kirim + ARP)
+int sock_port_ok(uint32_t port);
+int sock_wants(uint16_t dport);                // 1 = ada soket terikat di port itu
+void sock_rx(const volatile uint8_t *src_mac, const volatile uint8_t *src_ip, uint16_t sport,
+             uint16_t dport, const volatile uint8_t *data, uint32_t len);
+void sock_arp_seen(const volatile uint8_t *buf);
+void sock_task_exit(size_t idx);               // task_exit: tutup soket milik task
+uint64_t sock_sys_socket(uint64_t type, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
+uint64_t sock_sys_bind(uint64_t fd, uint64_t port, uint64_t a2, uint64_t a3, uint64_t a4);
+uint64_t sock_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr, uint64_t a4);
+uint64_t sock_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t cap, uint64_t from, uint64_t timeout);
+uint64_t sock_sys_close(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
+int sock_execute(const volatile uint8_t *cmd, uint32_t len);   // `soket`, 1 = ditangani
 void netcon_ip_changed(void);                  // P3-4: IP baru -> MAC tujuan dipelajari ulang
 void monitor_ip_changed(void);
 
@@ -746,7 +781,7 @@ extern uint64_t g_audit_seq;    // audit.c: nomor urut entri terakhir
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----
-#define MAX_TASKS 10   // R6-1: 8 -> 10 (slot dev: 8 task uji + net + idle, sejak TSS-1)
+#define MAX_TASKS 11   // P5-1: 10 -> 11 (slot dev: 8 task uji + udpgema + net + idle)
 
 typedef enum {
     TASK_READY,
@@ -813,6 +848,7 @@ void task_create_user(task_t *task, uint64_t pml4_phys, uint64_t user_code_vaddr
 task_t * spawn(const uint8_t *image, size_t image_len);
 void schedule(void);
 void task_exit(void);
+void task_wake(size_t idx);   // P5-1: SLEEPING -> READY lebih awal (data soket datang)
 void task_sleep(uint64_t ticks);
 void task_wait_for(size_t target_index);
 void sem_wait(semaphore_t *sem);

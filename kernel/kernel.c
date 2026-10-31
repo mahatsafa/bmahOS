@@ -411,6 +411,8 @@ uint64_t net_stack_used(void)
     return NET_TASK_STACK - free_bytes;
 }
 
+extern const uint8_t user_udpgema_start[], user_udpgema_end[];   // userbin.S (P5-1)
+
 static void net_task_entry(void)
 {
     if (!g_e1000_rx_initialized) {
@@ -480,6 +482,7 @@ static void net_task_entry(void)
         sntp_poll();      // P3-2
         dns_poll();       // P3-3
         monitor_poll();   // P6-1
+        sock_poll();      // P5-1
         logdisk_poll();   // R4
         sem_wait(&g_net_rx_sem);
     }
@@ -1153,6 +1156,8 @@ void kmain(void)
     }
     serial_write("\r\n");
 
+    sock_init();   // P5-1: sebelum task user pertama (sendto butuh halaman TX)
+
     serial_write("Task scheduling test: membuat task A, B, dan 1 user task...\r\n");
     task_create(&tasks[0], task_a_entry, 4096);
     task_create(&tasks[1], task_b_entry, 4096);
@@ -1194,6 +1199,8 @@ void kmain(void)
 #ifndef BMAHOS_PROD
     spawn(user_task_r6_test_code, sizeof(user_task_r6_test_code));   // R6-1
     spawn(user_task_tss1_test_code, sizeof(user_task_tss1_test_code));   // TSS-1
+    // P5-1: program C pertama (userspace/udpgema.c) memakai soket UDP, port 5555.
+    spawn(user_udpgema_start, (size_t)(user_udpgema_end - user_udpgema_start));
 #endif
 
     nx_selftest(pml4_phys, tasks[2].pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR);

@@ -22,7 +22,13 @@ _Static_assert(
 #define SYS_TEST  0
 #define SYS_WRITE 1
 #define SYS_EXIT  2
-#define SYSCALL_COUNT 3
+// P5-1: soket UDP (sock.c, validasi pointer di dalam fungsinya sendiri)
+#define SYS_SOCKET   3
+#define SYS_BIND     4
+#define SYS_SENDTO   5
+#define SYS_RECVFROM 6
+#define SYS_CLOSE    7
+#define SYSCALL_COUNT 8
 
 static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4)
 {
@@ -95,6 +101,11 @@ static const syscall_desc_t syscall_table[SYSCALL_COUNT] = {
     [SYS_TEST]  = { sys_test,  false },
     [SYS_WRITE] = { sys_write, true  },
     [SYS_EXIT]  = { sys_exit,  false },
+    [SYS_SOCKET]   = { sock_sys_socket,   false },
+    [SYS_BIND]     = { sock_sys_bind,     false },
+    [SYS_SENDTO]   = { sock_sys_sendto,   false },
+    [SYS_RECVFROM] = { sock_sys_recvfrom, false },
+    [SYS_CLOSE]    = { sock_sys_close,    false },
 };
 
 // Dispatch syscall (int 0x80). context->rax = nomor syscall saat

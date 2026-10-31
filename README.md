@@ -44,6 +44,9 @@ Belum pernah diuji di hardware asli.
 - Pemantau jaringan (P6): `pantau ping <oktet>`, `pantau tcp <oktet> <port>`, `pantau dns <nama> <oktet> <port>`
   (admin, maks 4 target, interval 5..3600 s); status NAIK/TURUN, RTT, peringatan `P6: ... NAIK|TURUN` di log, dan
   alert syslog UDP (RFC 5424) ke `pantau syslog <oktet> [port]`; `pantau` menampilkan semuanya
+- Soket UDP untuk program user (P5-1): syscall socket/bind/sendto/recvfrom/close (`docs/SYSCALL.md`,
+  pembungkus `userspace/bm.h`), maks 4 soket; program C pertama `userspace/udpgema.c` (build dev) menggemakan
+  UDP port 5555 dengan awalan `gema: `. Perintah `soket`, metrics `sock_*`
 - Packet filter (P4): `FILTER.CFG`, maks 16 aturan cocok-pertama
   `<izinkan|tolak> <semua|tcp|udp|icmp> <semua|a.b.c.d[/n]> [port A[-B]] [laju N]` untuk UDP, ICMP, dan
   SYN TCP baru; TCP 7780 selalu lolos. Perintah `filter`, `filter tambah|hapus <n>|kosong` (admin)
@@ -250,8 +253,8 @@ TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 
 
 ## Arah berikutnya (belum dikerjakan)
 
-- Urutan lengkap dan status di `ROADMAP.md`: soak test 24 jam (R8), DHCP (sisa P3), socket API user
-  mode (P5), monitor jaringan (P6), OTA A/B (P7), lalu perangkat keras asli (Fase 6)
+- Urutan lengkap dan status di `ROADMAP.md`: server TCP untuk program user (P5-2), OTA A/B (P7), lalu
+  perangkat keras asli (Fase 6)
 
 ## Batasan yang diketahui
 

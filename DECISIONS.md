@@ -434,3 +434,25 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   mulai T1; T1/T2 dihitung sendiri (sewa/2, sewa*7/8; option 58/59 diabaikan); sewa < 60 s dianggap 60 s;
   option overload (52) tidak didukung. IP berubah -> MAC tujuan netcon/pantau dipelajari ulang; koneksi TCP
   lama habis lewat batas waktu biasa.
+
+## 2026-10-29 (P5-1 soket UDP untuk program user)
+- **Urutan disetujui pengguna**: P5 tahap 1 UDP saja (socket/bind/sendto/recvfrom/close), tahap 2 server TCP,
+  klien TCP belakangan; P5 sebelum P7.
+- **ABI**: `int 0x80`, argumen rdi rsi rdx r10 r8 (P5-1a: dispatcher 5 argumen), kode galat = angka errno
+  Linux supaya mudah dibandingkan. Daftar stabil di docs/SYSCALL.md; nomor lama tidak pernah diubah.
+- **Alamat sebagai satu bilangan** (IP << 16 | port) alih-alih struct sockaddr: tanpa pointer tambahan untuk
+  `sendto`, satu pointer 8 byte untuk `recvfrom`.
+- **Batas statis**: 4 soket untuk seluruh sistem, antrean 4 datagram x 1472 byte per soket (~30 KB .bss),
+  antrean penuh -> datagram baru dibuang (`sock_drop`). fd milik task pembuat; soket ditutup di `task_exit`
+  (juga task yang dihentikan karena exception).
+- **Port**: 1024..49151 selain 6665, `netcon_port`, 7777..7780 (port layanan sistem). 49152.. = port sumber acak
+  kernel. Tanpa `bind(0)` otomatis di tahap ini.
+- **TX tetap satu pengirim**: syscall hanya menyalin ke slot TX soket; net task yang menulis ring TX E1000
+  (aturan sejak C0: TX hanya dari net task). Pemanggil menunggu hasil (ARP 3x lalu -113, batas 5 s).
+- **MAC tujuan**: cache 8 entri diisi datagram masuk dan jawaban ARP untuk alamat yang sedang ditunggu saja
+  (ARP lain tidak dipelajari). Hanya /24 sendiri, tanpa broadcast/gateway.
+- **Menunggu**: task tidur maks 100 tick per putaran dan dibangunkan lebih awal oleh net task (`task_wake`).
+  Tidak memakai semaphore: tidak ada timeout di `sem_wait`.
+- **Program user pertama ditulis dalam C** (`userspace/`, biner datar 4 KB di 0x400000, tanpa .data/.bss,
+  tanpa SSE), ditanam di kernel lewat `kernel/userbin.S` dan hanya dijalankan build dev. MAX_TASKS 10 -> 11.
+  Memuat program soket dari disk di PROD = tahap berikut (bersama P5-2).

@@ -428,6 +428,8 @@ static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         // P3-3: dns (status + cache, juga read-only) / dns <nama> [oktet [port]] (admin)
     } else if (dhcp_execute(cmd, len)) {
         // P3-4: dhcp (status, juga read-only)
+    } else if (sock_execute(cmd, len)) {
+        // P5-1: soket (daftar soket program user, juga read-only)
     } else if (monitor_execute(cmd, len)) {
         // P6: pantau (juga read-only) / pantau ping|tcp|dns|hapus|syslog (admin)
     } else if (fscmd_execute(cmd, len)) {
@@ -695,7 +697,7 @@ int auth_tcp_cmd(const uint8_t nonce[16], int role, uint64_t seq,
 static const char *const g_ro_cmds[] = {
     "help", "ping", "uptime", "mem", "log", "irq", "stats", "metrics", "mac",
     "ip", "tasks", "config", "tls", "netcon", "logdisk", "wd", "pci", "acpi", "waktu", "filter", "dns", "pantau",
-    "dhcp",
+    "dhcp", "soket",
 };
 
 // D5: juga dipakai net.c untuk menentukan jenis entri audit sebelum exec.
