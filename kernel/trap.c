@@ -8,7 +8,7 @@ _Static_assert(
 // ===============================================================
 // Syscall dispatch table
 //
-// Konvensi: rax = nomor syscall, rdi/rsi/rdx = argumen 1/2/3
+// Konvensi: rax = nomor syscall, rdi/rsi/rdx/r10/r8 = argumen 1..5
 // (sama seperti konvensi Linux x86-64 syscall ABI, supaya familiar
 // dan gampang dibandingkan referensi). Return value ditaruh balik
 // ke context->rax sebelum iretq.
@@ -24,8 +24,9 @@ _Static_assert(
 #define SYS_EXIT  2
 #define SYSCALL_COUNT 3
 
-static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2)
+static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4)
 {
+    (void)arg3; (void)arg4;
     serial_write("sys_test dipanggil, arg0=");
     serial_write_hex(arg0);
     serial_write(" arg1=");
@@ -40,9 +41,9 @@ static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2)
 // syscall_handler() lewat metadata has_user_ptr (lihat syscall_desc_t).
 // Saat fungsi ini dipanggil, buf_ptr/len SUDAH dipastikan valid untuk
 // diakses ring 3 oleh dispatcher, sebelum dispatch terjadi.
-static uint64_t sys_write(uint64_t buf_ptr, uint64_t len, uint64_t arg2)
+static uint64_t sys_write(uint64_t buf_ptr, uint64_t len, uint64_t arg2, uint64_t arg3, uint64_t arg4)
 {
-    (void)arg2;
+    (void)arg2; (void)arg3; (void)arg4;
 
     const char *buf = (const char *)buf_ptr;
     for (uint64_t i = 0; i < len; i++) {
@@ -61,9 +62,9 @@ static uint64_t sys_write(uint64_t buf_ptr, uint64_t len, uint64_t arg2)
 // dalamnya) ditinggalkan total begitu context switch terjadi, tidak
 // pernah "kembali" lagi. Beda dengan task_sleep()/task_wait_for()
 // yang MEMANG akan resume tepat di titik pemanggilan.
-static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2)
+static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4)
 {
-    (void)arg0; (void)arg1; (void)arg2;
+    (void)arg0; (void)arg1; (void)arg2; (void)arg3; (void)arg4;
 
     task_exit();
 
@@ -73,7 +74,8 @@ static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     return 0;
 }
 
-typedef uint64_t (*syscall_fn_t)(uint64_t, uint64_t, uint64_t);
+// P5-1a: 5 argumen (rdi, rsi, rdx, r10, r8), sama seperti urutan Linux.
+typedef uint64_t (*syscall_fn_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 
 // Metadata per-syscall -- Layer 8 checkpoint: centralize syscall
 // pointer validation. has_user_ptr berarti spesifik: arg0 (rdi)
@@ -140,7 +142,9 @@ static void syscall_handler(struct exception_context *context)
     context->rax = syscall_table[syscall_num].fn(
         context->rdi,
         context->rsi,
-        context->rdx
+        context->rdx,
+        context->r10,
+        context->r8
     );
 }
 
