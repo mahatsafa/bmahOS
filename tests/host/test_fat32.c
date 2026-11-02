@@ -848,12 +848,16 @@ static void test_map(int spc)
     char path[512];
 
     img_open(spc == 1 ? "map1" : "map8", spc == 1 ? 64 * 1024 : 300 * 1024, spc);
-    // LOG.BIN 64 KB isi 'L', OD.BIN 1000 byte (bukan kelipatan 512), MAX.BIN 64 KB + 512.
+    // LOG.BIN 64 KB isi 'L', OD.BIN 1000 byte (bukan kelipatan 512), MAX.BIN 1 MB + 512 (P7-1a),
+    // K1M.BIN 1 MB (slot kernel OTA), tiap sektor diawali "S<nomor 4 digit>".
     sh("head -c 65536 /dev/zero | tr '\\0' 'L' > build/host/log.bin && "
        "mcopy -i %s build/host/log.bin ::LOG.BIN%s", g_img_path, "");
     sh("head -c 1000 /dev/zero > build/host/odd.bin && mcopy -i %s build/host/odd.bin ::ODD.BIN && "
-       "head -c 66048 /dev/zero > build/host/max.bin && mcopy -i %s build/host/max.bin ::MAX.BIN",
+       "head -c 1049088 /dev/zero > build/host/max.bin && mcopy -i %s build/host/max.bin ::MAX.BIN",
        g_img_path, g_img_path);
+    sh("python3 -c \"import sys; sys.stdout.buffer.write(b''.join(('S%%04u' %% i).encode()"
+       ".ljust(512, b'.') for i in range(2048)))\" > build/host/k1m.bin && "
+       "mcopy -i %s build/host/k1m.bin ::K1M.BIN", g_img_path, "");
     sh("head -c 512 /dev/zero > build/host/one.bin && mcopy -i %s build/host/one.bin ::ONE.BIN && "
        "touch build/host/empty.bin && mcopy -i %s build/host/empty.bin ::EMPTY.BIN",
        g_img_path, g_img_path);
@@ -865,6 +869,20 @@ static void test_map(int spc)
     CHECK(fat32_file_map("ODD     BIN", &m) == FAT32_ERR_TOOBIG && m.nsec == 0);
     CHECK(fat32_file_map("MAX     BIN", &m) == FAT32_ERR_TOOBIG);
     CHECK(fat32_file_map("EMPTY   BIN", &m) == FAT32_ERR_TOOBIG);
+    // P7-1a: 1 MB = batas: sektor pertama/terakhir, timpa terakhir, mtools melihatnya.
+    CHECK(fat32_file_map("K1M     BIN", &m) == FAT32_OK && m.nsec == 2048);
+    memset(want, '.', sizeof(want));
+    memcpy(want, "S0000", 5);
+    CHECK(fat32_map_read(&m, 0, buf) == FAT32_OK && memcmp(buf, want, 512) == 0);
+    memcpy(want, "S2047", 5);
+    CHECK(fat32_map_read(&m, 2047, buf) == FAT32_OK && memcmp(buf, want, 512) == 0);
+    CHECK(fat32_map_read(&m, 2048, buf) == FAT32_ERR_UNSUP);
+    memcpy(want, "T2047", 5);
+    CHECK(fat32_map_write(&m, 2047, want) == FAT32_OK);
+    msync(g_img, g_img_sectors * 512, MS_SYNC);
+    snprintf(path, sizeof(path), "mtype -i %s ::K1M.BIN | tail -c 512 | head -c 5 | grep -q '^T2047$'",
+             g_img_path);
+    CHECK(system(path) == 0);
     CHECK(fat32_file_map("NADA    BIN", &m) == FAT32_ERR_NOENT);
     CHECK(fat32_file_map("TEST       ", &m) == FAT32_ERR_NOTFILE);
     // peta tanpa sektor: baca/tulis ditolak

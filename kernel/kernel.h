@@ -577,16 +577,22 @@ int fat32_replace_name(const char *dst83, const char *tmp83, const uint8_t *data
                        uint32_t len);
 uint32_t fat32_free_hint(void);
 // R4-1: peta sektor file yang sudah ada (root, ukuran kelipatan 512, 512 ..
-// FAT32_MAP_MAX * 512 byte) untuk baca/timpa per sektor di tempat. Ukuran,
+// FAT32_MAP_MAX * 512 byte = 1 MB sejak P7-1a, slot kernel OTA) untuk
+// baca/timpa per sektor di tempat. Ukuran,
 // rantai FAT, dan entri direktori tidak pernah diubah. Peta berlaku selama file
 // tidak dihapus/diganti (pemanggil melindungi nama file itu).
-#define FAT32_MAP_MAX 128
+#define FAT32_MAP_MAX 2048   // sektor; clu[] cukup untuk 1 cluster = 1 sektor
 typedef struct {
     uint32_t nsec;                 // jumlah sektor = ukuran / 512
     uint32_t spc;                  // sektor per cluster saat dipetakan
     uint32_t clu[FAT32_MAP_MAX];   // rantai cluster (nsec / spc dibulatkan ke atas)
 } fat32_map_t;
 int fat32_file_map(const char *name83, fat32_map_t *m);
+// P7-1a: cmdline entri Limine (mis. "slot=A"), disalin saat boot, maks 63
+// byte, karakter di luar 0x20..0x7e diganti '?'; "" bila tidak ada.
+#define BOOT_CMDLINE_MAX 64
+extern char g_boot_cmdline[BOOT_CMDLINE_MAX];
+void boot_cmdline_init(void);
 int fat32_map_read(const fat32_map_t *m, uint32_t sec, uint8_t *buf512);
 int fat32_map_write(const fat32_map_t *m, uint32_t sec, const uint8_t *buf512);
 extern volatile int g_ahci_busy;   // R4: >0 selama perintah AHCI berjalan

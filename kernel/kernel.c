@@ -42,6 +42,32 @@ volatile struct limine_rsdp_request rsdp_request = {
     .id = LIMINE_RSDP_REQUEST_ID,
 };
 
+// P7-1a: cmdline entri limine.conf (boot dari disk: "slot=A" / "slot=B").
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_executable_cmdline_request cmdline_request = {
+    .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID,
+};
+
+char g_boot_cmdline[BOOT_CMDLINE_MAX];
+
+void boot_cmdline_init(void)
+{
+    struct limine_executable_cmdline_response *r = cmdline_request.response;
+    const char *s = r ? r->cmdline : 0;
+    uint32_t n = 0;
+
+    if (s) {
+        while (n < BOOT_CMDLINE_MAX - 1 && s[n]) {
+            char c = s[n];
+            g_boot_cmdline[n] = (c >= 0x20 && c <= 0x7e) ? c : '?';
+            n++;
+        }
+    }
+    g_boot_cmdline[n] = 0;
+    kprintf("P7: cmdline=\"%s\"%s\r\n", g_boot_cmdline,
+            (s && s[n]) ? " (terpotong)" : "");
+}
+
 extern void irq32(void);
 extern void irq33(void);
 
@@ -808,6 +834,7 @@ void kmain(void)
     rtc_init();     // P3-1
     cpu_features_init();
     kprintf_selftest();
+    boot_cmdline_init();   // P7-1a
     entropy_init();
 #ifdef BMAHOS_ASSERTTEST
     ASSERT(1 + 1 == 3);
