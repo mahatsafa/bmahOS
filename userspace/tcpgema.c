@@ -1,11 +1,23 @@
 // P5-2: server gema TCP di port 5556 (build dev, ditanam di kernel). Uji
+// P5-4: sumber yang sama dibangun ulang sebagai appgema (PORT 5558, NAMA
+// "appgema"), tidak ditanam: isi APP.BIN uji yang dimuat dari disk. Sisa
+// komentar ini memakai nilai bawaan (tcpgema, 5556).
+// ----
 // penolakan dulu (listen sebelum bind, port sistem, recv di soket listen,
 // accept timeout), lalu satu koneksi dilayani sampai peer menutup; koneksi
 // berikutnya menunggu di antrean listen. Data diawali "keluar" = tutup + exit.
 
 #include "bm.h"
 
+#ifndef PORT
 #define PORT 5556
+#endif
+#ifndef NAMA
+#define NAMA "tcpgema"
+#endif
+#define STR_(x) #x
+#define STR(x) STR_(x)
+#define PFX "P5: " NAMA " "
 
 static bm_u64 slen(const char *s)
 {
@@ -69,11 +81,11 @@ static int layani(bm_i64 c, char *buf)
         bm_i64 n = bm_recv(c, buf, BM_TCP_RING, 0);
 
         if (n == 0) {
-            tulis_angka("P5: tcpgema recv 0 (FIN), total ", (bm_i64)total);
+            tulis_angka(PFX "recv 0 (FIN), total ", (bm_i64)total);
             return 0;
         }
         if (n < 0) {
-            tulis_angka("P5: tcpgema recv -> ", n);
+            tulis_angka(PFX "recv -> ", n);
             return 0;
         }
         if (total == 0 && awalan_keluar(buf, n)) {
@@ -84,7 +96,7 @@ static int layani(bm_i64 c, char *buf)
             bm_i64 r = bm_send(c, buf + off, (bm_u64)(n - off), 0);
 
             if (r < 0) {
-                tulis_angka("P5: tcpgema send -> ", r);
+                tulis_angka(PFX "send -> ", r);
                 return 0;
             }
             off += r;
@@ -98,42 +110,42 @@ __attribute__((section(".text.start"), noreturn)) void _start(void)
     bm_i64 fd = bm_socket(BM_SOCK_TCP);
 
     if (fd < 0) {
-        tulis_angka("P5: tcpgema socket gagal ", fd);
+        tulis_angka(PFX "socket gagal ", fd);
         bm_exit();
     }
-    tulis_angka("P5: tcpgema listen tanpa bind -> ", bm_listen(fd));
-    tulis_angka("P5: tcpgema bind 7779 -> ", bm_bind(fd, 7779));
+    tulis_angka(PFX "listen tanpa bind -> ", bm_listen(fd));
+    tulis_angka(PFX "bind 7779 -> ", bm_bind(fd, 7779));
     bm_i64 r = bm_bind(fd, PORT);
     if (r != 0) {
-        tulis_angka("P5: tcpgema bind 5556 gagal ", r);
+        tulis_angka(PFX "bind " STR(PORT) " gagal ", r);
         bm_exit();
     }
-    tulis_angka("P5: tcpgema recv soket listen -> ", bm_recv(fd, buf, 16, 1));
+    tulis_angka(PFX "recv soket listen -> ", bm_recv(fd, buf, 16, 1));
     r = bm_listen(fd);
     if (r != 0) {
-        tulis_angka("P5: tcpgema listen gagal ", r);
+        tulis_angka(PFX "listen gagal ", r);
         bm_exit();
     }
-    tulis_angka("P5: tcpgema accept timeout 10 -> ", bm_accept(fd, 0, 10));
-    tulis("P5: tcpgema siap port 5556\n");
+    tulis_angka(PFX "accept timeout 10 -> ", bm_accept(fd, 0, 10));
+    tulis(PFX "siap port " STR(PORT) "\n");
 
     for (;;) {
         bm_u64 from = 0;
         bm_i64 c = bm_accept(fd, &from, 0);
 
         if (c < 0) {
-            tulis_angka("P5: tcpgema accept gagal ", c);
+            tulis_angka(PFX "accept gagal ", c);
             break;
         }
-        tulis_angka("P5: tcpgema accept fd ", c);
+        tulis_angka(PFX "accept fd ", c);
         int keluar = layani(c, buf);
 
-        tulis_angka("P5: tcpgema close -> ", bm_close(c));
+        tulis_angka(PFX "close -> ", bm_close(c));
         if (keluar) {
             break;
         }
     }
-    tulis_angka("P5: tcpgema close listen -> ", bm_close(fd));
-    tulis("P5: tcpgema selesai\n");
+    tulis_angka(PFX "close listen -> ", bm_close(fd));
+    tulis(PFX "selesai\n");
     bm_exit();
 }

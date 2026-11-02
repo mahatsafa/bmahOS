@@ -94,6 +94,12 @@ $(BUILD_DIR)/user/%.elf: userspace/%.c userspace/bm.h userspace/user.ld
 $(BUILD_DIR)/user/%.bin: $(BUILD_DIR)/user/%.elf
 	objcopy -O binary -j .text $< $@
 
+# P5-4: appgema = tcpgema.c dengan PORT 5558; TIDAK ditanam (isi APP.BIN uji).
+$(BUILD_DIR)/user/appgema.elf: userspace/tcpgema.c userspace/bm.h userspace/user.ld
+	@mkdir -p $(BUILD_DIR)/user
+	$(CC) $(USER_CFLAGS) -DPORT=5558 -DNAMA='"appgema"' -c $< -o $(BUILD_DIR)/user/appgema.o
+	$(LD) -nostdlib -static -m elf_x86_64 -T userspace/user.ld $(BUILD_DIR)/user/appgema.o -o $@
+
 $(BUILD_DIR)/userbin.o: $(addprefix $(BUILD_DIR)/user/,$(addsuffix .bin,$(USER_PROGS)))
 
 # D9a: BearSSL (third_party/bearssl, commit tercatat di 3RDPARTY.md, tidak diubah).
