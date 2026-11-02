@@ -84,7 +84,7 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.S
 USER_CFLAGS := -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -m64 \
                -march=x86-64 -mno-mmx -mno-sse -mno-sse2 -O2 -fno-tree-loop-distribute-patterns \
                -fno-asynchronous-unwind-tables -Wall -Wextra -Werror
-USER_PROGS  := udpgema tcpgema
+USER_PROGS  := udpgema tcpgema tcpklien
 
 $(BUILD_DIR)/user/%.elf: userspace/%.c userspace/bm.h userspace/user.ld
 	@mkdir -p $(BUILD_DIR)/user

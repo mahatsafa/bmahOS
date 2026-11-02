@@ -427,7 +427,7 @@ void dhcp_arp_seen(const volatile uint8_t *buf);
 int dhcp_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
 
 // ---- sock.c (P5-1: soket UDP untuk program user, syscall 3..7, docs/SYSCALL.md) ----
-// P5-2: soket TCP server, syscall 8..11.
+// P5-2: soket TCP server, syscall 8..11. P5-3: klien TCP (connect), syscall 12.
 #define SOCK_MAX         4      // soket terbuka di seluruh sistem (UDP + TCP)
 #define SOCK_TCP         1
 #define SOCK_UDP         2
@@ -452,6 +452,8 @@ int dhcp_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
 #define SOCK_ENETDOWN     (-100)
 #define SOCK_ECONNRESET   (-104)
 #define SOCK_ENOTCONN     (-107)
+#define SOCK_ETIMEDOUT    (-110)   // P5-3
+#define SOCK_ECONNREFUSED (-111)
 #define SOCK_EHOSTUNREACH (-113)
 // alamat soket = IPv4 a.b.c.d (bit 47..16) + port (bit 15..0)
 #define SOCK_ADDR(a, b, c, d, port) \
@@ -459,6 +461,7 @@ int dhcp_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
      ((uint64_t)(d) << 16) | (uint64_t)(port))
 extern uint64_t g_sock_rx, g_sock_tx, g_sock_drop, g_sock_err, g_sock_noarp;
 extern uint64_t g_sock_tcp_accept, g_sock_tcp_rx, g_sock_tcp_tx, g_sock_tcp_reset;
+extern uint64_t g_sock_connect;                // P5-3: connect berhasil
 void sock_init(void);                          // kmain, sebelum task user dibuat
 void sock_poll(void);                          // tiap putaran net task (kirim + ARP)
 int sock_port_ok(uint32_t port);
@@ -476,6 +479,7 @@ uint64_t sock_sys_listen(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uin
 uint64_t sock_sys_accept(uint64_t fd, uint64_t from, uint64_t timeout, uint64_t a3, uint64_t a4);
 uint64_t sock_sys_send(uint64_t fd, uint64_t buf, uint64_t len, uint64_t timeout, uint64_t a4);
 uint64_t sock_sys_recv(uint64_t fd, uint64_t buf, uint64_t cap, uint64_t timeout, uint64_t a4);
+uint64_t sock_sys_connect(uint64_t fd, uint64_t addr, uint64_t timeout, uint64_t a3, uint64_t a4);
 int sock_execute(const volatile uint8_t *cmd, uint32_t len);   // `soket`, 1 = ditangani
 // P5-2: kait TCP untuk net.c (net task), c = slot TCB user 0..SOCK_TCP_CONN-1.
 int sock_tcp_listening(uint16_t port);
@@ -488,6 +492,13 @@ void sock_tcp_fin(uint32_t c);
 uint32_t sock_tcp_tx_take(uint32_t c, uint8_t *dst, uint32_t max);
 int sock_tcp_app(uint32_t c);
 void sock_tcp_closed(uint32_t c, int reset);
+// P5-3: connect. sock_tcp_conn = slot dipakai koneksi keluar milik task owner;
+// sock_tcp_refused = RST atas SYN kita. net_tcp_user_connect (net.c, net task):
+// SYN ke ip:rport, hasil slot c, SOCK_EMFILE (slot penuh) atau SOCK_EAGAIN
+// (entropi belum cukup, coba lagi).
+void sock_tcp_conn(uint32_t c, const uint8_t *ip, uint16_t rport, uint16_t lport, size_t owner);
+void sock_tcp_refused(uint32_t c);
+int net_tcp_user_connect(const uint8_t *mac, const uint8_t *ip, uint16_t rport, size_t owner);
 void netcon_ip_changed(void);                  // P3-4: IP baru -> MAC tujuan dipelajari ulang
 void monitor_ip_changed(void);
 
@@ -809,7 +820,7 @@ extern uint64_t g_audit_seq;    // audit.c: nomor urut entri terakhir
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----
-#define MAX_TASKS 12   // P5-2: 11 -> 12 (slot dev: 8 task uji + udpgema + tcpgema + net + idle)
+#define MAX_TASKS 13   // P5-3: 12 -> 13 (slot dev: 8 task uji + udpgema + tcpgema + tcpklien + net + idle)
 
 typedef enum {
     TASK_READY,

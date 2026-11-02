@@ -21,6 +21,7 @@ typedef long bm_i64;
 #define BM_SYS_ACCEPT   9
 #define BM_SYS_SEND     10
 #define BM_SYS_RECV     11
+#define BM_SYS_CONNECT  12   // P5-3: TCP klien
 
 #define BM_SOCK_TCP     1
 #define BM_SOCK_UDP     2
@@ -40,6 +41,8 @@ typedef long bm_i64;
 #define BM_ENETDOWN     (-100)
 #define BM_ECONNRESET   (-104)
 #define BM_ENOTCONN     (-107)
+#define BM_ETIMEDOUT    (-110)
+#define BM_ECONNREFUSED (-111)
 #define BM_EHOSTUNREACH (-113)
 
 // Alamat soket: IPv4 a.b.c.d dan port dalam satu bilangan 48 bit.
@@ -120,6 +123,13 @@ static inline bm_i64 bm_send(bm_i64 fd, const void *buf, bm_u64 len, bm_u64 time
 static inline bm_i64 bm_recv(bm_i64 fd, void *buf, bm_u64 cap, bm_u64 timeout)
 {
     return bm_sys5(BM_SYS_RECV, (bm_u64)fd, (bm_u64)buf, cap, timeout, 0);
+}
+
+// P5-3: fd = soket TCP baru (tanpa bind). 0 = tersambung, lalu send/recv/close.
+// timeout tick, 0 = sampai kernel menyerah (~31 s).
+static inline bm_i64 bm_connect(bm_i64 fd, bm_u64 addr, bm_u64 timeout)
+{
+    return bm_sys5(BM_SYS_CONNECT, (bm_u64)fd, addr, timeout, 0, 0);
 }
 
 #endif

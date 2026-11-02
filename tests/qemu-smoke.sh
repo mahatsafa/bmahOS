@@ -31,6 +31,7 @@ MCPORT="${BMTEST_PANTAU_TUTUP_PORT:-17081}"   # P6-2: port tanpa pendengar (RST 
 SLPORT="${BMTEST_SYSLOG_PORT:-17514}"   # P6-2: penerima syslog uji
 UPORT="${BMTEST_SOCK_PORT:-17555}"   # P5-1: soket UDP program user (udpgema port 5555)
 TCPORT="${BMTEST_SOCK_TCP_PORT:-17556}"   # P5-2: soket TCP program user (tcpgema port 5556)
+KPORT="${BMTEST_SOCK_KLIEN_PORT:-17557}"   # P5-3: perintah UDP ke tcpklien (port 5557)
 BOOT_TIMEOUT="${BMTEST_BOOT_TIMEOUT:-180}"
 
 PASS=0
@@ -86,7 +87,7 @@ cp "$OVMF_VARS" "$WORK/vars.fd"
     -drive if=pflash,format=raw,file="$WORK/vars.fd" \
     -cdrom "$ISO" \
     -drive id=d0,file="$DISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
-    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=tcp:127.0.0.1:$TPORT-192.168.50.200:7,hostfwd=tcp:127.0.0.1:$CPORT-192.168.50.200:7779,hostfwd=tcp:127.0.0.1:$SPORT-192.168.50.200:7780,hostfwd=udp:127.0.0.1:$UPORT-192.168.50.200:5555,hostfwd=tcp:127.0.0.1:$TCPORT-192.168.50.200:5556 \
+    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=tcp:127.0.0.1:$TPORT-192.168.50.200:7,hostfwd=tcp:127.0.0.1:$CPORT-192.168.50.200:7779,hostfwd=tcp:127.0.0.1:$SPORT-192.168.50.200:7780,hostfwd=udp:127.0.0.1:$UPORT-192.168.50.200:5555,hostfwd=tcp:127.0.0.1:$TCPORT-192.168.50.200:5556,hostfwd=udp:127.0.0.1:$KPORT-192.168.50.200:5557 \
     -object filter-dump,id=fd0,netdev=n0,file="$WORK/net.pcap" \
     -device e1000,netdev=n0 \
     -display none -serial file:"$LOG" -no-reboot \
@@ -249,14 +250,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=124   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*
+R3_N=125   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir sock_tcp_reset" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^sock_tcp_reset="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir sock_connect" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^sock_connect="'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -743,18 +744,19 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "P5-1: gema UDP 5555 lewat soket user: teks + datagram 1466 -> 1472 byte utuh" \
         '[ "$UG_A" = "$(printf "gema: halo P5\nlen=1472 cocok")" ]'
     # P5-2: tcpgema (task 9) juga memegang satu soket dan menyumbang 4 galat saat boot;
-    # sendto udpgema sebelum loop net task jalan -> -100 berulang (tiap 0,1 s, jumlah
-    # bergantung lama inisialisasi), jadi galat >= 7 dan sama dengan sock_err.
-    UG_E="$(echo "$UG_S" | sed -n "s/^soket: 2\/4 terbuka masuk=2 kirim=2 buang=0 galat=\([0-9]*\) tanpa_arp=1$/\1/p")"
-    check "P5-1: soket: udp 5555 task 8 masuk=2 kirim=2; galat >= 7 (3 udpgema + 4 tcpgema + ulang -100) tanpa_arp=1; metrics sock_*" \
-        'echo "$UG_S" | grep -q "^[0-9]: udp port 5555 task 8 antre 0/4 masuk=2 kirim=2 buang=0$" && [ -n "$UG_E" ] && [ "$UG_E" -ge 7 ] && [ "$(echo "$UG_M" | head -5)" = "$(printf "sock_rx=2\nsock_tx=2\nsock_drop=0\nsock_err=$UG_E\nsock_noarp=1")" ]'
+    # P5-3: tcpklien (task 10) memegang soket UDP 5557 dan menyumbang 4 galat.
+    # sendto udpgema / connect tcpklien sebelum loop net task jalan -> -100 berulang
+    # (tiap 0,1 s, jumlah bergantung lama inisialisasi), jadi galat >= 11 = sock_err.
+    UG_E="$(echo "$UG_S" | sed -n "s/^soket: 3\/4 terbuka masuk=2 kirim=2 buang=0 galat=\([0-9]*\) tanpa_arp=1$/\1/p")"
+    check "P5-1: soket: udp 5555 task 8 masuk=2 kirim=2; galat >= 11 (3 udpgema + 4 tcpgema + 4 tcpklien + ulang -100) tanpa_arp=1; metrics sock_*" \
+        'echo "$UG_S" | grep -q "^[0-9]: udp port 5555 task 8 antre 0/4 masuk=2 kirim=2 buang=0$" && [ -n "$UG_E" ] && [ "$UG_E" -ge 11 ] && [ "$(echo "$UG_M" | head -5)" = "$(printf "sock_rx=2\nsock_tx=2\nsock_drop=0\nsock_err=$UG_E\nsock_noarp=1")" ]'
     sleep 1.2
     UG_K="$(ugema keluar 2>&1)"
     sleep 0.5
     UG_B="$(ugema "lagi" 2>&1)"
     UG_S2="$($BM soket 2>&1)"
     check "P5-1: keluar -> close 0, task selesai, soket udp tertutup, port 5555 diam" \
-        '[ "$UG_K" = diam ] && [ "$UG_B" = diam ] && grep -aq "^P5: udpgema close -> 0$" "$LOG" && grep -aq "^P5: udpgema selesai$" "$LOG" && ! echo "$UG_S2" | grep -q "udp port" && echo "$UG_S2" | grep -q "^soket: 1/4 terbuka "'
+        '[ "$UG_K" = diam ] && [ "$UG_B" = diam ] && grep -aq "^P5: udpgema close -> 0$" "$LOG" && grep -aq "^P5: udpgema selesai$" "$LOG" && ! echo "$UG_S2" | grep -q "udp port 5555" && echo "$UG_S2" | grep -q "^soket: 2/4 terbuka "'
 else
     UG_S="$($BM soket 2>&1)"
     UG_B="$(ugema "halo" 2>&1)"
@@ -849,15 +851,116 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "P5-2: koneksi kedua antre di listen, ketiga ditolak (slot user penuh), RST peer -> recv -104" \
         '[ "$(echo "$TG_A" | tail -4)" = "$(printf "A=A\nC=ditolak\nB=B\nR=R")" ] && grep -aq "^P5: tcpgema recv -> -104$" "$LOG"'
     check "P5-2: soket: listen 5556 task 9, koneksi bebas lagi; metrics sock_tcp_* (4 accept, 1 reset, rx = tx)" \
-        'echo "$TG_S" | grep -q "^[0-9]: tcp port 5556 task 9 listen$" && echo "$TG_S" | grep -q "^tcp: 0/2 koneksi diterima=4 masuk=3016 kirim=3016 reset=1$" && [ "$TG_M" = "$(printf "sock_tcp_accept=4\nsock_tcp_rx_bytes=3016\nsock_tcp_tx_bytes=3016\nsock_tcp_reset=1")" ]'
+        'echo "$TG_S" | grep -q "^[0-9]: tcp port 5556 task 9 listen$" && echo "$TG_S" | grep -q "^tcp: 0/2 koneksi diterima=4 keluar=0 masuk=3016 kirim=3016 reset=1$" && [ "$TG_M" = "$(printf "sock_tcp_accept=4\nsock_tcp_rx_bytes=3016\nsock_tcp_tx_bytes=3016\nsock_tcp_reset=1")" ]'
     TG_K="$(tgema keluar lagi 2>&1)"
     TG_S2="$($BM soket 2>&1)"
-    check "P5-2: keluar -> close listen 0, task selesai, port 5556 ditolak, soket kosong" \
-        '[ "$TG_K" = "$(printf "keluar=tutup\nlagi=ditolak")" ] && grep -aq "^P5: tcpgema close listen -> 0$" "$LOG" && grep -aq "^P5: tcpgema selesai$" "$LOG" && echo "$TG_S2" | grep -q "^soket: tidak ada yang terbuka$"'
+    check "P5-2: keluar -> close listen 0, task selesai, port 5556 ditolak, tanpa soket tcp" \
+        '[ "$TG_K" = "$(printf "keluar=tutup\nlagi=ditolak")" ] && grep -aq "^P5: tcpgema close listen -> 0$" "$LOG" && grep -aq "^P5: tcpgema selesai$" "$LOG" && ! echo "$TG_S2" | grep -q "tcp port" && echo "$TG_S2" | grep -q "^soket: 1/4 terbuka "'
 else
     TG_K="$(tgema lagi 2>&1)"
     check "P5-2: PROD: port 5556 ditolak, tanpa koneksi TCP user" \
-        '[ "$TG_K" = "lagi=ditolak" ] && $BM soket 2>&1 | grep -q "^tcp: 0/2 koneksi diterima=0 masuk=0 kirim=0 reset=0$"'
+        '[ "$TG_K" = "lagi=ditolak" ] && $BM soket 2>&1 | grep -q "^tcp: 0/2 koneksi diterima=0 keluar=0 masuk=0 kirim=0 reset=0$"'
+fi
+
+sleep 1.2
+# P5-3: klien TCP program user. Dev: tcpklien (slot 10) diperintah lewat UDP 5557,
+# connect ke 192.168.50.1:<port> (slirp -> 127.0.0.1). Skenario kklien: konek (salam +
+# balasan satu baris), gema (3000 byte bolak-balik), tolak (port tanpa pendengar ->
+# RST -> -111), arp (.77 tanpa ARP -> -113). PROD: port 5557 diam.
+kklien() {
+    python3 - "$KPORT" "$@" <<'PYEOF2'
+import socket, sys, threading
+P = int(sys.argv[1])
+def perintah(c, layan=None):
+    l = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    l.bind(("127.0.0.1", 0))
+    port = l.getsockname()[1]
+    if layan:
+        l.listen(1)
+        l.settimeout(40)
+        hasil = []
+        def jalan():
+            try:
+                s, _ = l.accept()
+                s.settimeout(10)
+                hasil.append(layan(s))
+                s.close()
+            except OSError as e:
+                hasil.append("galat " + str(e))
+        th = threading.Thread(target=jalan); th.start()
+    else:
+        l.close()   # port bebas tanpa pendengar
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    u.settimeout(40)
+    u.sendto(c.replace("PORT", str(port)).encode(), ("127.0.0.1", P))
+    try:
+        r = u.recvfrom(256)[0].decode()
+    except socket.timeout:
+        r = "diam"
+    if layan:
+        th.join(15)
+        l.close()
+        print(hasil[0] if hasil else "tanpa koneksi")
+    print(r)
+def salam(s):
+    b = b""
+    while not b.endswith(b"\n"):
+        d = s.recv(64)
+        if not d:
+            break
+        b += d
+    s.sendall(b"balas P5-3\n")
+    return "salam=" + b.decode().strip()
+def gema(s):
+    n = 0
+    while n < 3000:
+        d = s.recv(4096)
+        if not d:
+            break
+        s.sendall(d)
+        n += len(d)
+    s.recv(1)   # tunggu FIN klien
+    return "digema=%d" % n
+for a in sys.argv[2:]:
+    if a == "konek":
+        perintah("konek PORT", salam)
+    elif a == "gema":
+        perintah("gema PORT", gema)
+    elif a == "tolak":
+        perintah("konek PORT")
+    elif a == "arp":
+        perintah("konek 80 77")
+    elif a == "keluar":
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.sendto(b"keluar", ("127.0.0.1", P))
+PYEOF2
+}
+if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    check "P5-3: tcpklien: connect port 0 -22, bind lalu connect -22, soket UDP -22, .255 -113, siap 5557" \
+        'grep -aq "^P5: tcpklien connect port 0 -> -22$" "$LOG" && grep -aq "^P5: tcpklien bind 6000 -> 0$" "$LOG" && grep -aq "^P5: tcpklien connect setelah bind -> -22$" "$LOG" && grep -aq "^P5: tcpklien connect soket UDP -> -22$" "$LOG" && grep -aq "^P5: tcpklien connect .255 -> -113$" "$LOG" && grep -aq "^P5: tcpklien siap port 5557$" "$LOG"'
+    KL_A="$(kklien konek gema tolak arp 2>&1)"
+    sleep 1.2
+    KL_S="$($BM soket 2>&1)"
+    KL_M="$($BM "metrics sock_connect" 2>&1)"
+    echo "info  P5-3: $(echo "$KL_A" | tr '\n' '|') $(echo "$KL_S" | tr '\n' '|')"
+    check "P5-3: connect ke 192.168.50.1: salam + balasan, 3000 byte bolak-balik utuh, close 0" \
+        '[ "$(echo "$KL_A" | head -4)" = "$(printf "salam=halo dari tcpklien\nok balas P5-3\ndigema=3000\nok gema 3000 cocok")" ] && grep -aq "^P5: tcpklien konek close -> 0$" "$LOG" && grep -aq "^P5: tcpklien gema close -> 0$" "$LOG"'
+    check "P5-3: port tanpa pendengar -> RST -> -111; .77 tanpa ARP -> -113" \
+        '[ "$(echo "$KL_A" | tail -2)" = "$(printf "galat -111\ngalat -113")" ]'
+    # tcp: + 1 accept dan 7 byte "keluar\n" dari uji P5-2 keluar; konek 11 masuk/19 kirim, gema 3000.
+    check "P5-3: soket: udp 5557 task 10, tcp keluar=2 tanpa reset baru; metrics sock_connect=2; serial connect ESTABLISHED" \
+        'echo "$KL_S" | grep -q "^[0-9]: udp port 5557 task 10 antre 0/4 masuk=4 kirim=4 buang=0$" && echo "$KL_S" | grep -q "^tcp: 0/2 koneksi diterima=5 keluar=2 masuk=6034 kirim=6035 reset=1$" && [ "$KL_M" = "sock_connect=2" ] && grep -aq "^C2: TCP connect: ESTABLISHED" "$LOG"'
+    kklien keluar
+    sleep 1
+    KL_K="$(kklien arp 2>&1)"
+    KL_S2="$($BM soket 2>&1)"
+    check "P5-3: keluar -> close 0, task selesai, port 5557 diam, soket kosong" \
+        '[ "$KL_K" = diam ] && grep -aq "^P5: tcpklien close -> 0$" "$LOG" && grep -aq "^P5: tcpklien selesai$" "$LOG" && echo "$KL_S2" | grep -q "^soket: tidak ada yang terbuka$"'
+else
+    KL_K="$(kklien arp 2>&1)"
+    check "P5-3: PROD: port 5557 diam, sock_connect 0" \
+        '[ "$KL_K" = diam ] && [ "$($BM "metrics sock_connect" 2>&1)" = "sock_connect=0" ]'
 fi
 
 sleep 1.2   # jendela batas laju baru (lihat di atas)
@@ -1142,8 +1245,8 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "R5: panic watchdog ~11 s setelah perintah (2x 9..15 s)" 'wd_wait_ok $WD_WAIT'
     check "R5: 2x reboot watchdog + 1x panic stack (R6-2) lewat jalur panic, boot sesudahnya normal (7 boot)" \
         '[ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$W")" -eq 3 ] && [ "$(grep -c "^ACPI-R: reboot via register reset FADT$" "$W")" -eq 3 ] && [ "$(grep -c "PCI-1: E1000 di" "$WORK/serial-panic-all.txt")" -eq 7 ] && [ "$(grep -ac "^R5: watchdog aktif" "$WORK/serial-panic-all.txt")" -eq 7 ]'
-    check "R6-2: panic stack: #DF lewat IST1, stack guard dilanggar task slot 10 (net task; P5-2: tcpgema slot 9), trace panic_test_stack" \
-        'echo "$STK_REPLY" | grep -q "^panic: uji stack dalam 1 detik$" && grep -q "^PANIC: exception #DF double fault (vektor 8) error=0x0$" "$W" && grep -q "^PANIC: RSP=.* stack=IST1$" "$W" && grep -q "^PANIC: stack guard dilanggar: task slot 10 (guard 0xffff9840000[0-9a-f]*, stack 0x[0-9a-f]*..0x[0-9a-f]*)$" "$W" && grep -q " panic_test_stack " "$WORK/wd-sym.txt"'
+    check "R6-2: panic stack: #DF lewat IST1, stack guard dilanggar task slot 11 (net task; P5-3: tcpklien slot 10), trace panic_test_stack" \
+        'echo "$STK_REPLY" | grep -q "^panic: uji stack dalam 1 detik$" && grep -q "^PANIC: exception #DF double fault (vektor 8) error=0x0$" "$W" && grep -q "^PANIC: RSP=.* stack=IST1$" "$W" && grep -q "^PANIC: stack guard dilanggar: task slot 11 (guard 0xffff9840000[0-9a-f]*, stack 0x[0-9a-f]*..0x[0-9a-f]*)$" "$W" && grep -q " panic_test_stack " "$WORK/wd-sym.txt"'
     check "R5: dump watchdog lewat netconsole (2x) dan di LOG.BIN (2x)" \
         '[ "$(grep -ac "^PANIC: watchdog: net task tanpa tepukan" "$WORK/netcon-wd.bin")" -eq 2 ] && [ "$(grep -c "^PANIC: watchdog: net task tanpa tepukan" "$WORK/log4.txt")" -eq 2 ]'
     check "R1: tanpa panic bersarang / PIT macet" \

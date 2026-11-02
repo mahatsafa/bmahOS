@@ -413,6 +413,7 @@ uint64_t net_stack_used(void)
 
 extern const uint8_t user_udpgema_start[], user_udpgema_end[];   // userbin.S (P5-1)
 extern const uint8_t user_tcpgema_start[], user_tcpgema_end[];   // P5-2
+extern const uint8_t user_tcpklien_start[], user_tcpklien_end[];   // P5-3
 
 static void net_task_entry(void)
 {
@@ -1204,6 +1205,8 @@ void kmain(void)
     spawn(user_udpgema_start, (size_t)(user_udpgema_end - user_udpgema_start));
     // P5-2: server gema TCP port 5556.
     spawn(user_tcpgema_start, (size_t)(user_tcpgema_end - user_tcpgema_start));
+    // P5-3: klien TCP, diperintah lewat UDP port 5557.
+    spawn(user_tcpklien_start, (size_t)(user_tcpklien_end - user_tcpklien_start));
 #endif
 
     nx_selftest(pml4_phys, tasks[2].pml4_phys, USER_CODE_VADDR, USER_STACK_VADDR);

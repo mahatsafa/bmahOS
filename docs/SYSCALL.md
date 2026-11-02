@@ -1,6 +1,6 @@
 # Syscall bmahOS (daftar stabil)
 
-Status: P5-2 (2026-10-31; P5-1 2026-10-29). Nomor, argumen, dan kode galat di bawah ini **stabil**: syscall baru hanya ditambah
+Status: P5-3 (2026-11-02; P5-2 2026-10-31, P5-1 2026-10-29). Nomor, argumen, dan kode galat di bawah ini **stabil**: syscall baru hanya ditambah
 dengan nomor baru, perilaku nomor lama tidak diubah. Pembungkus C: `userspace/bm.h`.
 
 ## Konvensi
@@ -23,8 +23,9 @@ dengan nomor baru, perilaku nomor lama tidak diubah. Pembungkus C: `userspace/bm
 - Tanpa SSE/x87: state FPU tidak disimpan saat ganti task (`-mno-sse -mno-mmx`).
 - Exception di ring 3 hanya menghentikan task itu (R6-1); soketnya ditutup otomatis.
 - Build: `make` mengompilasi `userspace/<nama>.c` -> `build/user/<nama>.bin` (`USER_PROGS` di Makefile).
-  Dua program ditanam di kernel dan hanya dijalankan build dev: `udpgema` (P5-1, gema UDP port 5555) dan
-  `tcpgema` (P5-2, server gema TCP port 5556).
+  Tiga program ditanam di kernel dan hanya dijalankan build dev: `udpgema` (P5-1, gema UDP port 5555),
+  `tcpgema` (P5-2, server gema TCP port 5556), dan `tcpklien` (P5-3, klien TCP yang diperintah lewat UDP
+  port 5557: `konek <port> [oktet]`, `gema <port> [oktet]`, `batas <port> <oktet> <tick>`, `keluar`).
 
 ## Daftar
 
@@ -42,6 +43,7 @@ dengan nomor baru, perilaku nomor lama tidak diubah. Pembungkus C: `userspace/bm
 | 9 | accept | fd, &alamat (boleh 0), timeout | fd koneksi baru, atau galat |
 | 10 | send | fd, buf, len, timeout | byte yang masuk antrean kirim, atau galat |
 | 11 | recv | fd, buf, cap, timeout | byte yang dibaca; 0 = peer menutup (FIN) dan data habis |
+| 12 | connect | fd, alamat, timeout | 0 = tersambung, atau galat (P5-3) |
 
 ### Alamat soket
 
@@ -90,14 +92,15 @@ Satu bilangan 64 bit: `(a << 40) | (b << 32) | (c << 24) | (d << 16) | port` unt
   (seperti Linux). Soket listen: koneksi yang belum di-`accept` di port itu di-RST.
 - Semua soket task juga ditutup saat task keluar atau dihentikan karena exception.
 
-## TCP (P5-2): server saja
+## TCP (P5-2 server, P5-3 klien)
 
-Belum ada `connect` (klien TCP belakangan). Alur: `socket(1)` -> `bind(port)` -> `listen` -> `accept` -> `recv`/`send`
--> `close`. TCP-nya sama dengan layanan kernel (stop-and-wait, MSS 536, retransmisi 1-8 s maks 5 kali lalu
+Server: `socket(1)` -> `bind(port)` -> `listen` -> `accept` -> `recv`/`send` -> `close`. Klien (P5-3):
+`socket(1)` -> `connect(alamat)` -> `send`/`recv` -> `close`. TCP-nya sama dengan layanan kernel (stop-and-wait, MSS 536, retransmisi 1-8 s maks 5 kali lalu
 RST, segmen di luar urutan dibuang).
 
 - **Batas**: 2 koneksi TCP user di seluruh sistem (slot TCB khusus, terpisah dari CLI/TLS/echo kernel), keadaan
-  apa pun, termasuk yang belum di-`accept`. SYN saat penuh: koneksi SYN_RCVD tertua digusur; semuanya sudah
+  apa pun, termasuk yang belum di-`accept`; koneksi keluar (`connect`) memakai slot yang sama dan tidak pernah
+  digusur. SYN saat penuh: koneksi SYN_RCVD tertua digusur; semuanya sudah
   ESTABLISHED -> RST. Tidak ada batas per IP (2 slot saja). fd tetap dari tabel 4 soket yang sama dengan UDP.
 - **Antrean per koneksi**: ring masuk 1024 byte (= jendela yang diiklankan) dan ring keluar 1024 byte. Program
   yang tidak membaca membuat jendela 0; setelah `recv` membuka jendela dari bawah 536 byte, kernel mengirim ACK
@@ -116,9 +119,24 @@ RST, segmen di luar urutan dibuang).
 - Mengambil koneksi yang handshake-nya selesai paling dulu. Belum ada: menunggu `timeout` tick (0 = selamanya),
   habis -> `-11`. Tabel fd penuh -> `-24` (koneksi tetap menunggu).
 
+### connect (12)
+
+- fd harus soket TCP baru: belum `bind`, belum `listen`, belum tersambung (`-22`); fd UDP -> `-22`. Port tujuan
+  0 atau alamat > 48 bit -> `-22`.
+- Tujuan seperti `sendto`: /24 sendiri, bukan .0/.255/IP sendiri (`-113`); tanpa NIC/IP atau net task belum
+  jalan -> `-100`. MAC dari cache soket, tanpa MAC: ARP maks 3x, tanpa jawaban -> `-113`.
+- Port lokal dipilih kernel secara acak dari 49152..65535 (tidak bentrok dengan TCB lain), ISN dari DRBG. SYN
+  dengan opsi MSS 536, dikirim ulang setelah 1, 2, 4, 8, 8 s; tanpa jawaban -> RST lalu `-110` (~31 s).
+- Peer menjawab RST -> `-111`. SYN-ACK dengan ACK salah dibalas RST dan tetap menunggu. SYN tanpa ACK
+  (simultaneous open) tidak didukung (dibuang). Data di dalam SYN-ACK tidak diterima (peer mengirim ulang).
+- Kedua slot koneksi user terpakai -> `-24`.
+- `timeout` tick (0 = sampai kernel menyerah). Habis -> `-110`, percobaan dibatalkan tanpa segmen.
+- Berhasil: 0, lalu fd dipakai seperti koneksi hasil `accept` (`send`, `recv`, `close`, batas diam sama).
+  Gagal: fd tetap soket TCP baru (boleh `connect` lagi atau `close`).
+
 ### send (10)
 
-- fd harus koneksi hasil `accept`, selain itu `-107`. `len` di atas 1024 dianggap 1024; pointer `buf` -> `-14`.
+- fd harus koneksi (hasil `accept` atau `connect`), selain itu `-107`. `len` di atas 1024 dianggap 1024; pointer `buf` -> `-14`.
 - Menyalin sebanyak ruang ring keluar dan langsung kembali (bisa kurang dari `len`); ring penuh -> menunggu
   `timeout` tick (0 = selamanya), habis -> `-11`. `len` 0 -> 0.
 - Koneksi sudah direset (RST peer, kirim ulang habis) -> `-104`; sudah ditutup baik-baik -> `-32`. Setelah FIN
@@ -126,7 +144,7 @@ RST, segmen di luar urutan dibuang).
 
 ### recv (11)
 
-- fd harus koneksi hasil `accept` (`-107`). `cap` di atas 1024 dianggap 1024; pointer `buf` writable (`-14`).
+- fd harus koneksi (hasil `accept` atau `connect`, `-107`). `cap` di atas 1024 dianggap 1024; pointer `buf` writable (`-14`).
 - Ada data -> disalin dan langsung kembali. Tanpa data: FIN peer atau koneksi tertutup baik-baik -> 0; direset
   -> `-104` (data yang sudah masuk tetap dibaca dulu); selain itu menunggu `timeout` tick (0 = selamanya), habis
   -> `-11`. `cap` 0 -> 0.
@@ -141,27 +159,30 @@ RST, segmen di luar urutan dibuang).
 | -11 | EAGAIN | `recvfrom`: timeout habis |
 | -13 | EACCES | port di luar rentang atau port sistem |
 | -14 | EFAULT | pointer user tidak sah |
-| -22 | EINVAL | jenis soket, soket belum/sudah terikat, port tujuan 0, alamat > 48 bit, listen/accept pada soket yang salah, sendto/recvfrom pada soket TCP |
-| -24 | EMFILE | 4 soket sudah terbuka |
+| -22 | EINVAL | jenis soket, soket belum/sudah terikat, port tujuan 0, alamat > 48 bit, listen/accept/connect pada soket yang salah, sendto/recvfrom pada soket TCP |
+| -24 | EMFILE | 4 soket sudah terbuka; `connect`: 2 slot koneksi TCP user terpakai |
 | -32 | EPIPE | `send` ke koneksi TCP yang sudah ditutup baik-baik |
 | -90 | EMSGSIZE | datagram > 1472 byte |
 | -98 | EADDRINUSE | port sudah dipakai soket lain |
 | -100 | ENETDOWN | tanpa NIC atau belum ada IP |
 | -104 | ECONNRESET | koneksi TCP direset (RST peer, kirim ulang habis, timeout) |
-| -107 | ENOTCONN | `send`/`recv` bukan pada koneksi TCP hasil `accept` |
+| -107 | ENOTCONN | `send`/`recv` bukan pada koneksi TCP (hasil `accept`/`connect`) |
+| -110 | ETIMEDOUT | `connect`: SYN tanpa jawaban setelah 5 kali kirim ulang, atau `timeout` habis |
+| -111 | ECONNREFUSED | `connect`: peer menjawab RST |
 | -113 | EHOSTUNREACH | tujuan di luar /24, alamat khusus, atau ARP tanpa jawaban |
 
 ## Pengamatan
 
 - Perintah `soket` (juga peran read-only): satu baris per soket terbuka (port, task, antrean, penghitung;
-  TCP: `listen`, atau peer + keadaan `terbuka`/`fin`/`tutup`/`reset`), ringkasan UDP, dan baris `tcp:` (slot
-  koneksi terpakai, diterima, byte masuk/kirim, reset).
+  TCP: `listen`, atau peer + keadaan `menyambung`/`terbuka`/`fin`/`tutup`/`reset`), ringkasan UDP, dan baris
+  `tcp:` (slot koneksi terpakai, diterima, keluar = connect berhasil, byte masuk/kirim, reset).
 - `metrics sock_`: `sock_rx`, `sock_tx`, `sock_drop`, `sock_err` (syscall soket yang berakhir galat, UDP dan
   TCP), `sock_noarp`; P5-2: `sock_tcp_accept`, `sock_tcp_rx_bytes`, `sock_tcp_tx_bytes`, `sock_tcp_reset`
-  (koneksi milik fd yang berakhir tanpa penutupan baik-baik). Pointer ditolak juga menaikkan `sys_rejected`.
+  (koneksi milik fd yang berakhir tanpa penutupan baik-baik; `connect` yang gagal tidak dihitung); P5-3:
+  `sock_connect` (connect berhasil). Pointer ditolak juga menaikkan `sys_rejected`.
 
 ## Belum ada (rencana)
 
-- Klien TCP (`connect`).
+- `connect` setelah `bind` (port lokal pilihan program), gateway (tujuan di luar /24).
 - `bind(0)` dengan port otomatis, broadcast/multicast, gateway, `poll`/banyak soket sekaligus, program dari
   disk dengan format selain biner datar 4 KB.

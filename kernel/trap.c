@@ -33,7 +33,8 @@ _Static_assert(
 #define SYS_ACCEPT   9
 #define SYS_SEND     10
 #define SYS_RECV     11
-#define SYSCALL_COUNT 12
+#define SYS_CONNECT  12   // P5-3: klien TCP
+#define SYSCALL_COUNT 13
 
 static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4)
 {
@@ -115,6 +116,7 @@ static const syscall_desc_t syscall_table[SYSCALL_COUNT] = {
     [SYS_ACCEPT]   = { sock_sys_accept,   false },
     [SYS_SEND]     = { sock_sys_send,     false },
     [SYS_RECV]     = { sock_sys_recv,     false },
+    [SYS_CONNECT]  = { sock_sys_connect,  false },
 };
 
 // Dispatch syscall (int 0x80). context->rax = nomor syscall saat

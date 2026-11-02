@@ -213,9 +213,15 @@ int net_cmd_is(const volatile uint8_t *cmd, uint32_t len, const char *name)
 }
 
 // ktimer.c ikut dikompilasi (C3c); ktimer_selftest memanggil task_sleep.
+// P5-3: g_on_sleep = net task + peer tiruan selama syscall menunggu (connect).
+static void (*g_on_sleep)(void);
+
 void task_sleep(uint64_t ticks)
 {
     timer_ticks += ticks;
+    if (g_on_sleep) {
+        g_on_sleep();
+    }
 }
 
 void entropy_event(uint32_t src, uint64_t extra)
@@ -3042,6 +3048,175 @@ static void test_tcp_user(void)
     g_wport = 7;
 }
 
+// ---- P5-3: connect (net.c SYN_SENT + sock.c lewat syscall) ----
+enum { CM_NONE, CM_OK, CM_REFUSE, CM_BADACK };
+static int g_cmode;
+static int g_c_syns, g_c_rsts, g_c_acks, g_c_mss;
+static uint32_t g_c_iss, g_c_rst_seq, g_c_rst_flags;
+static uint16_t g_c_lport, g_c_rport;
+#define C_PISN 0x70000000u
+
+static uint16_t seg_sport(int i)
+{
+    return (uint16_t)(g_tx[i][34] << 8 | g_tx[i][35]);
+}
+
+static void c_scan(void)
+{
+    for (int k = 0; k < g_tx_n && k < TX_MAX; k++) {
+        struct seg s = tx_seg(k);
+
+        if (s.flags == F_SYN) {
+            g_c_syns++;
+            g_c_iss = s.seq;
+            g_c_lport = seg_sport(k);
+            g_c_rport = (uint16_t)(g_tx[k][36] << 8 | g_tx[k][37]);
+            g_c_mss = (g_tx[k][46] >> 4) == 6 && g_tx[k][54] == 2 && g_tx[k][56] == TCP_MSS >> 8;
+        } else if (s.flags & F_RST) {
+            g_c_rsts++;
+            g_c_rst_seq = s.seq;
+            g_c_rst_flags = s.flags;
+        } else if (s.flags == F_ACK && s.ack == C_PISN + 1 && s.seq == g_c_iss + 1) {
+            g_c_acks++;
+        }
+    }
+}
+
+// Satu putaran net task (sock_poll, timer, tick) lalu jawaban peer atas SYN baru.
+static void c_net(void)
+{
+    uint8_t f[200];
+    int syns = g_c_syns;
+
+    g_tx_n = 0;
+    sock_poll();
+    ktimer_run();
+    net_tcp_tick();
+    c_scan();
+    if (g_c_syns == syns || g_cmode == CM_NONE) {
+        return;
+    }
+    if (g_cmode == CM_BADACK) {
+        rx(f, mk_tcp(f, g_c_rport, g_c_lport, C_PISN, g_c_iss + 100, F_SYN | F_ACK, ""));
+        c_scan();
+        g_cmode = CM_OK;
+    }
+    if (g_cmode == CM_OK) {
+        rx(f, mk_tcp(f, g_c_rport, g_c_lport, C_PISN, g_c_iss + 1, F_SYN | F_ACK, ""));
+    } else {
+        rx(f, mk_tcp(f, g_c_rport, g_c_lport, 0, g_c_iss + 1, F_RST | F_ACK, ""));
+    }
+    c_scan();
+}
+
+static int64_t c_connect(int mode, uint16_t port, uint64_t timeout)
+{
+    g_cmode = mode;
+    g_c_syns = g_c_rsts = g_c_acks = g_c_mss = 0;
+    return sys_neg(sock_sys_connect(0, SOCK_ADDR(192, 168, 50, 1, port), timeout, 0, 0));
+}
+
+static void test_tcp_connect(void)
+{
+    uint8_t f[200], o[64];
+    struct seg s;
+
+    user_reset();
+    sock_init();
+    g_e1000_rx_initialized = 1;
+    sk_arp_learn(PEER_IP, PEER_MAC);
+    g_on_sleep = c_net;
+    g_isn_set = 1;
+    g_isn = 0x11110000;
+
+    // Berhasil: SYN dengan MSS dari port acak 49152.., SYN-ACK -> ACK, ESTABLISHED.
+    CHECK(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0) == 0);
+    uint64_t open0 = g_tcp_conn_open, rst0 = g_sock_tcp_reset;
+    CHECK(c_connect(CM_OK, 8080, 0) == 0);
+    CHECK(g_c_syns == 1 && g_c_mss && g_c_iss == 0x11110000 && g_c_rport == 8080);
+    CHECK(g_c_lport >= 49152 && g_c_acks == 1 && g_c_rsts == 0);
+    CHECK(UTCB->state == TCP_ESTABLISHED && UTCB->lport == g_c_lport && UTCB->snd_wnd == 4096);
+    CHECK(g_tcp_conn_open == open0 + 1 && g_sock_connect == 1 && g_skc[0].accepted);
+    g_on_sleep = 0;
+
+    // Data dua arah.
+    CHECK(sock_sys_send(0, U("GET\n"), 4, 0, 0) == 4);
+    CHECK(step() == 1);
+    s = tx_seg(0);
+    CHECK(s.seq == g_c_iss + 1 && s.len == 4 && memcmp(s.data, "GET\n", 4) == 0 && s.ack == C_PISN + 1);
+    rx(f, mk_tcp(f, 8080, g_c_lport, C_PISN + 1, g_c_iss + 5, F_ACK, "OK\n"));
+    CHECK(g_tx_n == 1 && tx_seg(0).ack == C_PISN + 4);
+    CHECK(sock_sys_recv(0, U(o), sizeof(o), 0, 0) == 3 && memcmp(o, "OK\n", 3) == 0);
+    // SYN-ACK ulang (ACK kita hilang): ACK lagi.
+    rx(f, mk_tcp(f, 8080, g_c_lport, C_PISN, g_c_iss + 1, F_SYN | F_ACK, ""));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.flags == F_ACK && s.seq == g_c_iss + 5 && s.ack == C_PISN + 4);
+    // FIN peer -> recv 0; close -> FIN kita; ACK -> CLOSED, slot bebas.
+    rx(f, mk_tcp(f, 8080, g_c_lport, C_PISN + 4, g_c_iss + 5, F_FIN | F_ACK, ""));
+    CHECK(UTCB->state == TCP_CLOSE_WAIT && sock_sys_recv(0, U(o), sizeof(o), 0, 0) == 0);
+    CHECK(sock_sys_close(0, 0, 0, 0, 0) == 0);
+    CHECK(step() == 1 && tx_seg(0).flags == (F_FIN | F_ACK) && UTCB->state == TCP_LAST_ACK);
+    rx(f, mk_tcp(f, 8080, g_c_lport, C_PISN + 5, g_c_iss + 6, F_ACK, ""));
+    CHECK(UTCB->state == TCP_CLOSED && sock_tcp_slot_free(0) && g_sock_tcp_reset == rst0);
+
+    // Ditolak: RST|ACK atas SYN -> -111, tanpa RST balik, slot bebas.
+    g_on_sleep = c_net;
+    CHECK(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0) == 0);
+    CHECK(c_connect(CM_REFUSE, 81, 0) == SOCK_ECONNREFUSED);
+    CHECK(g_c_syns == 1 && g_c_rsts == 0 && UTCB->state == TCP_CLOSED && sock_tcp_slot_free(0));
+    CHECK(g_sock_tcp_reset == rst0);
+
+    // SYN-ACK dengan ACK salah -> RST (seq = ack itu, tanpa ACK), tetap menunggu;
+    // SYN-ACK benar berikutnya diterima.
+    CHECK(c_connect(CM_BADACK, 82, 0) == 0);
+    CHECK(g_c_rsts == 1 && g_c_rst_seq == g_c_iss + 100 && g_c_rst_flags == F_RST && g_c_acks == 1);
+    g_on_sleep = 0;
+    rx(f, mk_tcp(f, 82, g_c_lport, C_PISN + 1, 0, F_RST, ""));
+    CHECK(UTCB->state == TCP_CLOSED && g_sock_tcp_reset == rst0 + 1);
+    CHECK(sys_neg(sock_sys_recv(0, U(o), 8, 0, 0)) == SOCK_ECONNRESET);
+    CHECK(sock_sys_close(0, 0, 0, 0, 0) == 0 && sock_tcp_slot_free(0));
+
+    // Tanpa jawaban: SYN 1 + 5 kali kirim ulang (1, 2, 4, 8, 8 s), lalu RST
+    // tanpa ACK dan -110 (~31 s).
+    g_on_sleep = c_net;
+    CHECK(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0) == 0);
+    uint64_t giveup0 = g_tcp_retx_giveup, t0 = timer_ticks;
+    CHECK(c_connect(CM_NONE, 9, 0) == SOCK_ETIMEDOUT);
+    CHECK(g_c_syns == 6 && g_c_rsts == 1 && g_c_rst_flags == F_RST && g_c_rst_seq == g_c_iss + 1);
+    CHECK(timer_ticks - t0 >= 3100 && timer_ticks - t0 <= 3300);
+    CHECK(g_tcp_retx_giveup == giveup0 + 1 && UTCB->state == TCP_CLOSED && sock_tcp_slot_free(0));
+
+    // Batas waktu syscall 150 tick: -110, TCB dilepas tanpa segmen di tick berikut.
+    t0 = timer_ticks;
+    CHECK(c_connect(CM_NONE, 9, 150) == SOCK_ETIMEDOUT);
+    CHECK(timer_ticks - t0 >= 150 && g_c_syns == 1 && UTCB->state == TCP_SYN_SENT);
+    g_on_sleep = 0;
+    CHECK(step() == 0 && UTCB->state == TCP_CLOSED && sock_tcp_slot_free(0));
+    CHECK(g_sock_tcp_reset == rst0 + 1);
+    CHECK(sock_sys_close(0, 0, 0, 0, 0) == 0);
+
+    // Dua slot user SYN_SENT (port lokal berbeda): connect ketiga -> slot penuh;
+    // SYN ke port listen -> RST (SYN_SENT tidak digusur); SYN tanpa ACK
+    // (simultaneous open) diabaikan.
+    CHECK(net_tcp_user_connect(PEER_MAC, PEER_IP, 80, 9) == 0);
+    CHECK(net_tcp_user_connect(PEER_MAC, PEER_IP, 80, 9) == 1);
+    CHECK(net_tcp_user_connect(PEER_MAC, PEER_IP, 80, 9) == SOCK_EMFILE);
+    CHECK(g_tcbs[TCP_MAX_CONN + 1].lport == UTCB->lport + 1 && UTCB->state == TCP_SYN_SENT);
+    CHECK(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0) == 0);
+    CHECK(sock_sys_bind(0, 5556, 0, 0, 0) == 0 && sock_sys_listen(0, 0, 0, 0, 0) == 0);
+    rx(f, mk_tcp(f, 4800, 5556, 1, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK));
+    rx(f, mk_tcp(f, 80, UTCB->lport, 5, 0, F_SYN, ""));
+    CHECK(g_tx_n == 0 && UTCB->state == TCP_SYN_SENT && g_tcbs[TCP_MAX_CONN + 1].state == TCP_SYN_SENT);
+    CHECK(g_tx_bad == 0);
+
+    g_isn_set = 0;
+    g_on_sleep = 0;
+    g_e1000_rx_initialized = 0;
+    user_reset();
+    g_wport = 7;
+}
+
 int main(void)
 {
     test_checksum();
@@ -3054,6 +3229,7 @@ int main(void)
     test_tcp_retx();
     test_tcp_close();
     test_tcp_user();
+    test_tcp_connect();
     test_tcp_limits();
     test_tcp_table();
     test_tcp_idle();

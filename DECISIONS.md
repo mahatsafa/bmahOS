@@ -479,3 +479,22 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   bukan koneksi -> `-107`. `recv` mengembalikan data yang sudah masuk sebelum melaporkan reset.
 - **Uji**: `test_net` kini menyertakan sock.c asli (integrasi net.c <-> sock.c lewat syscall), `test_sock` menguji
   sisi sock.c dengan kait dipanggil langsung. Program `tcpgema` (dev) di port 5556. MAX_TASKS 11 -> 12.
+
+## 2026-11-02 (P5-3 klien TCP untuk program user)
+- **Disetujui pengguna**: `connect` (syscall 12) hanya untuk soket TCP baru tanpa `bind`; port lokal acak
+  49152..65535 dari DRBG (rentang port sumber kernel, tidak bisa di-`bind` program). Koneksi keluar memakai 2
+  slot TCB user yang sama dengan server; slot SYN_SENT tidak pernah digusur SYN masuk, penuh -> `-24`.
+- **Pengambilan slot hanya di net task**: syscall hanya mencatat tujuan di slot TX soket (seperti `sendto`);
+  `sock_poll` (net task) mencari MAC lalu `net_tcp_user_connect` memilih slot, port, ISN, dan mengirim SYN.
+  Jadi syscall (interrupt mati, bisa menyela net task di mana saja) tidak pernah bersaing dengan
+  `net_tcp_user_syn` saat memilih slot, dan DRBG hanya dipakai dari net task.
+- **SYN_SENT** (nilai `tcp_state` 9, di akhir enum supaya nilai lama tetap): mengikuti RFC 793 3.9 dengan
+  penyederhanaan: ACK salah -> RST (seq = ack) dan tetap menunggu; RST sah -> `-111`; SYN tanpa ACK
+  (simultaneous open) dibuang; data di SYN-ACK tidak diterima. SYN dikirim ulang oleh timer C3c (1, 2, 4, 8,
+  8 s), habis -> RST tanpa ACK lalu `-110`. SYN-ACK ulang setelah ESTABLISHED dibalas ACK (dibatasi seperti ACK
+  duplikat) supaya peer tidak tertahan bila ACK kita hilang.
+- **Batas waktu syscall** habis atau fd ditutup selama SYN_SENT: TCB dilepas tanpa segmen (peer belum punya
+  keadaan, atau SYN-ACK-nya nanti dijawab RST sebagai port tertutup).
+- **Gagal connect** tidak dihitung `sock_tcp_reset`; fd tetap soket TCP baru dan boleh dipakai lagi.
+- **Program uji** `tcpklien` (dev, slot 10) diperintah lewat UDP 5557 supaya bisa diuji dari QEMU (slirp .1 ->
+  127.0.0.1) dan VMware (Windows 192.168.50.1). MAX_TASKS 12 -> 13.
