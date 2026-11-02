@@ -427,8 +427,17 @@ void dhcp_arp_seen(const volatile uint8_t *buf);
 int dhcp_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
 
 // ---- sock.c (P5-1: soket UDP untuk program user, syscall 3..7, docs/SYSCALL.md) ----
-#define SOCK_MAX         4      // soket terbuka di seluruh sistem
+// P5-2: soket TCP server, syscall 8..11.
+#define SOCK_MAX         4      // soket terbuka di seluruh sistem (UDP + TCP)
+#define SOCK_TCP         1
 #define SOCK_UDP         2
+#define SOCK_TCP_CONN    2      // slot TCB untuk koneksi TCP user (net.c TCP_USER_MAX)
+#define SOCK_TCP_RING    1024   // ring masuk dan ring keluar per koneksi (byte)
+#define SOCK_TCP_WND_UPD 536    // = TCP_MSS: recv membuka jendela dari bawah ini -> ACK
+#define SOCK_TCP_APP_CLOSE 1    // sock_tcp_app(): fd ditutup, FIN setelah ring keluar habis
+#define SOCK_TCP_APP_ABORT 2    // fd ditutup dengan data belum dibaca / listen ditutup: RST
+#define SOCK_TCP_ACCEPTED  4
+#define SOCK_TCP_TXQ       8    // ring keluar belum kosong
 #define SOCK_DGRAM_MAX   1472   // isi datagram maks (tanpa fragmentasi IP)
 #define SOCK_EIO          (-5)
 #define SOCK_EBADF        (-9)
@@ -437,15 +446,19 @@ int dhcp_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
 #define SOCK_EFAULT       (-14)
 #define SOCK_EINVAL       (-22)
 #define SOCK_EMFILE       (-24)
+#define SOCK_EPIPE        (-32)
 #define SOCK_EMSGSIZE     (-90)
 #define SOCK_EADDRINUSE   (-98)
 #define SOCK_ENETDOWN     (-100)
+#define SOCK_ECONNRESET   (-104)
+#define SOCK_ENOTCONN     (-107)
 #define SOCK_EHOSTUNREACH (-113)
 // alamat soket = IPv4 a.b.c.d (bit 47..16) + port (bit 15..0)
 #define SOCK_ADDR(a, b, c, d, port) \
     (((uint64_t)(a) << 40) | ((uint64_t)(b) << 32) | ((uint64_t)(c) << 24) | \
      ((uint64_t)(d) << 16) | (uint64_t)(port))
 extern uint64_t g_sock_rx, g_sock_tx, g_sock_drop, g_sock_err, g_sock_noarp;
+extern uint64_t g_sock_tcp_accept, g_sock_tcp_rx, g_sock_tcp_tx, g_sock_tcp_reset;
 void sock_init(void);                          // kmain, sebelum task user dibuat
 void sock_poll(void);                          // tiap putaran net task (kirim + ARP)
 int sock_port_ok(uint32_t port);
@@ -459,7 +472,22 @@ uint64_t sock_sys_bind(uint64_t fd, uint64_t port, uint64_t a2, uint64_t a3, uin
 uint64_t sock_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr, uint64_t a4);
 uint64_t sock_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t cap, uint64_t from, uint64_t timeout);
 uint64_t sock_sys_close(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
+uint64_t sock_sys_listen(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
+uint64_t sock_sys_accept(uint64_t fd, uint64_t from, uint64_t timeout, uint64_t a3, uint64_t a4);
+uint64_t sock_sys_send(uint64_t fd, uint64_t buf, uint64_t len, uint64_t timeout, uint64_t a4);
+uint64_t sock_sys_recv(uint64_t fd, uint64_t buf, uint64_t cap, uint64_t timeout, uint64_t a4);
 int sock_execute(const volatile uint8_t *cmd, uint32_t len);   // `soket`, 1 = ditangani
+// P5-2: kait TCP untuk net.c (net task), c = slot TCB user 0..SOCK_TCP_CONN-1.
+int sock_tcp_listening(uint16_t port);
+int sock_tcp_slot_free(uint32_t c);
+void sock_tcp_syn(uint32_t c, const volatile uint8_t *ip, uint16_t rport, uint16_t lport);
+void sock_tcp_open(uint32_t c);
+uint32_t sock_tcp_rx_space(uint32_t c);
+uint32_t sock_tcp_rx(uint32_t c, const volatile uint8_t *d, uint32_t len);
+void sock_tcp_fin(uint32_t c);
+uint32_t sock_tcp_tx_take(uint32_t c, uint8_t *dst, uint32_t max);
+int sock_tcp_app(uint32_t c);
+void sock_tcp_closed(uint32_t c, int reset);
 void netcon_ip_changed(void);                  // P3-4: IP baru -> MAC tujuan dipelajari ulang
 void monitor_ip_changed(void);
 
@@ -781,7 +809,7 @@ extern uint64_t g_audit_seq;    // audit.c: nomor urut entri terakhir
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----
-#define MAX_TASKS 11   // P5-1: 10 -> 11 (slot dev: 8 task uji + udpgema + net + idle)
+#define MAX_TASKS 12   // P5-2: 11 -> 12 (slot dev: 8 task uji + udpgema + tcpgema + net + idle)
 
 typedef enum {
     TASK_READY,

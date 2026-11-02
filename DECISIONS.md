@@ -456,3 +456,26 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Program user pertama ditulis dalam C** (`userspace/`, biner datar 4 KB di 0x400000, tanpa .data/.bss,
   tanpa SSE), ditanam di kernel lewat `kernel/userbin.S` dan hanya dijalankan build dev. MAX_TASKS 10 -> 11.
   Memuat program soket dari disk di PROD = tahap berikut (bersama P5-2).
+
+## 2026-10-31 (P5-2 server TCP untuk program user)
+- **Lingkup**: server saja (`listen`/`accept`/`send`/`recv`, `socket(1)`), nomor syscall 8..11; `bind`/`close`
+  dipakai bersama UDP. Klien TCP (`connect`) belakangan. Memuat program soket dari disk di PROD (direncanakan
+  "bersama P5-2" di catatan P5-1) **belum** dikerjakan: tetap tahap berikut.
+- **Pembagian kerja**: TCB tetap milik net.c dan hanya diubah net task. Tiap slot TCB user punya pasangan di
+  sock.c (ring masuk dan ring keluar 1024 byte + flag); net task memanggil kait `sock_tcp_*` di dalam
+  `irq_save`, syscall (interrupt mati) hanya menyentuh struktur sock.c. Jadi tidak ada keadaan TCB yang dibaca
+  setengah jadi saat net task dipreempt.
+- **Slot terpisah** (P5-2a refactor `TCP_TCB_N`): 2 slot TCB khusus port listen soket user di belakang 4 slot
+  layanan kernel; koneksi user tidak mengurangi jatah CLI/TLS dan sebaliknya. Penuh: SYN_RCVD user tertua
+  digusur, semua ESTABLISHED -> RST. Tanpa batas per IP (hanya 2 slot).
+- **Jendela = ruang ring masuk**; recv yang membuka jendela dari bawah MSS membangunkan net task untuk ACK
+  pembaruan jendela. Kirim: ring keluar -> antrean TCB `g_tcp_buf` (dipakai retransmisi), stop-and-wait.
+- **Batas diam** (disetujui pengguna): koneksi yang sudah di-accept dengan antrean kirim kosong tidak kena
+  `TCP_IDLE_TIMEOUT`, program yang memutuskan; yang belum di-accept tetap 30 s.
+- **close**: FIN setelah ring keluar habis dan di-ACK; data masuk belum dibaca -> RST (Linux). Data yang datang
+  setelah close tidak diterima (tidak di-ACK) lalu RST setelah FIN kita. Listen ditutup -> koneksi yang belum
+  di-accept di-RST. Slot bebas lagi setelah TCB CLOSED dan fd ditutup.
+- **Galat**: RST/kirim ulang habis/timeout -> `-104`; ditutup baik-baik -> `send` `-32`, `recv` 0; `send`/`recv`
+  bukan koneksi -> `-107`. `recv` mengembalikan data yang sudah masuk sebelum melaporkan reset.
+- **Uji**: `test_net` kini menyertakan sock.c asli (integrasi net.c <-> sock.c lewat syscall), `test_sock` menguji
+  sisi sock.c dengan kait dipanggil langsung. Program `tcpgema` (dev) di port 5556. MAX_TASKS 11 -> 12.

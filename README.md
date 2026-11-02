@@ -47,6 +47,9 @@ Belum pernah diuji di hardware asli.
 - Soket UDP untuk program user (P5-1): syscall socket/bind/sendto/recvfrom/close (`docs/SYSCALL.md`,
   pembungkus `userspace/bm.h`), maks 4 soket; program C pertama `userspace/udpgema.c` (build dev) menggemakan
   UDP port 5555 dengan awalan `gema: `. Perintah `soket`, metrics `sock_*`
+- Server TCP untuk program user (P5-2): syscall listen/accept/send/recv (socket jenis 1), maks 2 koneksi TCP
+  user di luar jatah layanan kernel, ring masuk/keluar 1024 byte per koneksi; `userspace/tcpgema.c` (build dev)
+  menggemakan TCP port 5556. Metrics `sock_tcp_*`
 - Packet filter (P4): `FILTER.CFG`, maks 16 aturan cocok-pertama
   `<izinkan|tolak> <semua|tcp|udp|icmp> <semua|a.b.c.d[/n]> [port A[-B]] [laju N]` untuk UDP, ICMP, dan
   SYN TCP baru; TCP 7780 selalu lolos. Perintah `filter`, `filter tambah|hapus <n>|kosong` (admin)
@@ -253,8 +256,8 @@ TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 
 
 ## Arah berikutnya (belum dikerjakan)
 
-- Urutan lengkap dan status di `ROADMAP.md`: server TCP untuk program user (P5-2), OTA A/B (P7), lalu
-  perangkat keras asli (Fase 6)
+- Urutan lengkap dan status di `ROADMAP.md`: sisa P5 (klien TCP, program soket dari disk di PROD), OTA A/B
+  (P7), lalu perangkat keras asli (Fase 6)
 
 ## Batasan yang diketahui
 

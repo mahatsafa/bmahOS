@@ -10,6 +10,14 @@
 // lama SOCK_WAIT_CHUNK tick per putaran; net task membangunkannya lebih awal.
 // Syscall jalan dengan interrupt mati (gerbang int 0x80); net task mengubah
 // keadaan soket di dalam irq_save().
+//
+// P5-2: soket TCP server (listen/accept/send/recv). TCB tetap milik net.c dan
+// hanya diubah net task; tiap slot TCB user (SOCK_TCP_CONN) punya pasangan di
+// g_skc: ring masuk dan ring keluar SOCK_TCP_RING byte plus flag. net task
+// memanggil kait sock_tcp_* (di dalam irq_save) untuk mengisi ring masuk,
+// mengambil ring keluar, dan melaporkan handshake/FIN/penutupan; syscall hanya
+// menyentuh g_skc. Slot koneksi bebas lagi setelah TCB CLOSED dan fd ditutup
+// (koneksi yang belum di-accept: begitu TCB CLOSED).
 
 #define SOCK_QLEN        4
 #define SOCK_ARP_N       8
@@ -29,6 +37,9 @@ typedef struct {
 
 typedef struct {
     int used;
+    int type;              // SOCK_UDP / SOCK_TCP (P5-2)
+    int listening;         // P5-2: TCP, sesudah listen
+    int conn;              // P5-2: TCP hasil accept: indeks g_skc, selain itu -1
     size_t owner;          // indeks task pemilik
     uint16_t port;         // 0 = belum bind
     uint32_t qh, qn;
@@ -50,7 +61,28 @@ typedef struct {
     uint8_t mac[6];
 } sk_arp_t;
 
+// P5-2: keadaan slot koneksi TCP user.
+enum { SKC_FREE = 0, SKC_SYN, SKC_OPEN, SKC_DONE };
+
+typedef struct {
+    int state;
+    int accepted;          // fd hasil accept memegang slot ini
+    size_t owner;          // task pemilik fd (dibangunkan net task)
+    int app;               // ditulis syscall: 0, SOCK_TCP_APP_CLOSE, SOCK_TCP_APP_ABORT
+    int peer_fin;          // FIN peer diterima
+    int reset;             // TCB berakhir tanpa penutupan baik-baik (RST, timeout)
+    uint64_t order;        // urutan ESTABLISHED: accept mengambil yang tertua
+    uint16_t lport, rport;
+    uint8_t ip[4];
+    uint32_t rx_h, rx_n, tx_h, tx_n;
+    uint8_t rx[SOCK_TCP_RING];
+    uint8_t tx[SOCK_TCP_RING];
+    uint64_t rx_bytes, tx_bytes;
+} skc_t;
+
 static sk_t g_sk[SOCK_MAX];
+static skc_t g_skc[SOCK_TCP_CONN];
+static uint64_t g_skc_order;
 static sk_arp_t g_sk_arp[SOCK_ARP_N];
 static uint32_t g_sk_arp_next;
 static uint64_t g_sk_page_phys;
@@ -60,6 +92,10 @@ uint64_t g_sock_tx = 0;       // datagram terkirim
 uint64_t g_sock_drop = 0;     // antrean penuh
 uint64_t g_sock_err = 0;      // syscall soket berakhir dengan kode galat
 uint64_t g_sock_noarp = 0;    // kirim gagal: ARP tanpa jawaban
+uint64_t g_sock_tcp_accept = 0;   // P5-2: koneksi yang di-accept
+uint64_t g_sock_tcp_rx = 0;       // byte masuk ring (dari peer)
+uint64_t g_sock_tcp_tx = 0;       // byte diambil net task dari ring keluar
+uint64_t g_sock_tcp_reset = 0;    // koneksi milik fd berakhir dengan reset
 
 static int sk_ip_eq(const volatile uint8_t *a, const uint8_t *b)
 {
@@ -136,25 +172,63 @@ void sock_init(void)
     g_sk_page_phys = pmm_alloc();
 }
 
+// P5-2: lepas fd. Koneksi TCP: FIN setelah ring keluar habis, atau RST bila
+// masih ada data masuk yang belum dibaca (seperti Linux); TCB yang sudah
+// CLOSED langsung membebaskan slot. Soket listen: koneksi yang belum di-accept
+// di port itu di-RST. Interrupt mati (syscall) atau di dalam irq_save.
+static void sk_release(sk_t *s)
+{
+    if (s->conn >= 0) {
+        skc_t *c = &g_skc[s->conn];
+
+        if (c->state == SKC_DONE) {
+            c->state = SKC_FREE;
+        } else {
+            c->app = c->rx_n > 0 ? SOCK_TCP_APP_ABORT : SOCK_TCP_APP_CLOSE;
+        }
+        net_rx_tick_wake();
+    }
+    if (s->listening) {
+        for (uint32_t i = 0; i < SOCK_TCP_CONN; i++) {
+            skc_t *c = &g_skc[i];
+
+            if ((c->state == SKC_SYN || c->state == SKC_OPEN) && !c->accepted &&
+                c->lport == s->port) {
+                c->app = SOCK_TCP_APP_ABORT;
+            }
+        }
+        net_rx_tick_wake();
+    }
+    s->used = 0;
+}
+
 // Dipanggil task_exit(): semua soket milik task itu ditutup (juga saat task
 // user dihentikan karena exception).
 void sock_task_exit(size_t idx)
 {
+    uint64_t lf = irq_save();
+
     for (uint32_t i = 0; i < SOCK_MAX; i++) {
         if (g_sk[i].used && g_sk[i].owner == idx) {
-            g_sk[i].used = 0;
+            sk_release(&g_sk[i]);
         }
     }
+    irq_restore(lf);
 }
 
-int sock_wants(uint16_t dport)
+static int sk_port_used(int type, uint16_t port)
 {
     for (uint32_t i = 0; i < SOCK_MAX; i++) {
-        if (g_sk[i].used && g_sk[i].port == dport) {
+        if (g_sk[i].used && g_sk[i].type == type && g_sk[i].port == port) {
             return 1;
         }
     }
     return 0;
+}
+
+int sock_wants(uint16_t dport)
+{
+    return sk_port_used(SOCK_UDP, dport);
 }
 
 // Datagram UDP sah (checksum, filter, jatah sudah diperiksa net.c) untuk port
@@ -167,7 +241,7 @@ void sock_rx(const volatile uint8_t *src_mac, const volatile uint8_t *src_ip, ui
     for (uint32_t i = 0; i < SOCK_MAX; i++) {
         sk_t *s = &g_sk[i];
 
-        if (!s->used || s->port != dport) {
+        if (!s->used || s->type != SOCK_UDP || s->port != dport) {
             continue;
         }
         sk_arp_learn(src_ip, src_mac);
@@ -271,13 +345,16 @@ uint64_t sock_sys_socket(uint64_t type, uint64_t a1, uint64_t a2, uint64_t a3, u
 {
     (void)a1; (void)a2; (void)a3; (void)a4;
 
-    if (type != SOCK_UDP) {
+    if (type != SOCK_UDP && type != SOCK_TCP) {
         return (uint64_t)sk_fail(SOCK_EINVAL);
     }
     for (uint32_t i = 0; i < SOCK_MAX; i++) {
         if (!g_sk[i].used) {
             sk_t *s = &g_sk[i];
 
+            s->type = (int)type;
+            s->listening = 0;
+            s->conn = -1;
             s->port = 0;
             s->qh = s->qn = 0;
             s->tx_state = SK_TX_NONE;
@@ -298,13 +375,13 @@ uint64_t sock_sys_bind(uint64_t fd, uint64_t port, uint64_t a2, uint64_t a3, uin
     if (!s) {
         return (uint64_t)sk_fail(SOCK_EBADF);
     }
-    if (s->port != 0) {
+    if (s->port != 0 || s->conn >= 0) {
         return (uint64_t)sk_fail(SOCK_EINVAL);
     }
     if (port > 65535 || !sock_port_ok((uint32_t)port)) {
         return (uint64_t)sk_fail(SOCK_EACCES);
     }
-    if (sock_wants((uint16_t)port)) {
+    if (sk_port_used(s->type, (uint16_t)port)) {
         return (uint64_t)sk_fail(SOCK_EADDRINUSE);
     }
     s->port = (uint16_t)port;
@@ -329,10 +406,12 @@ uint64_t sock_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr,
         g_sys_rejected++;
         return (uint64_t)sk_fail(SOCK_EFAULT);
     }
-    if (s->port == 0 || dport == 0 || (addr >> 48) != 0) {
+    if (s->type != SOCK_UDP || s->port == 0 || dport == 0 || (addr >> 48) != 0) {
         return (uint64_t)sk_fail(SOCK_EINVAL);
     }
-    if (!g_e1000_rx_initialized || !net_ip_ready() || g_sk_page_phys == 0) {
+    // P5-2: juga sebelum loop net task jalan (inisialisasi modul jaringan + pindai
+    // LOG.BIN bisa > 5 s di QEMU TCG): kalau tidak, batas kirim habis -> -5.
+    if (!g_e1000_rx_initialized || !net_ip_ready() || g_sk_page_phys == 0 || g_net_loops == 0) {
         return (uint64_t)sk_fail(SOCK_ENETDOWN);
     }
     // Tanpa gateway: hanya /24 sendiri, bukan alamat jaringan/broadcast/diri sendiri.
@@ -382,7 +461,7 @@ uint64_t sock_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t cap, uint64_t fro
         g_sys_rejected++;
         return (uint64_t)sk_fail(SOCK_EFAULT);
     }
-    if (s->port == 0) {
+    if (s->type != SOCK_UDP || s->port == 0) {
         return (uint64_t)sk_fail(SOCK_EINVAL);
     }
 
@@ -418,8 +497,366 @@ uint64_t sock_sys_close(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint
     if (!s) {
         return (uint64_t)sk_fail(SOCK_EBADF);
     }
-    s->used = 0;
+    sk_release(s);
     return 0;
+}
+
+// ---- P5-2: kait TCP untuk net.c (net task) ----
+// c = indeks slot TCB user (0..SOCK_TCP_CONN-1).
+
+static const char *sk_conn_str(const skc_t *c)
+{
+    if (c->state == SKC_DONE) {
+        return c->reset ? "reset" : "tutup";
+    }
+    return c->peer_fin ? "fin" : "terbuka";
+}
+
+static void sk_conn_wake(const skc_t *c)
+{
+    if (c->accepted) {
+        task_wake(c->owner);
+    }
+}
+
+// 1 = ada soket TCP listen di port itu.
+int sock_tcp_listening(uint16_t port)
+{
+    for (uint32_t i = 0; i < SOCK_MAX; i++) {
+        if (g_sk[i].used && g_sk[i].type == SOCK_TCP && g_sk[i].listening &&
+            g_sk[i].port == port) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// 1 = slot koneksi bebas (TCB CLOSED dan tidak dipegang fd).
+int sock_tcp_slot_free(uint32_t c)
+{
+    return c < SOCK_TCP_CONN && g_skc[c].state == SKC_FREE;
+}
+
+// SYN diterima ke port listen: slot dipakai koneksi baru (SYN_RCVD).
+void sock_tcp_syn(uint32_t c, const volatile uint8_t *ip, uint16_t rport, uint16_t lport)
+{
+    uint64_t lf = irq_save();
+    skc_t *k = &g_skc[c];
+
+    k->state = SKC_SYN;
+    k->accepted = 0;
+    k->owner = 0;
+    k->app = 0;
+    k->peer_fin = 0;
+    k->reset = 0;
+    k->lport = lport;
+    k->rport = rport;
+    for (int i = 0; i < 4; i++) {
+        k->ip[i] = ip[i];
+    }
+    k->rx_h = k->rx_n = k->tx_h = k->tx_n = 0;
+    k->rx_bytes = k->tx_bytes = 0;
+    irq_restore(lf);
+}
+
+// Handshake selesai: koneksi siap di-accept; pemilik soket listen dibangunkan.
+void sock_tcp_open(uint32_t c)
+{
+    uint64_t lf = irq_save();
+    skc_t *k = &g_skc[c];
+
+    k->state = SKC_OPEN;
+    k->order = ++g_skc_order;
+    for (uint32_t i = 0; i < SOCK_MAX; i++) {
+        if (g_sk[i].used && g_sk[i].type == SOCK_TCP && g_sk[i].listening &&
+            g_sk[i].port == k->lport) {
+            task_wake(g_sk[i].owner);
+        }
+    }
+    irq_restore(lf);
+}
+
+// Ruang ring masuk (= jendela yang diiklankan TCB).
+uint32_t sock_tcp_rx_space(uint32_t c)
+{
+    return SOCK_TCP_RING - g_skc[c].rx_n;
+}
+
+// Data dalam urutan dari peer. Return jumlah byte yang masuk ring (sisanya
+// tidak di-ACK). Setelah close tidak ada pembaca: 0 (net.c memutus dengan RST).
+uint32_t sock_tcp_rx(uint32_t c, const volatile uint8_t *d, uint32_t len)
+{
+    uint64_t lf = irq_save();
+    skc_t *k = &g_skc[c];
+    uint32_t room = SOCK_TCP_RING - k->rx_n;
+    uint32_t n = len > room ? room : len;
+
+    if (k->app != 0) {
+        n = 0;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        k->rx[(k->rx_h + k->rx_n + i) % SOCK_TCP_RING] = d[i];
+    }
+    k->rx_n += n;
+    k->rx_bytes += n;
+    g_sock_tcp_rx += n;
+    if (n > 0) {
+        sk_conn_wake(k);
+    }
+    irq_restore(lf);
+    return n;
+}
+
+void sock_tcp_fin(uint32_t c)
+{
+    uint64_t lf = irq_save();
+
+    g_skc[c].peer_fin = 1;
+    sk_conn_wake(&g_skc[c]);
+    irq_restore(lf);
+}
+
+// Ambil maks max byte dari ring keluar ke dst. Pemilik dibangunkan (ruang
+// kosong untuk send berikutnya).
+uint32_t sock_tcp_tx_take(uint32_t c, uint8_t *dst, uint32_t max)
+{
+    uint64_t lf = irq_save();
+    skc_t *k = &g_skc[c];
+    uint32_t n = k->tx_n > max ? max : k->tx_n;
+
+    for (uint32_t i = 0; i < n; i++) {
+        dst[i] = k->tx[(k->tx_h + i) % SOCK_TCP_RING];
+    }
+    k->tx_h = (k->tx_h + n) % SOCK_TCP_RING;
+    k->tx_n -= n;
+    k->tx_bytes += n;
+    g_sock_tcp_tx += n;
+    if (n > 0) {
+        sk_conn_wake(k);
+    }
+    irq_restore(lf);
+    return n;
+}
+
+// Flag untuk net task: SOCK_TCP_APP_* | SOCK_TCP_ACCEPTED | SOCK_TCP_TXQ (ring
+// keluar belum kosong).
+int sock_tcp_app(uint32_t c)
+{
+    const skc_t *k = &g_skc[c];
+
+    return k->app | (k->accepted ? SOCK_TCP_ACCEPTED : 0) | (k->tx_n ? SOCK_TCP_TXQ : 0);
+}
+
+// TCB menjadi CLOSED. reset = 1 bila bukan penutupan baik-baik (kedua FIN).
+void sock_tcp_closed(uint32_t c, int reset)
+{
+    uint64_t lf = irq_save();
+    skc_t *k = &g_skc[c];
+
+    if (!k->accepted || k->app != 0) {
+        k->state = SKC_FREE;   // tidak ada fd yang memegangnya lagi
+    } else {
+        k->state = SKC_DONE;
+        k->reset = reset;
+        if (reset) {
+            g_sock_tcp_reset++;
+        }
+        sk_conn_wake(k);
+    }
+    irq_restore(lf);
+}
+
+// ---- P5-2: syscall TCP ----
+
+uint64_t sock_sys_listen(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4)
+{
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    sk_t *s = sk_get(fd);
+
+    if (!s) {
+        return (uint64_t)sk_fail(SOCK_EBADF);
+    }
+    if (s->type != SOCK_TCP || s->port == 0 || s->listening || s->conn >= 0) {
+        return (uint64_t)sk_fail(SOCK_EINVAL);
+    }
+    s->listening = 1;
+    return 0;
+}
+
+uint64_t sock_sys_accept(uint64_t fd, uint64_t from, uint64_t timeout, uint64_t a3, uint64_t a4)
+{
+    (void)a3; (void)a4;
+    sk_t *s = sk_get(fd);
+
+    if (!s) {
+        return (uint64_t)sk_fail(SOCK_EBADF);
+    }
+    if (from != 0 && !is_valid_user_ptr(g_current_pml4_phys, from, 8, true)) {
+        g_sys_rejected++;
+        return (uint64_t)sk_fail(SOCK_EFAULT);
+    }
+    if (!s->listening) {
+        return (uint64_t)sk_fail(SOCK_EINVAL);
+    }
+
+    uint64_t deadline = timer_ticks + timeout;
+
+    for (;;) {
+        skc_t *c = 0;
+        uint32_t ci = 0;
+
+        for (uint32_t i = 0; i < SOCK_TCP_CONN; i++) {
+            skc_t *k = &g_skc[i];
+
+            if (k->state == SKC_OPEN && !k->accepted && k->app == 0 && k->lport == s->port &&
+                (c == 0 || k->order < c->order)) {
+                c = k;
+                ci = i;
+            }
+        }
+        if (c) {
+            for (uint32_t i = 0; i < SOCK_MAX; i++) {
+                if (!g_sk[i].used) {
+                    sk_t *n = &g_sk[i];
+
+                    n->type = SOCK_TCP;
+                    n->listening = 0;
+                    n->conn = (int)ci;
+                    n->port = c->lport;
+                    n->qh = n->qn = 0;
+                    n->tx_state = SK_TX_NONE;
+                    n->rx = n->tx = n->drop = 0;
+                    n->owner = current_index;
+                    n->used = 1;
+                    c->accepted = 1;
+                    c->owner = current_index;
+                    g_sock_tcp_accept++;
+                    if (from != 0) {
+                        *(uint64_t *)from = SOCK_ADDR(c->ip[0], c->ip[1], c->ip[2], c->ip[3],
+                                                      c->rport);
+                    }
+                    return i;
+                }
+            }
+            return (uint64_t)sk_fail(SOCK_EMFILE);   // koneksi tetap menunggu
+        }
+        if (timeout != 0 && timer_ticks >= deadline) {
+            return (uint64_t)sk_fail(SOCK_EAGAIN);
+        }
+        sk_sleep(timeout != 0 ? deadline : timer_ticks + SOCK_WAIT_CHUNK);
+    }
+}
+
+// fd koneksi TCP milik task ini, atau galat (negatif) lewat *err.
+static skc_t *sk_conn_get(uint64_t fd, int64_t *err)
+{
+    sk_t *s = sk_get(fd);
+
+    if (!s) {
+        *err = SOCK_EBADF;
+        return 0;
+    }
+    if (s->type != SOCK_TCP || s->conn < 0) {
+        *err = SOCK_ENOTCONN;
+        return 0;
+    }
+    return &g_skc[s->conn];
+}
+
+uint64_t sock_sys_send(uint64_t fd, uint64_t buf, uint64_t len, uint64_t timeout, uint64_t a4)
+{
+    (void)a4;
+    int64_t err = 0;
+    skc_t *c = sk_conn_get(fd, &err);
+
+    if (!c) {
+        return (uint64_t)sk_fail(err);
+    }
+    if (len > SOCK_TCP_RING) {
+        len = SOCK_TCP_RING;
+    }
+    if (!is_valid_user_ptr(g_current_pml4_phys, buf, len, false)) {
+        g_sys_rejected++;
+        return (uint64_t)sk_fail(SOCK_EFAULT);
+    }
+
+    uint64_t deadline = timer_ticks + timeout;
+    const uint8_t *src = (const uint8_t *)buf;
+
+    for (;;) {
+        if (c->state == SKC_DONE) {
+            return (uint64_t)sk_fail(c->reset ? SOCK_ECONNRESET : SOCK_EPIPE);
+        }
+        if (len == 0) {
+            return 0;
+        }
+
+        uint32_t room = SOCK_TCP_RING - c->tx_n;
+
+        if (room > 0) {
+            uint32_t n = len > room ? room : (uint32_t)len;
+
+            for (uint32_t i = 0; i < n; i++) {
+                c->tx[(c->tx_h + c->tx_n + i) % SOCK_TCP_RING] = src[i];
+            }
+            c->tx_n += n;
+            net_rx_tick_wake();
+            return n;
+        }
+        if (timeout != 0 && timer_ticks >= deadline) {
+            return (uint64_t)sk_fail(SOCK_EAGAIN);
+        }
+        sk_sleep(timeout != 0 ? deadline : timer_ticks + SOCK_WAIT_CHUNK);
+    }
+}
+
+uint64_t sock_sys_recv(uint64_t fd, uint64_t buf, uint64_t cap, uint64_t timeout, uint64_t a4)
+{
+    (void)a4;
+    int64_t err = 0;
+    skc_t *c = sk_conn_get(fd, &err);
+
+    if (!c) {
+        return (uint64_t)sk_fail(err);
+    }
+    if (cap > SOCK_TCP_RING) {
+        cap = SOCK_TCP_RING;
+    }
+    if (!is_valid_user_ptr(g_current_pml4_phys, buf, cap, true)) {
+        g_sys_rejected++;
+        return (uint64_t)sk_fail(SOCK_EFAULT);
+    }
+
+    uint64_t deadline = timer_ticks + timeout;
+    uint8_t *dst = (uint8_t *)buf;
+
+    for (;;) {
+        if (c->rx_n > 0 || cap == 0) {
+            uint32_t n = c->rx_n < cap ? c->rx_n : (uint32_t)cap;
+            uint32_t before = SOCK_TCP_RING - c->rx_n;
+
+            for (uint32_t i = 0; i < n; i++) {
+                dst[i] = c->rx[(c->rx_h + i) % SOCK_TCP_RING];
+            }
+            c->rx_h = (c->rx_h + n) % SOCK_TCP_RING;
+            c->rx_n -= n;
+            if (n > 0 && before < SOCK_TCP_WND_UPD) {
+                net_rx_tick_wake();   // jendela terbuka lagi: net task kirim ACK
+            }
+            return n;
+        }
+        // Data yang sudah masuk tetap bisa dibaca setelah FIN/RST.
+        if (c->state == SKC_DONE && c->reset) {
+            return (uint64_t)sk_fail(SOCK_ECONNRESET);
+        }
+        if (c->peer_fin || c->state == SKC_DONE) {
+            return 0;
+        }
+        if (timeout != 0 && timer_ticks >= deadline) {
+            return (uint64_t)sk_fail(SOCK_EAGAIN);
+        }
+        sk_sleep(timeout != 0 ? deadline : timer_ticks + SOCK_WAIT_CHUNK);
+    }
 }
 
 // `soket` (juga peran ro): satu baris per soket terbuka + penghitung.
@@ -439,9 +876,21 @@ int sock_execute(const volatile uint8_t *cmd, uint32_t len)
             continue;
         }
         n++;
-        ksnprintf(line, sizeof(line), "%u: udp port %u task %lu antre %u/%u masuk=%lu kirim=%lu "
-                  "buang=%lu\n", i, s->port, (uint64_t)s->owner, s->qn, SOCK_QLEN, s->rx, s->tx,
-                  s->drop);
+        if (s->type == SOCK_UDP) {
+            ksnprintf(line, sizeof(line), "%u: udp port %u task %lu antre %u/%u masuk=%lu "
+                      "kirim=%lu buang=%lu\n", i, s->port, (uint64_t)s->owner, s->qn, SOCK_QLEN,
+                      s->rx, s->tx, s->drop);
+        } else if (s->conn >= 0) {
+            skc_t *c = &g_skc[s->conn];
+
+            ksnprintf(line, sizeof(line), "%u: tcp port %u task %lu ke %u.%u.%u.%u:%u %s "
+                      "antre %u/%u masuk=%lu kirim=%lu\n", i, c->lport, (uint64_t)s->owner,
+                      c->ip[0], c->ip[1], c->ip[2], c->ip[3], c->rport, sk_conn_str(c), c->rx_n,
+                      c->tx_n, c->rx_bytes, c->tx_bytes);
+        } else {
+            ksnprintf(line, sizeof(line), "%u: tcp port %u task %lu %s\n", i, s->port,
+                      (uint64_t)s->owner, s->listening ? "listen" : "belum listen");
+        }
         cmd_puts(line);
     }
     if (n == 0) {
@@ -450,6 +899,16 @@ int sock_execute(const volatile uint8_t *cmd, uint32_t len)
     ksnprintf(line, sizeof(line), "soket: %d/%d terbuka masuk=%lu kirim=%lu buang=%lu galat=%lu "
               "tanpa_arp=%lu\n", n, SOCK_MAX, g_sock_rx, g_sock_tx, g_sock_drop, g_sock_err,
               g_sock_noarp);
+    cmd_puts(line);
+
+    uint32_t nc = 0;
+
+    for (uint32_t i = 0; i < SOCK_TCP_CONN; i++) {
+        nc += g_skc[i].state != SKC_FREE;
+    }
+    ksnprintf(line, sizeof(line), "tcp: %u/%u koneksi diterima=%lu masuk=%lu kirim=%lu reset=%lu\n",
+              nc, SOCK_TCP_CONN, g_sock_tcp_accept, g_sock_tcp_rx, g_sock_tcp_tx,
+              g_sock_tcp_reset);
     cmd_puts(line);
     return 1;
 }

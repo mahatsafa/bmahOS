@@ -16,6 +16,7 @@ size_t current_index = 3;
 size_t task_count = 10;
 uint64_t g_current_pml4_phys = 0x1000;
 uint64_t g_sys_rejected = 0;
+volatile uint64_t g_net_loops = 1;   // P5-2: loop net task sudah jalan
 
 static int g_ip_ready = 1;
 int net_ip_ready(void)
@@ -156,6 +157,9 @@ static const uint8_t PEER_IP[4] = { 192, 168, 50, 1 };
 static void reset(void)
 {
     memset(g_sk, 0, sizeof(g_sk));
+    memset(g_skc, 0, sizeof(g_skc));
+    g_skc_order = 0;
+    g_sock_tcp_accept = g_sock_tcp_rx = g_sock_tcp_tx = g_sock_tcp_reset = 0;
     memset(g_sk_arp, 0, sizeof(g_sk_arp));
     g_sk_arp_next = 0;
     g_sock_rx = g_sock_tx = g_sock_drop = g_sock_err = g_sock_noarp = 0;
@@ -197,7 +201,8 @@ static void arp_from(const uint8_t *ip, const uint8_t *mac)
 static void test_socket_bind(void)
 {
     reset();
-    CHECK(sys(sock_sys_socket(1, 0, 0, 0, 0)) == SOCK_EINVAL);
+    CHECK(sys(sock_sys_socket(3, 0, 0, 0, 0)) == SOCK_EINVAL);   // P5-2: 1 = TCP
+    CHECK(sys(sock_sys_socket(0, 0, 0, 0, 0)) == SOCK_EINVAL);
     for (uint64_t i = 0; i < SOCK_MAX; i++) {
         CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == i);
     }
@@ -224,7 +229,7 @@ static void test_socket_bind(void)
     CHECK(sock_wants(5555));
     CHECK(sys(sock_sys_bind(0, 5556, 0, 0, 0)) == SOCK_EINVAL);    // sudah terikat
     CHECK(sys(sock_sys_bind(1, 5555, 0, 0, 0)) == SOCK_EADDRINUSE);
-    CHECK(g_sock_err == 18);
+    CHECK(g_sock_err == 19);
 
     // fd milik task lain
     current_index = 4;
@@ -392,6 +397,9 @@ static void test_send(void)
     g_e1000_rx_initialized = 0;
     CHECK(sys(sock_sys_sendto(0, pd, 5, SOCK_ADDR(192, 168, 50, 1, 9), 0)) == SOCK_ENETDOWN);
     g_e1000_rx_initialized = 1;
+    g_net_loops = 0;   // P5-2: net task masih inisialisasi
+    CHECK(sys(sock_sys_sendto(0, pd, 5, SOCK_ADDR(192, 168, 50, 1, 9), 0)) == SOCK_ENETDOWN);
+    g_net_loops = 1;
     CHECK(g_ntx == 0 && g_nsleep == 0);
 
     // MAC dikenal dari datagram masuk -> langsung terkirim, tanpa ARP
@@ -455,12 +463,15 @@ static void test_send(void)
     CHECK(sk_arp_find(IP100) == 0 && sk_arp_find(IP108) != 0);
 }
 
+#define TCP0 "tcp: 0/2 koneksi diterima=0 masuk=0 kirim=0 reset=0\n"
+
 static void test_cmd(void)
 {
     reset();
     CHECK_STR(run("soket x"), "(tidak ditangani)");
     CHECK_STR(run("soket"), "soket: tidak ada yang terbuka\n"
-                            "soket: 0/4 terbuka masuk=0 kirim=0 buang=0 galat=0 tanpa_arp=0\n");
+                            "soket: 0/4 terbuka masuk=0 kirim=0 buang=0 galat=0 tanpa_arp=0\n"
+                            TCP0);
     CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == 0);
     CHECK(sock_sys_bind(0, 5555, 0, 0, 0) == 0);
     current_index = 8;
@@ -470,11 +481,209 @@ static void test_cmd(void)
     rx_from(PEER_IP, 1, 5555, "a");
     CHECK_STR(run("soket"), "0: udp port 5555 task 3 antre 1/4 masuk=1 kirim=0 buang=0\n"
                             "1: udp port 0 task 8 antre 0/4 masuk=0 kirim=0 buang=0\n"
-                            "soket: 2/4 terbuka masuk=1 kirim=0 buang=0 galat=1 tanpa_arp=0\n");
+                            "soket: 2/4 terbuka masuk=1 kirim=0 buang=0 galat=1 tanpa_arp=0\n"
+                            TCP0);
     // soket baru di slot lama mulai dari nol
     sock_task_exit(3);
     CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == 0);
     CHECK(g_sk[0].qn == 0 && g_sk[0].rx == 0 && g_sk[0].port == 0);
+}
+
+// ---- P5-2: soket TCP (sisi sock.c; kait net task dipanggil langsung) ----
+
+static void take500(void)
+{
+    uint8_t o[500];
+
+    sock_tcp_tx_take(0, o, sizeof(o));
+}
+
+static void test_tcp_api(void)
+{
+    static uint8_t b[2048], o[2048];
+    uint64_t from = 0;
+
+    reset();
+    CHECK(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0) == 0);
+    CHECK(sys(sock_sys_listen(0, 0, 0, 0, 0)) == SOCK_EINVAL);   // belum bind
+    CHECK(sys(sock_sys_bind(0, 7779, 0, 0, 0)) == SOCK_EACCES);
+    CHECK(sock_sys_bind(0, 5556, 0, 0, 0) == 0);
+    CHECK(!sock_tcp_listening(5556));
+    CHECK(sock_sys_listen(0, 0, 0, 0, 0) == 0);
+    CHECK(sock_tcp_listening(5556) && !sock_tcp_listening(5555));
+    CHECK(sys(sock_sys_listen(0, 0, 0, 0, 0)) == SOCK_EINVAL);   // sudah listen
+    CHECK(sys(sock_sys_recv(0, (uint64_t)(uintptr_t)b, 10, 1, 0)) == SOCK_ENOTCONN);
+    CHECK(sys(sock_sys_send(0, (uint64_t)(uintptr_t)b, 10, 1, 0)) == SOCK_ENOTCONN);
+    CHECK(sys(sock_sys_sendto(0, (uint64_t)(uintptr_t)b, 3, SOCK_ADDR(192, 168, 50, 1, 9), 0)) ==
+          SOCK_EINVAL);
+    CHECK(sys(sock_sys_recvfrom(0, (uint64_t)(uintptr_t)b, 3, 0, 1)) == SOCK_EINVAL);
+    CHECK(sys(sock_sys_accept(0, BADPTR, 1, 0, 0)) == SOCK_EFAULT);
+    CHECK(sys(sock_sys_accept(0, 0, 5, 0, 0)) == SOCK_EAGAIN);
+    // Port UDP dan TCP terpisah; port TCP sama -> EADDRINUSE.
+    CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == 1);
+    CHECK(sock_sys_bind(1, 5556, 0, 0, 0) == 0);
+    CHECK(sys(sock_sys_listen(1, 0, 0, 0, 0)) == SOCK_EINVAL);
+    CHECK(sys(sock_sys_accept(1, 0, 1, 0, 0)) == SOCK_EINVAL);
+    CHECK(sys(sock_sys_recv(1, (uint64_t)(uintptr_t)b, 10, 1, 0)) == SOCK_ENOTCONN);
+    CHECK(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0) == 2);
+    CHECK(sys(sock_sys_bind(2, 5556, 0, 0, 0)) == SOCK_EADDRINUSE);
+    CHECK(!sock_wants(5557) && sock_wants(5556));
+    CHECK(sock_sys_close(2, 0, 0, 0, 0) == 0 && sock_sys_close(1, 0, 0, 0, 0) == 0);
+    CHECK(!sock_wants(5556));   // soket TCP tidak menerima datagram UDP
+
+    // Dua koneksi masuk; accept mengambil yang ESTABLISHED lebih dulu.
+    CHECK(sock_tcp_slot_free(0) && sock_tcp_slot_free(1) && !sock_tcp_slot_free(2));
+    sock_tcp_syn(1, PEER_IP, 4001, 5556);
+    sock_tcp_syn(0, PEER_IP, 4000, 5556);
+    CHECK(!sock_tcp_slot_free(0) && !sock_tcp_slot_free(1));
+    CHECK(sys(sock_sys_accept(0, 0, 3, 0, 0)) == SOCK_EAGAIN);   // masih SYN_RCVD
+    g_nwoken = 0;
+    sock_tcp_open(0);
+    CHECK(g_nwoken == 1 && g_woken[0] == 3);
+    sock_tcp_open(1);
+    CHECK(sock_tcp_app(0) == 0);
+    CHECK(sock_sys_accept(0, (uint64_t)(uintptr_t)&from, 0, 0, 0) == 1);
+    CHECK(from == SOCK_ADDR(192, 168, 50, 1, 4000));
+    CHECK(sock_tcp_app(0) == SOCK_TCP_ACCEPTED && sock_tcp_app(1) == 0);
+    CHECK(g_sock_tcp_accept == 1);
+
+    // Data masuk: jendela = ruang ring.
+    CHECK(sock_tcp_rx_space(0) == SOCK_TCP_RING);
+    g_nwoken = 0;
+    CHECK(sock_tcp_rx(0, (const uint8_t *)"halo", 4) == 4);
+    CHECK(g_nwoken == 1 && sock_tcp_rx_space(0) == SOCK_TCP_RING - 4);
+    CHECK(sock_sys_recv(1, (uint64_t)(uintptr_t)b, 2, 0, 0) == 2 && memcmp(b, "ha", 2) == 0);
+    CHECK(sock_sys_recv(1, (uint64_t)(uintptr_t)b, 100, 0, 0) == 2 && memcmp(b, "lo", 2) == 0);
+    CHECK(sys(sock_sys_recv(1, (uint64_t)(uintptr_t)b, 100, 5, 0)) == SOCK_EAGAIN);
+    CHECK(sys(sock_sys_recv(1, BADPTR, 10, 0, 0)) == SOCK_EFAULT);
+    CHECK(sock_sys_recv(1, (uint64_t)(uintptr_t)b, 0, 0, 0) == 0);
+    memset(b, 'x', sizeof(b));
+    CHECK(sock_tcp_rx(0, b, 2000) == SOCK_TCP_RING && sock_tcp_rx(0, b, 10) == 0);
+    CHECK(sock_tcp_rx_space(0) == 0);
+    g_tick_wakes = 0;
+    memset(o, 0, sizeof(o));
+    CHECK(sock_sys_recv(1, (uint64_t)(uintptr_t)o, 2000, 0, 0) == SOCK_TCP_RING);
+    CHECK(g_last_ptr_len == SOCK_TCP_RING && g_last_ptr_w == 1);
+    CHECK(o[0] == 'x' && o[SOCK_TCP_RING - 1] == 'x' && o[SOCK_TCP_RING] == 0);
+    CHECK(g_tick_wakes == 1);   // jendela terbuka dari 0: net task kirim ACK
+    CHECK(sock_tcp_rx(0, b, 10) == 10);
+    g_tick_wakes = 0;
+    CHECK(sock_sys_recv(1, (uint64_t)(uintptr_t)o, 100, 0, 0) == 10 && g_tick_wakes == 0);
+
+    // Kirim: ring keluar, diambil net task.
+    CHECK(sock_sys_send(1, (uint64_t)(uintptr_t)"abc", 3, 0, 0) == 3);
+    CHECK(g_tick_wakes == 1 && g_last_ptr_w == 0);
+    CHECK(sock_tcp_app(0) == (SOCK_TCP_ACCEPTED | SOCK_TCP_TXQ));
+    CHECK(sock_tcp_tx_take(0, o, 2) == 2 && memcmp(o, "ab", 2) == 0);
+    CHECK(sock_tcp_tx_take(0, o, 100) == 1 && o[0] == 'c');
+    CHECK(sock_tcp_app(0) == SOCK_TCP_ACCEPTED && sock_tcp_tx_take(0, o, 100) == 0);
+    memset(b, 'y', sizeof(b));
+    CHECK(sock_sys_send(1, (uint64_t)(uintptr_t)b, 2000, 0, 0) == SOCK_TCP_RING);
+    CHECK(g_last_ptr_len == SOCK_TCP_RING);
+    CHECK(sys(sock_sys_send(1, (uint64_t)(uintptr_t)b, 10, 3, 0)) == SOCK_EAGAIN);
+    g_on_sleep = take500;   // net task mengambil 500 byte saat pemanggil tidur
+    CHECK(sock_sys_send(1, (uint64_t)(uintptr_t)b, 600, 0, 0) == 500);
+    g_on_sleep = 0;
+    CHECK(sock_tcp_tx_take(0, o, sizeof(o)) == SOCK_TCP_RING);
+    CHECK(sys(sock_sys_send(1, BADPTR, 10, 0, 0)) == SOCK_EFAULT);
+    CHECK(sock_sys_send(1, (uint64_t)(uintptr_t)b, 0, 0, 0) == 0);
+    CHECK(g_sock_tcp_rx == 4 + SOCK_TCP_RING + 10 &&
+          g_sock_tcp_tx == 3 + 500 + SOCK_TCP_RING);
+
+    CHECK_STR(run("soket"), "0: tcp port 5556 task 3 listen\n"
+                            "1: tcp port 5556 task 3 ke 192.168.50.1:4000 terbuka antre 0/0 "
+                            "masuk=1038 kirim=1527\n"
+                            "soket: 2/4 terbuka masuk=0 kirim=0 buang=0 galat=18 tanpa_arp=0\n"
+                            "tcp: 2/2 koneksi diterima=1 masuk=1038 kirim=1527 reset=0\n");
+
+    // FIN peer: data sisa dulu, lalu 0; kirim tetap boleh (setengah tertutup).
+    CHECK(sock_tcp_rx(0, (const uint8_t *)"z", 1) == 1);
+    sock_tcp_fin(0);
+    CHECK(sock_sys_recv(1, (uint64_t)(uintptr_t)o, 100, 0, 0) == 1 && o[0] == 'z');
+    CHECK(sock_sys_recv(1, (uint64_t)(uintptr_t)o, 100, 0, 0) == 0);
+    CHECK(sock_sys_send(1, (uint64_t)(uintptr_t)"q", 1, 0, 0) == 1);
+    CHECK(sock_tcp_tx_take(0, o, 10) == 1);
+
+    // close dengan ring masuk kosong: FIN (APP_CLOSE); data terlambat tidak diterima.
+    CHECK(sock_sys_close(1, 0, 0, 0, 0) == 0);
+    CHECK(sock_tcp_app(0) == (SOCK_TCP_APP_CLOSE | SOCK_TCP_ACCEPTED));
+    CHECK(sock_tcp_rx(0, (const uint8_t *)"late", 4) == 0);
+    CHECK(!sock_tcp_slot_free(0));
+    sock_tcp_closed(0, 0);
+    CHECK(sock_tcp_slot_free(0) && g_sock_tcp_reset == 0);
+
+    // close soket listen: koneksi yang belum di-accept di-RST.
+    CHECK(sock_sys_close(0, 0, 0, 0, 0) == 0);
+    CHECK(sock_tcp_app(1) == SOCK_TCP_APP_ABORT && !sock_tcp_listening(5556));
+    sock_tcp_closed(1, 1);
+    CHECK(sock_tcp_slot_free(1) && g_sock_tcp_reset == 0);   // tanpa fd: tidak dihitung
+
+    // RST pada koneksi milik fd: data yang sudah masuk tetap dibaca, lalu -104.
+    CHECK(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0) == 0);
+    CHECK(sock_sys_bind(0, 5557, 0, 0, 0) == 0 && sock_sys_listen(0, 0, 0, 0, 0) == 0);
+    sock_tcp_syn(0, PEER_IP, 4002, 5557);
+    sock_tcp_open(0);
+    CHECK(sock_sys_accept(0, 0, 0, 0, 0) == 1);
+    CHECK(sock_tcp_rx(0, (const uint8_t *)"ab", 2) == 2);
+    g_nwoken = 0;
+    sock_tcp_closed(0, 1);
+    CHECK(g_nwoken == 1 && g_sock_tcp_reset == 1 && !sock_tcp_slot_free(0));
+    CHECK(sock_sys_recv(1, (uint64_t)(uintptr_t)o, 100, 0, 0) == 2);
+    CHECK(sys(sock_sys_recv(1, (uint64_t)(uintptr_t)o, 100, 0, 0)) == SOCK_ECONNRESET);
+    CHECK(sys(sock_sys_send(1, (uint64_t)(uintptr_t)"x", 1, 0, 0)) == SOCK_ECONNRESET);
+    CHECK_STR(run("soket"), "0: tcp port 5557 task 3 listen\n"
+                            "1: tcp port 5557 task 3 ke 192.168.50.1:4002 reset antre 0/0 "
+                            "masuk=2 kirim=0\n"
+                            "soket: 2/4 terbuka masuk=0 kirim=0 buang=0 galat=20 tanpa_arp=0\n"
+                            "tcp: 1/2 koneksi diterima=2 masuk=1041 kirim=1528 reset=1\n");
+    CHECK(sock_sys_close(1, 0, 0, 0, 0) == 0 && sock_tcp_slot_free(0));
+
+    // Ditutup baik-baik oleh TCB: recv 0, send -32.
+    sock_tcp_syn(0, PEER_IP, 4003, 5557);
+    sock_tcp_open(0);
+    CHECK(sock_sys_accept(0, 0, 0, 0, 0) == 1);
+    sock_tcp_closed(0, 0);
+    CHECK(sock_sys_recv(1, (uint64_t)(uintptr_t)o, 100, 0, 0) == 0);
+    CHECK(sys(sock_sys_send(1, (uint64_t)(uintptr_t)"x", 1, 0, 0)) == SOCK_EPIPE);
+    CHECK(sock_sys_close(1, 0, 0, 0, 0) == 0 && sock_tcp_slot_free(0));
+
+    // close dengan data belum dibaca: RST (APP_ABORT).
+    sock_tcp_syn(0, PEER_IP, 4004, 5557);
+    sock_tcp_open(0);
+    CHECK(sock_sys_accept(0, 0, 0, 0, 0) == 1);
+    CHECK(sock_tcp_rx(0, (const uint8_t *)"x", 1) == 1);
+    CHECK(sock_sys_close(1, 0, 0, 0, 0) == 0);
+    CHECK(sock_tcp_app(0) == (SOCK_TCP_APP_ABORT | SOCK_TCP_ACCEPTED));
+    sock_tcp_closed(0, 1);
+    CHECK(sock_tcp_slot_free(0) && g_sock_tcp_reset == 1);
+
+    // Tabel fd penuh: accept -24, koneksi tetap menunggu.
+    for (uint64_t i = 1; i < SOCK_MAX; i++) {
+        CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == i);
+    }
+    sock_tcp_syn(0, PEER_IP, 4005, 5557);
+    sock_tcp_open(0);
+    CHECK(sys(sock_sys_accept(0, 0, 0, 0, 0)) == SOCK_EMFILE);
+    CHECK(sock_tcp_app(0) == 0);
+    CHECK(sock_sys_close(3, 0, 0, 0, 0) == 0);
+    CHECK(sock_sys_accept(0, 0, 0, 0, 0) == 3);
+    // fd milik task lain
+    current_index = 8;
+    CHECK(sys(sock_sys_recv(3, (uint64_t)(uintptr_t)o, 1, 0, 0)) == SOCK_EBADF);
+    CHECK(sys(sock_sys_accept(0, 0, 0, 0, 0)) == SOCK_EBADF);
+    current_index = 3;
+
+    // task_exit: koneksi FIN, listen menutup (koneksi baru belum di-accept: RST).
+    sock_tcp_syn(1, PEER_IP, 4006, 5557);
+    sock_task_exit(3);
+    CHECK(sock_tcp_app(0) == (SOCK_TCP_APP_CLOSE | SOCK_TCP_ACCEPTED));
+    CHECK(sock_tcp_app(1) == SOCK_TCP_APP_ABORT);
+    sock_tcp_closed(0, 0);
+    sock_tcp_closed(1, 1);
+    CHECK(sock_tcp_slot_free(0) && sock_tcp_slot_free(1));
+    CHECK_STR(run("soket"), "soket: tidak ada yang terbuka\n"
+                            "soket: 0/4 terbuka masuk=0 kirim=0 buang=0 galat=24 tanpa_arp=0\n"
+                            "tcp: 0/2 koneksi diterima=5 masuk=1042 kirim=1528 reset=1\n");
 }
 
 int main(void)
@@ -484,5 +693,6 @@ int main(void)
     test_recv_wait();
     test_send();
     test_cmd();
+    test_tcp_api();
     return test_done("sock");
 }

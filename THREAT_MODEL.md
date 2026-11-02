@@ -67,6 +67,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |
 | Syscall | Pointer jahat dari user mode | Validasi pointer (R6) |
 | Soket UDP user (P5-1) | Program user menghabiskan soket/antrean, mengirim ke mana saja, membaca port sistem; datagram jaringan ke program | Maks 4 soket statis, antrean 4 x 1472 per soket (penuh -> buang), fd hanya milik task pembuat dan ditutup saat task mati; bind hanya 1024..49151 selain port sistem; kirim hanya ke /24 sendiri (bukan .0/.255/diri sendiri), maks 1472 byte, lewat net task; semua pointer user dicek (buf, cap, alamat 8 byte writable); datagram masuk lewat filter P4, batas laju UDP per IP + global, dan checksum seperti port sistem |
+| Soket TCP user (P5-2) | Peer menghabiskan slot koneksi atau memori; program menahan koneksi; data ke program | 2 slot TCB khusus (terpisah dari CLI/TLS/echo), SYN_RCVD tertua digusur, sisanya RST; ring statis 1024 + 1024 byte per koneksi (jendela = ruang ring masuk); TCB hanya diubah net task, syscall hanya menyentuh ring; fd milik task pembuat, ditutup saat task mati (FIN, atau RST bila data belum dibaca); listen ditutup -> koneksi yang belum di-accept di-RST; pointer user dicek; segmen lewat filter P4 dan batas per koneksi seperti port sistem |
 | Klien SNTP (P3-2), DNS (P3-3), DHCP (belum) | Balasan palsu menggeser jam / meracuni cache, parser nama DNS (pointer kompresi) | SNTP dan DNS hanya atas perintah admin, server di /24 sendiri, port sumber acak, SNTP: nonce 8 byte (transmit = originate), mode/versi/LI/stratum dicek; DNS: ID acak, pertanyaan harus identik, nama answer hanya dilompati (pointer tidak diikuti), batas label/panjang, cache statis 8 entri dengan TTL 5..3600 s; balasan lain diabaikan dan dihitung, batas waktu 3 s |
 | Jalur OTA | Kernel palsu | Tanda tangan digital + slot A/B + rollback (P7) |
 
@@ -157,6 +158,11 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    ke port program dan mengisi antreannya (4 datagram, sisanya dibuang). Program bisa mengirim UDP ke host mana
    pun di /24 dan membuat ARP request (maks 3 per kirim). Cache MAC soket bisa diracuni ARP palsu untuk alamat
    yang sedang ditunggu (sama dengan modul lain). Belum ada izin per program: setiap task user boleh membuat soket.
+21. Soket TCP user (P5-2): siapa pun di LAN bisa memenuhi 2 slot koneksi user (SYN_RCVD digusur, tetapi koneksi
+   ESTABLISHED yang belum di-accept bertahan sampai 30 s; yang sudah di-accept bertahan selama program
+   memegangnya, tanpa batas diam). Ini hanya menolak layanan program itu: slot CLI/TLS/echo kernel terpisah.
+   Tanpa batas per IP untuk slot user. Program yang tidak membaca membuat jendela 0 (peer menunggu, bukan
+   kernel). Tanpa enkripsi/autentikasi di tingkat soket (urusan program).
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

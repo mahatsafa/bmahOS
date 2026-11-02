@@ -730,8 +730,15 @@ uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
 #define TCP_MAX_CONN        4
 #define TCP_MAX_PER_IP      2
 // P5-2a: jumlah seluruh slot TCB. Slot 0..TCP_MAX_CONN-1 = layanan kernel
-// (echo, CLI, TLS); slot sesudahnya disiapkan untuk soket TCP user (P5-2).
-#define TCP_TCB_N           TCP_MAX_CONN
+// (echo, CLI, TLS); slot sesudahnya untuk soket TCP user (P5-2).
+// P5-2: TCP_USER_MAX slot TCB khusus port listen soket user, terpisah dari
+// layanan kernel (koneksi user tidak mengurangi jatah CLI/TLS dan sebaliknya).
+// Data masuk ke ring sock.c (jendela = ruang ring), data kirim diambil dari
+// ring keluar ke g_tcp_buf oleh net task. Koneksi yang sudah di-accept dan
+// antrean kirimnya kosong tidak kena batas diam TCP_IDLE_TIMEOUT (program yang
+// memutuskan kapan menutup); yang belum di-accept tetap kena.
+#define TCP_USER_MAX        SOCK_TCP_CONN
+#define TCP_TCB_N           (TCP_MAX_CONN + TCP_USER_MAX)
 // D1: CLI port 7779. Setelah handshake server mengirim "bmahOS login\n" dan
 // "nonce: <32 hex>\n" (nonce per koneksi dari DRBG, dibuat saat SYN); klien
 // mengirim "login <hmac-hex64>" (lihat auth_tcp_login, PROTOCOL.md). Satu
@@ -760,7 +767,7 @@ uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
 // sejak ESTABLISHED TCP (termasuk handshake). Error TLS -> RST.
 #define NET_TCP_TLS_PORT    7780
 #define TCP_CLI_IDLE        ((uint64_t)g_cli_idle_s * 100)  // tick (D7: cli_idle)
-enum { TCP_APP_ECHO = 0, TCP_APP_CLI };
+enum { TCP_APP_ECHO = 0, TCP_APP_CLI, TCP_APP_USER };
 
 // Nilai juga dipakai metrics tcp_state.
 enum { TCP_CLOSED = 0, TCP_SYN_RCVD, TCP_ESTABLISHED, TCP_CLOSE_WAIT,
@@ -819,6 +826,7 @@ static ktimer_t g_tcp_rtx_timer[TCP_TCB_N];
 
 #define TCB_BUF(t)   (g_tcp_buf[(t) - g_tcbs])
 #define TCB_TIMER(t) (&g_tcp_rtx_timer[(t) - g_tcbs])
+#define TCB_USER(t)  ((uint32_t)((t) - g_tcbs) - TCP_MAX_CONN)   // P5-2: slot sock.c
 
 static void net_tcp_rtx_arm(tcp_tcb_t *t);
 static void net_tcp_log(const char *msg);
@@ -878,6 +886,9 @@ static inline int seq_le(uint32_t a, uint32_t b)
 
 static uint32_t net_tcp_rcv_wnd(const tcp_tcb_t *t)
 {
+    if (t->app == TCP_APP_USER) {
+        return sock_tcp_rx_space(TCB_USER(t));   // P5-2: ruang ring masuk
+    }
     return TCP_BUF_SIZE - t->buf_count;
 }
 
@@ -1088,7 +1099,9 @@ static int net_tcp_output(tcp_tcb_t *t)
         }
         // C3d: peer sudah FIN dan echo habis terkirim + di-ACK: FIN kita
         // (sekaligus ACK untuk FIN peer).
-        if (t->state == TCP_CLOSE_WAIT && t->buf_count == 0) {
+        // P5-2: soket user: hanya setelah program menutup fd (close_after).
+        if (t->state == TCP_CLOSE_WAIT && t->buf_count == 0 &&
+            (t->app != TCP_APP_USER || t->close_after)) {
             net_tcp_send_fin(t, TCP_LAST_ACK);
             net_tcp_log("FIN dikirim (LAST_ACK)");
             return 1;
@@ -1162,6 +1175,10 @@ static void net_tcp_tls_release(tcp_tcb_t *t)
 
 static void net_tcp_close(tcp_tcb_t *t, const char *why)
 {
+    // P5-2: baik-baik = kedua FIN sudah lewat (LAST_ACK / TIME_WAIT).
+    if (t->app == TCP_APP_USER && t->state != TCP_CLOSED) {
+        sock_tcp_closed(TCB_USER(t), t->state != TCP_LAST_ACK && t->state != TCP_TIME_WAIT);
+    }
     ktimer_cancel(TCB_TIMER(t));
     net_tcp_tls_release(t);
     t->state = TCP_CLOSED;
@@ -1483,9 +1500,60 @@ static int net_tcp_tls_pump(tcp_tcb_t *t)
     return 1;
 }
 
+// ---- P5-2: soket TCP user ----
+static uint8_t g_tcp_user_tmp[TCP_BUF_SIZE];   // net task saja
+
+// Ring keluar soket -> antrean kirim TCB (sebanyak ruang). fd sudah ditutup
+// dan ring habis: FIN setelah antrean terkirim dan di-ACK (close_after).
+static void net_tcp_user_pump(tcp_tcb_t *t)
+{
+    uint32_t c = TCB_USER(t);
+    int a = sock_tcp_app(c);
+
+    if ((t->state != TCP_ESTABLISHED && t->state != TCP_CLOSE_WAIT) ||
+        (a & SOCK_TCP_APP_ABORT)) {
+        return;
+    }
+    if (a & SOCK_TCP_TXQ) {
+        net_tcp_queue(t, g_tcp_user_tmp,
+                      sock_tcp_tx_take(c, g_tcp_user_tmp, TCP_BUF_SIZE - t->buf_count));
+    }
+    if ((a & SOCK_TCP_APP_CLOSE) && !(sock_tcp_app(c) & SOCK_TCP_TXQ)) {
+        t->close_after = 1;
+    }
+}
+
+// Tiap tick. Return 0 bila timeout keadaan tidak perlu diperiksa.
+static int net_tcp_user_poll(tcp_tcb_t *t)
+{
+    uint32_t c = TCB_USER(t);
+    int a = sock_tcp_app(c);
+
+    if (a & SOCK_TCP_APP_ABORT) {
+        net_tcp_tcb_send(t, t->snd_nxt, TCP_RST | TCP_ACK, 0);
+        net_tcp_close(t, "soket user ditutup dengan data belum dibaca, RST");
+        return 0;
+    }
+    net_tcp_user_pump(t);
+    net_tcp_output(t);
+    // Program membaca, jendela terbuka lagi: kabari peer.
+    if (t->state == TCP_ESTABLISHED && t->adv_wnd < TCP_MSS && net_tcp_rcv_wnd(t) >= TCP_MSS) {
+        net_tcp_tcb_send(t, t->snd_nxt, TCP_ACK, 0);
+    }
+    a = sock_tcp_app(c);
+    if ((a & SOCK_TCP_ACCEPTED) && !(a & SOCK_TCP_APP_CLOSE) && t->buf_count == 0 &&
+        (t->state == TCP_ESTABLISHED || t->state == TCP_CLOSE_WAIT)) {
+        return 0;
+    }
+    return 1;
+}
+
 static void net_tcp_tick_one(tcp_tcb_t *t)
 {
     if (t->state == TCP_CLOSED) {
+        return;
+    }
+    if (t->app == TCP_APP_USER && !net_tcp_user_poll(t)) {
         return;
     }
     // D9: antrean TLS bisa bergerak tanpa segmen masuk (ruang TCB bebas).
@@ -1592,6 +1660,9 @@ static uint32_t net_tcp_app_rx(tcp_tcb_t *t, const volatile uint8_t *d, uint32_t
     if (t->app == TCP_APP_CLI) {
         return net_tcp_cli_rx(t, d, len);
     }
+    if (t->app == TCP_APP_USER) {
+        return sock_tcp_rx(TCB_USER(t), d, len);   // P5-2: ring masuk soket
+    }
     // Echo: data masuk langsung jadi data kirim, hanya sebanyak ruang buffer
     // (= jendela yang kita iklankan).
     return net_tcp_queue(t, d, len);
@@ -1646,6 +1717,49 @@ static void net_tcp_tcb_open(tcp_tcb_t *t, const volatile uint8_t *buf, uint32_t
     net_tcp_log("SYN diterima, SYN-ACK dikirim (SYN_RCVD)");
 }
 
+// P5-2: SYN ke port listen soket user: hanya slot TCB user. Penuh -> SYN_RCVD
+// user tertua digusur diam-diam (seperti C5a), tanpa SYN_RCVD -> RST. Slot
+// yang TCB-nya CLOSED tetapi masih dipegang fd (belum di-close) tidak dipakai.
+static int net_tcp_user_syn(const volatile uint8_t *buf, uint32_t r, uint16_t sport,
+                            uint16_t dport, uint32_t seq)
+{
+    tcp_tcb_t *t = 0, *victim = 0;
+
+    for (uint32_t k = TCP_MAX_CONN; k < TCP_TCB_N; k++) {
+        tcp_tcb_t *e = &g_tcbs[k];
+
+        if (e->state == TCP_CLOSED) {
+            if (t == 0 && sock_tcp_slot_free(k - TCP_MAX_CONN)) {
+                t = e;
+            }
+        } else if (e->state == TCP_SYN_RCVD && (victim == 0 || e->last < victim->last)) {
+            victim = e;
+        }
+    }
+    if (t == 0 && victim == 0) {
+        g_tcp_busy++;
+        return 0;
+    }
+
+    uint8_t isn[20];
+
+    if (!entropy_get(isn, sizeof(isn))) {
+        g_tcp_noentropy++;
+        net_tcp_log("SYN dibuang: entropi belum cukup");
+        return 1;
+    }
+    if (t == 0) {
+        ktimer_cancel(TCB_TIMER(victim));
+        sock_tcp_closed(TCB_USER(victim), 1);   // belum di-accept: slot langsung bebas
+        victim->state = TCP_CLOSED;
+        g_tcp_synrcvd_evicted++;
+        t = victim;
+    }
+    sock_tcp_syn(TCB_USER(t), buf + 26, sport, dport);
+    net_tcp_tcb_open(t, buf, r, sport, dport, seq, isn, TCP_APP_USER, -1);
+    return 1;
+}
+
 // Return 1 jika segmen sudah ditangani, 0 jika harus dibalas RST (port tutup).
 static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
                          uint32_t plen)
@@ -1693,6 +1807,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             t->last = timer_ticks;   // C5b: kemajuan
             g_tcp_conn_open++;
             net_tcp_log("ESTABLISHED");
+            if (t->app == TCP_APP_USER) {
+                sock_tcp_open(TCB_USER(t));   // P5-2: siap di-accept
+            }
             if (t->app == TCP_APP_CLI) {
                 t->opened = timer_ticks;
                 if (!t->tls) {
@@ -1794,6 +1911,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
                 t->rcv_nxt++;
                 t->state = TCP_CLOSE_WAIT;
                 net_tcp_log("FIN dari peer (CLOSE_WAIT)");
+                if (t->app == TCP_APP_USER) {
+                    sock_tcp_fin(TCB_USER(t));   // P5-2: recv -> 0 setelah data habis
+                }
             } else if (t->state == TCP_FIN_WAIT_1) {
                 t->rcv_nxt++;
                 t->state = TCP_CLOSING;   // FIN kita belum di-ACK: tutup bersamaan
@@ -1810,11 +1930,18 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             need_ack = 1;
         }
 
+        if (t->app == TCP_APP_USER) {
+            net_tcp_user_pump(t);   // P5-2: ACK membebaskan antrean kirim
+        }
         if (!net_tcp_output(t) && need_ack) {
             net_tcp_tcb_send(t, t->snd_nxt, TCP_ACK, 0);
         }
 
         return 1;
+    }
+
+    if ((flags & TCP_SYN) && !(flags & (TCP_ACK | TCP_RST)) && sock_tcp_listening(dport)) {
+        return net_tcp_user_syn(buf, r, sport, dport, seq);
     }
 
     if (((dport == NET_TCP_ECHO_PORT && g_net_echo) ||

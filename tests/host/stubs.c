@@ -217,6 +217,71 @@ WEAK int sock_execute(const volatile uint8_t *cmd, uint32_t len)
     return 0;
 }
 
+// P5-2: kait TCP soket user (net.c). test_net memakai sock.c asli.
+WEAK int sock_tcp_listening(uint16_t port)
+{
+    (void)port;
+    return 0;
+}
+
+WEAK int sock_tcp_slot_free(uint32_t c)
+{
+    (void)c;
+    return 1;
+}
+
+WEAK void sock_tcp_syn(uint32_t c, const volatile uint8_t *ip, uint16_t rport, uint16_t lport)
+{
+    (void)c;
+    (void)ip;
+    (void)rport;
+    (void)lport;
+}
+
+WEAK void sock_tcp_open(uint32_t c)
+{
+    (void)c;
+}
+
+WEAK uint32_t sock_tcp_rx_space(uint32_t c)
+{
+    (void)c;
+    return 0;
+}
+
+WEAK uint32_t sock_tcp_rx(uint32_t c, const volatile uint8_t *d, uint32_t len)
+{
+    (void)c;
+    (void)d;
+    (void)len;
+    return 0;
+}
+
+WEAK void sock_tcp_fin(uint32_t c)
+{
+    (void)c;
+}
+
+WEAK uint32_t sock_tcp_tx_take(uint32_t c, uint8_t *dst, uint32_t max)
+{
+    (void)c;
+    (void)dst;
+    (void)max;
+    return 0;
+}
+
+WEAK int sock_tcp_app(uint32_t c)
+{
+    (void)c;
+    return 0;
+}
+
+WEAK void sock_tcp_closed(uint32_t c, int reset)
+{
+    (void)c;
+    (void)reset;
+}
+
 WEAK int g_logdisk_syncs = 0;
 
 WEAK void logdisk_sync(int panic)

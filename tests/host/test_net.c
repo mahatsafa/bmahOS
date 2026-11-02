@@ -9,10 +9,36 @@
 #include "test.h"
 #include "net.c"
 #include "netcon.c"   // R2
+#include "sock.c"     // P5-2: soket TCP user lewat net.c
 #include "bearssl.h"
 #include "tls_test_keys.h"
 
 // ---- stub driver/memori untuk net.c ----
+// P5-2: sock.c (di-#include) butuh konteks task/syscall.
+size_t current_index = 9;
+uint64_t g_current_pml4_phys;
+uint64_t g_sys_rejected;
+uint32_t g_cmd_len;
+volatile uint64_t g_net_loops = 1;
+
+void task_wake(size_t idx)
+{
+    (void)idx;
+}
+
+bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len, bool require_writable)
+{
+    (void)pml4_phys;
+    (void)ptr;
+    (void)len;
+    (void)require_writable;
+    return true;
+}
+
+void net_rx_tick_wake(void)
+{
+}
+
 uint8_t g_e1000_mac[6] = { 0x00, 0x0c, 0x29, 0x86, 0xef, 0x48 };
 uint8_t *g_e1000_rx_ring_virt = 0;
 uint64_t g_e1000_rx_buf_phys[E1000_RX_RING_SIZE];
@@ -2805,6 +2831,217 @@ static void test_dhcp_hooks(void)
     memcpy(g_net_ip, OUR_IP, 4);
 }
 
+// ---- P5-2: soket TCP user (sock.c asli, lewat syscall-nya) ----
+
+#define U(x)  ((uint64_t)(uintptr_t)(x))
+
+static int64_t sys_neg(uint64_t r)
+{
+    return (int64_t)r;
+}
+#define UTCB  (&g_tcbs[TCP_MAX_CONN])   // slot TCB user pertama
+
+static void user_reset(void)
+{
+    tcp_reset();
+    memset(g_sk, 0, sizeof(g_sk));
+    memset(g_skc, 0, sizeof(g_skc));
+    g_wport = 5556;
+}
+
+// fd 0 = soket listen port 5556.
+static void user_listen(void)
+{
+    user_reset();
+    CHECK(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0) == 0);
+    CHECK(sock_sys_bind(0, 5556, 0, 0, 0) == 0);
+    CHECK(sock_sys_listen(0, 0, 0, 0, 0) == 0);
+}
+
+// Handshake peer port 4500 -> 5556 di slot user pertama, lalu accept (fd 1).
+static void user_open(uint32_t our_isn, uint32_t peer_isn)
+{
+    uint8_t f[200];
+    uint64_t from = 0;
+
+    g_isn_set = 1;
+    g_isn = our_isn;
+    rx(f, mk_tcp_w(f, peer_isn, 0, F_SYN, 0, 0, 4096));
+    g_isn_set = 0;
+    g_iss = our_isn;
+    g_pseq = peer_isn + 1;
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_SYN | F_ACK) && tx_seg(0).wnd == SOCK_TCP_RING);
+    CHECK(UTCB->state == TCP_SYN_RCVD && g_tcbs[0].state == TCP_CLOSED);
+    CHECK(sys_neg(sock_sys_accept(0, 0, 1, 0, 0)) == SOCK_EAGAIN);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 0 && UTCB->state == TCP_ESTABLISHED);
+    CHECK(sock_sys_accept(0, U(&from), 0, 0, 0) == 1);
+    CHECK(from == SOCK_ADDR(192, 168, 50, 1, 4500));
+}
+
+// Data segmen keluar (urut dari g_usnd + g_ugot) dikumpulkan ke g_uo.
+static uint8_t g_uo[4000];
+static uint32_t g_usnd, g_ugot, g_useg_max;
+
+static void user_collect(void)
+{
+    for (int k = 0; k < g_tx_n && k < TX_MAX; k++) {
+        struct seg s = tx_seg(k);
+
+        if (s.len > 0 && s.seq == g_usnd + g_ugot && g_ugot + s.len <= sizeof(g_uo)) {
+            memcpy(g_uo + g_ugot, s.data, s.len);
+            g_ugot += s.len;
+            if (s.len > g_useg_max) {
+                g_useg_max = s.len;
+            }
+        }
+    }
+}
+
+static void test_tcp_user(void)
+{
+    static uint8_t f[1700], b[3000], o[3000];
+    struct seg s;
+
+    // Tanpa soket listen: SYN ke 5556 -> RST.
+    user_reset();
+    rx(f, mk_tcp_w(f, 100, 0, F_SYN, 0, 0, 4096));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK));
+
+    user_listen();
+    user_open(1000, 5000);
+
+    // Data masuk -> ring; ACK dengan jendela = ruang ring.
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, (const uint8_t *)"halo", 4, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.ack == g_pseq + 4 && s.wnd == SOCK_TCP_RING - 4 && s.len == 0);
+    g_pseq += 4;
+    CHECK(sock_sys_recv(1, U(o), 100, 0, 0) == 4 && memcmp(o, "halo", 4) == 0);
+
+    // send: net task mengirim di tick berikutnya.
+    CHECK(sock_sys_send(1, U("balas"), 5, 0, 0) == 5);
+    CHECK(step() == 1);
+    s = tx_seg(0);
+    CHECK(s.seq == g_iss + 1 && s.len == 5 && memcmp(s.data, "balas", 5) == 0 && s.ack == g_pseq);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 6, F_ACK, 0, 0, 4096));
+    CHECK(g_tx_n == 0 && UTCB->snd_una == g_iss + 6);
+
+    // 2500 byte: ring keluar + antrean TCB, stop-and-wait <= MSS per segmen.
+    for (int i = 0; i < 2500; i++) {
+        b[i] = (uint8_t)(i * 7 + 3);
+    }
+    g_usnd = g_iss + 6;
+    g_ugot = 0;
+    g_useg_max = 0;
+    uint32_t sent = 0;
+    for (int round = 0; round < 40 && g_ugot < 2500; round++) {
+        if (sent < 2500) {
+            int64_t r = (int64_t)sock_sys_send(1, U(b + sent), 2500 - sent, 1, 0);
+
+            if (r > 0) {
+                sent += (uint32_t)r;
+            }
+        }
+        step();
+        user_collect();
+        rx(f, mk_tcp_w(f, g_pseq, g_usnd + g_ugot, F_ACK, 0, 0, 4096));
+        user_collect();
+    }
+    CHECK(sent == 2500 && g_ugot == 2500 && memcmp(g_uo, b, 2500) == 0);
+    rx(f, mk_tcp_w(f, g_pseq, g_usnd + g_ugot, F_ACK, 0, 0, 4096));   // segmen terakhir
+    CHECK(g_tx_n == 0);
+    CHECK(g_useg_max == TCP_MSS && UTCB->buf_count == 0 && UTCB->snd_una == g_usnd + 2500);
+    uint32_t ack = g_usnd + 2500;
+
+    // Ring masuk penuh: jendela 0, data berikutnya tidak di-ACK; recv membuka
+    // jendela lagi -> net task mengirim ACK pembaruan jendela.
+    memset(b, 'w', 1100);
+    rx(f, mk_tcp_w(f, g_pseq, ack, F_ACK, b, 536, 4096));
+    g_pseq += 536;
+    rx(f, mk_tcp_w(f, g_pseq, ack, F_ACK, b, 488, 4096));
+    g_pseq += 488;
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.ack == g_pseq && s.wnd == 0);
+    rx(f, mk_tcp_w(f, g_pseq, ack, F_ACK, b, 10, 4096));
+    s = tx_seg(0);
+    CHECK(g_tx_n == 1 && s.ack == g_pseq && s.wnd == 0);   // 10 byte tidak diterima
+    CHECK(step() == 0);
+    CHECK(sock_sys_recv(1, U(o), sizeof(o), 0, 0) == SOCK_TCP_RING && o[1023] == 'w');
+    CHECK(step() == 1);
+    s = tx_seg(0);
+    CHECK(s.flags == F_ACK && s.wnd == SOCK_TCP_RING && s.ack == g_pseq && s.len == 0);
+    CHECK(step() == 0);
+
+    // Dipegang program dengan antrean kosong: batas diam 30 s tidak berlaku.
+    timer_ticks += 5000;
+    CHECK(step() == 0 && UTCB->state == TCP_ESTABLISHED);
+
+    // FIN peer: recv 0, FIN kita baru setelah close.
+    rx(f, mk_tcp_w(f, g_pseq, ack, F_FIN | F_ACK, 0, 0, 4096));
+    g_pseq++;
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == F_ACK && UTCB->state == TCP_CLOSE_WAIT);
+    CHECK(sock_sys_recv(1, U(o), 100, 0, 0) == 0);
+    timer_ticks += 5000;
+    CHECK(step() == 0 && UTCB->state == TCP_CLOSE_WAIT);
+    CHECK(sock_sys_send(1, U("akhir"), 5, 0, 0) == 5);
+    CHECK(step() == 1 && tx_seg(0).len == 5 && tx_seg(0).seq == ack);
+    rx(f, mk_tcp_w(f, g_pseq, ack + 5, F_ACK, 0, 0, 4096));
+    CHECK(sock_sys_close(1, 0, 0, 0, 0) == 0);
+    CHECK(step() == 1 && tx_seg(0).flags == (F_FIN | F_ACK) && UTCB->state == TCP_LAST_ACK);
+    CHECK(!sock_tcp_slot_free(0));
+    rx(f, mk_tcp_w(f, g_pseq, ack + 6, F_ACK, 0, 0, 4096));
+    CHECK(UTCB->state == TCP_CLOSED && sock_tcp_slot_free(0) && g_sock_tcp_reset == 0);
+
+    // close dengan data belum dibaca: RST.
+    user_open(2000, 6000);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1, F_ACK, (const uint8_t *)"x", 1, 4096));
+    CHECK(sock_sys_close(1, 0, 0, 0, 0) == 0);
+    CHECK(step() == 1 && tx_seg(0).flags == (F_RST | F_ACK));
+    CHECK(UTCB->state == TCP_CLOSED && sock_tcp_slot_free(0) && g_sock_tcp_reset == 0);
+
+    // RST peer: recv -104, slot bebas setelah close.
+    user_open(3000, 7000);
+    rx(f, mk_tcp_w(f, g_pseq, 0, F_RST, 0, 0, 0));
+    CHECK(g_tx_n == 0 && UTCB->state == TCP_CLOSED && !sock_tcp_slot_free(0));
+    CHECK(sys_neg(sock_sys_recv(1, U(o), 100, 0, 0)) == SOCK_ECONNRESET);
+    CHECK(g_sock_tcp_reset == 1);
+    // Slot masih dipegang fd: SYN baru memakai slot user kedua.
+    g_isn_set = 0;
+    rx(f, mk_tcp(f, 4700, 5556, 900, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && g_tcbs[TCP_MAX_CONN + 1].state == TCP_SYN_RCVD);
+    CHECK(sock_sys_close(1, 0, 0, 0, 0) == 0 && sock_tcp_slot_free(0));
+
+    // Slot user penuh SYN_RCVD: SYN baru menggusur yang tertua; ESTABLISHED
+    // semua -> RST. Slot layanan kernel tidak terpengaruh.
+    uint64_t ev0 = g_tcp_synrcvd_evicted, busy0 = g_tcp_busy;
+    rx(f, mk_tcp(f, 4701, 5556, 910, 0, F_SYN, ""));
+    CHECK(UTCB->state == TCP_SYN_RCVD && UTCB->rport == 4701);
+    rx(f, mk_tcp(f, 4702, 5556, 920, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_SYN | F_ACK) && g_tcp_synrcvd_evicted == ev0 + 1);
+    CHECK(g_tcbs[TCP_MAX_CONN + 1].rport == 4702);   // 4700 (tertua) digusur
+    rx(f, mk_tcp(f, 4701, 5556, 911, 0xA0A1A2A4, F_ACK, ""));
+    rx(f, mk_tcp(f, 4702, 5556, 921, 0xA0A1A2A4, F_ACK, ""));
+    CHECK(UTCB->state == TCP_ESTABLISHED && g_tcbs[TCP_MAX_CONN + 1].state == TCP_ESTABLISHED);
+    rx(f, mk_tcp(f, 4703, 5556, 930, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && g_tcp_busy == busy0 + 1);
+    for (int k = 0; k < TCP_MAX_CONN; k++) {
+        CHECK(g_tcbs[k].state == TCP_CLOSED);
+    }
+    rx(f, mk_tcp(f, 4704, 7, 940, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_SYN | F_ACK) && g_tcbs[0].state == TCP_SYN_RCVD);
+
+    // Belum di-accept + listen ditutup: keduanya RST, slot bebas.
+    CHECK(sock_sys_close(0, 0, 0, 0, 0) == 0);
+    CHECK(step() == 2 && tx_seg(0).flags == (F_RST | F_ACK) && tx_seg(1).flags == (F_RST | F_ACK));
+    CHECK(sock_tcp_slot_free(0) && sock_tcp_slot_free(1));
+    CHECK(UTCB->state == TCP_CLOSED && g_tcbs[TCP_MAX_CONN + 1].state == TCP_CLOSED);
+    rx(f, mk_tcp(f, 4705, 5556, 950, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK));   // port 5556 tutup lagi
+    CHECK(g_tx_bad == 0);
+    user_reset();
+    g_wport = 7;
+}
+
 int main(void)
 {
     test_checksum();
@@ -2816,6 +3053,7 @@ int main(void)
     test_tcp_stream();
     test_tcp_retx();
     test_tcp_close();
+    test_tcp_user();
     test_tcp_limits();
     test_tcp_table();
     test_tcp_idle();

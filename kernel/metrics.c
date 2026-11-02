@@ -266,6 +266,10 @@ static const metric_t g_metrics[] = {
     M64("sock_drop", g_sock_drop),
     M64("sock_err", g_sock_err),
     M64("sock_noarp", g_sock_noarp),
+    M64("sock_tcp_accept", g_sock_tcp_accept),   // P5-2
+    M64("sock_tcp_rx_bytes", g_sock_tcp_rx),
+    M64("sock_tcp_tx_bytes", g_sock_tcp_tx),
+    M64("sock_tcp_reset", g_sock_tcp_reset),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

@@ -41,6 +41,7 @@ uint64_t g_sys_calls, g_sys_rejected, g_user_faults;
 uint64_t g_pmm_allocs, g_pmm_frees, g_pmm_fail, g_pmm_bad_free;
 uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail;
 uint64_t g_sock_rx, g_sock_tx, g_sock_drop, g_sock_err, g_sock_noarp;
+uint64_t g_sock_tcp_accept, g_sock_tcp_rx, g_sock_tcp_tx, g_sock_tcp_reset;   // P5-2
 
 // Getter: nilai dikendalikan g_fn_val (0 atau besar).
 static uint64_t g_fn_val;
@@ -138,13 +139,14 @@ static int walk(const char *pfx, int seen[], uint32_t *maxlen)
 
 static void test_table(void)
 {
-    CHECK(METRICS_N == 120);
+    CHECK(METRICS_N == 124);
     CHECK_STR(g_metrics[0].name, "uptime_ticks");
     CHECK_STR(g_metrics[77].name, "priv_hmac");     // 78 kunci lama di depan
     CHECK_STR(g_metrics[78].name, "uptime_s");
     CHECK_STR(g_metrics[96].name, "audit_seq");
     CHECK_STR(g_metrics[114].name, "kmalloc_fail");
-    CHECK_STR(g_metrics[METRICS_N - 1].name, "sock_noarp");
+    CHECK_STR(g_metrics[119].name, "sock_noarp");
+    CHECK_STR(g_metrics[METRICS_N - 1].name, "sock_tcp_reset");   // P5-2
     int ok_chars = 1, ok_len = 1, ok_uniq = 1, ok_kind = 1;
     for (uint32_t i = 0; i < METRICS_N; i++) {
         const char *n = g_metrics[i].name;
@@ -243,10 +245,13 @@ static void test_prefix(void)
               "sys_calls=0\nsys_rejected=0\nuser_faults=0\n"
               "pmm_alloc=0\npmm_free=0\npmm_fail=0\npmm_bad_free=0\n"
               "kmalloc=0\nkfree=0\nkfree_noop=0\nkmalloc_fail=0\n"
-              "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n");
+              "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
+              "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n");
     CHECK_STR(run(" 111"), "kmalloc=0\nkfree=0\nkfree_noop=0\nkmalloc_fail=0\n"
-              "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n");
-    CHECK_STR(run(" sock_"), "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n");
+              "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
+              "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n");
+    CHECK_STR(run(" sock_"), "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
+              "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n");
     CHECK_STR(run(" kmalloc"), "kmalloc=0\nkmalloc_fail=0\n");
     CHECK_STR(run(" zzz"), "ERR: metrics: tidak ada kunci yang cocok\n");
     CHECK_STR(run(" tcp_ 43"), "ERR: metrics: tidak ada kunci yang cocok\n");
@@ -260,7 +265,7 @@ static void test_bad_args(void)
 {
     static const char *const bad[] = {
         " ", "  ", " tcp_  1", "  tcp_", " tcp_ ", " 1 2", " 1 tcp_", " tcp_ udp_",
-        " TCP_", " tcp-", " 120", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
+        " TCP_", " tcp-", " 124", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
         " tcp_\t", " -1",
     };
     set_all(0);

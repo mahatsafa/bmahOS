@@ -17,8 +17,14 @@ typedef long bm_i64;
 #define BM_SYS_SENDTO   5
 #define BM_SYS_RECVFROM 6
 #define BM_SYS_CLOSE    7
+#define BM_SYS_LISTEN   8    // P5-2: TCP server
+#define BM_SYS_ACCEPT   9
+#define BM_SYS_SEND     10
+#define BM_SYS_RECV     11
 
+#define BM_SOCK_TCP     1
 #define BM_SOCK_UDP     2
+#define BM_TCP_RING     1024   // send/recv maks per panggilan
 #define BM_DGRAM_MAX    1472
 
 #define BM_EIO          (-5)
@@ -28,9 +34,12 @@ typedef long bm_i64;
 #define BM_EFAULT       (-14)
 #define BM_EINVAL       (-22)
 #define BM_EMFILE       (-24)
+#define BM_EPIPE        (-32)
 #define BM_EMSGSIZE     (-90)
 #define BM_EADDRINUSE   (-98)
 #define BM_ENETDOWN     (-100)
+#define BM_ECONNRESET   (-104)
+#define BM_ENOTCONN     (-107)
 #define BM_EHOSTUNREACH (-113)
 
 // Alamat soket: IPv4 a.b.c.d dan port dalam satu bilangan 48 bit.
@@ -88,6 +97,29 @@ static inline bm_i64 bm_recvfrom(bm_i64 fd, void *buf, bm_u64 cap, bm_u64 *from,
 static inline bm_i64 bm_close(bm_i64 fd)
 {
     return bm_sys5(BM_SYS_CLOSE, (bm_u64)fd, 0, 0, 0, 0);
+}
+
+static inline bm_i64 bm_listen(bm_i64 fd)
+{
+    return bm_sys5(BM_SYS_LISTEN, (bm_u64)fd, 0, 0, 0, 0);
+}
+
+// Hasil: fd koneksi baru. from (boleh 0) = alamat peer. timeout 0 = selamanya.
+static inline bm_i64 bm_accept(bm_i64 fd, bm_u64 *from, bm_u64 timeout)
+{
+    return bm_sys5(BM_SYS_ACCEPT, (bm_u64)fd, (bm_u64)from, timeout, 0, 0);
+}
+
+// Hasil: byte yang masuk antrean (bisa kurang dari len).
+static inline bm_i64 bm_send(bm_i64 fd, const void *buf, bm_u64 len, bm_u64 timeout)
+{
+    return bm_sys5(BM_SYS_SEND, (bm_u64)fd, (bm_u64)buf, len, timeout, 0);
+}
+
+// Hasil: byte yang dibaca, 0 = peer sudah menutup (FIN) dan data habis.
+static inline bm_i64 bm_recv(bm_i64 fd, void *buf, bm_u64 cap, bm_u64 timeout)
+{
+    return bm_sys5(BM_SYS_RECV, (bm_u64)fd, (bm_u64)buf, cap, timeout, 0);
 }
 
 #endif

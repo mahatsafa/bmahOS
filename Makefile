@@ -84,7 +84,7 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.S
 USER_CFLAGS := -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -m64 \
                -march=x86-64 -mno-mmx -mno-sse -mno-sse2 -O2 -fno-tree-loop-distribute-patterns \
                -fno-asynchronous-unwind-tables -Wall -Wextra -Werror
-USER_PROGS  := udpgema
+USER_PROGS  := udpgema tcpgema
 
 $(BUILD_DIR)/user/%.elf: userspace/%.c userspace/bm.h userspace/user.ld
 	@mkdir -p $(BUILD_DIR)/user
@@ -159,7 +159,7 @@ host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
                      $(KERNEL_DIR)/tls.c   # C3c: timer retransmisi, D9b: TLS 7780
 host_libs_net      = $(HOST_BEARSSL_LIB)   # '=': didefinisikan di bawah
-host_deps_net     := $(KERNEL_DIR)/net.c $(KERNEL_DIR)/netcon.c   # di-#include oleh test_net.c (akses static)
+host_deps_net     := $(KERNEL_DIR)/net.c $(KERNEL_DIR)/netcon.c $(KERNEL_DIR)/sock.c   # di-#include oleh test_net.c (akses static)
 host_srcs_auth    := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/audit.c $(KERNEL_DIR)/kprintf.c
 host_deps_auth    := $(KERNEL_DIR)/auth.c  # di-#include oleh test_auth.c
 host_srcs_entropy := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/kprintf.c

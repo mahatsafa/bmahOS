@@ -228,14 +228,22 @@ def test_fs_persist(net, cli):
           r == "isi CATATAN.TXT ukuran=21:\nbaris satu\nbaris dua\n", repr(r))
 
 
-def test_logdisk(net, cli):
+def test_logdisk(net, cli, work):
     """R4: boot kedua = boot 2 di LOG.BIN; teks boot pertama (sampai baris
     reboot ACPI, ditulis logdisk_sync) terbaca lewat logdisk <seq>."""
     st = cli.cmd("logdisk")
     kv = dict(l.split("=", 1) for l in (st or "").splitlines() if "=" in l)
-    check("R4: boot kedua: logdisk=aktif boot=2 seq_boot_lalu=1",
+    # seq_boot_lalu = seq rekaman boot 1 tertua yang dibaca host setelah boot 1
+    # (1 bila cincin belum berputar; P5-2: boot 1 dev bisa > 128 rekaman).
+    first = "1"
+    try:
+        m = re.match(r"=== boot 1 seq (\d+) ===", open(os.path.join(work, "log1.txt")).readline())
+        first = m.group(1) if m else "?"
+    except OSError:
+        first = "?"
+    check("R4: boot kedua: logdisk=aktif boot=2 seq_boot_lalu = rekaman boot 1 tertua (%s)" % first,
           kv.get("logdisk") == "aktif" and kv.get("boot") == "2" and
-          kv.get("seq_boot_lalu") == "1", repr(st))
+          kv.get("seq_boot_lalu") == first, repr(st))
     text, nxt, pages = "", 1, 0
     while nxt is not None and pages < 200:
         time.sleep(0.12)
@@ -1257,7 +1265,7 @@ def main():
         time.sleep(1.2)
         test_fs_persist(net, cli)
         time.sleep(1.2)
-        test_logdisk(net, cli)
+        test_logdisk(net, cli, a.work)
         time.sleep(1.2)
         test_config(net, cli)
         time.sleep(1.2)
