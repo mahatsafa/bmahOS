@@ -951,8 +951,9 @@ wait "$BPID" 2>/dev/null
 check "tanpa NIC: E1000 dilewati"      'grep -q "PCI-1: E1000 tidak ditemukan" "$BARE"'
 check "tanpa NIC: net task berhenti rapi" 'grep -q "RX belum di-init, net task berhenti (task_exit)" "$BARE"'
 if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    # Task A atau B (urutan selesai bergantung jadwal; yang penting tick tetap jalan).
     check "M-NIC: tanpa NIC: task uji jalan setelah net task keluar" \
-        'sed -n "/net task berhenti (task_exit)/,\$p" "$BARE" | grep -q "^Task B selesai"'
+        'sed -n "/net task berhenti (task_exit)/,\$p" "$BARE" | grep -qE "^Task [AB] selesai"'
 fi
 check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$BARE"'
 check "D7: tanpa disk: CONFIG: sumber=bawaan (tanpa disk)" \
