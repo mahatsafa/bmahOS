@@ -225,6 +225,9 @@ check "reset ACPI terdeteksi"    'grep -q "ACPI-R: reset ACPI siap" "$LOG"'
 check "NX self-test (B3)"        'grep -q "NX: self-test PASS" "$LOG"'
 check "TSS-1: iopb_offset=0x68 (I/O ring 3 ditolak)" 'grep -q "TSS-1: iopb_offset=0x68 (tanpa peta I/O)" "$LOG"'
 check "P7-1a: boot ISO tanpa cmdline Limine -> P7: cmdline=\"\"" 'grep -aq "^P7: cmdline=\"\"" "$LOG"'
+if grep -q "PROD: task uji dilewati" "$LOG"; then OTA_KUNCI=PROD; else OTA_KUNCI=uji; fi
+check "P7-1: swa-uji ECDSA P-256 saat boot PASS (kunci $OTA_KUNCI)" \
+    'grep -aq "^P7: ota swa-uji PASS (ECDSA P-256 BearSSL, kunci $OTA_KUNCI)" "$LOG"'
 check "PMM free/realloc PASS"    'grep -aq "PMM free/realloc test: PASS" "$LOG"'
 if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "user mode + spawn jalan (hello 2x)" '[ "$(grep -c "^hello" "$LOG")" -eq 2 ]'

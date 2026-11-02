@@ -705,6 +705,29 @@ void sha256_final(sha256_ctx_t *ctx, uint8_t *hash);
 void hmac_sha256(const uint8_t *key, uint32_t keylen, const uint8_t *msg, uint32_t msglen, uint8_t *out);
 int ct_memeq(const void *a, const void *b, uint32_t n);
 
+// P7-1: file kiriman OTA .bmo = header 64 + tanda tangan 64 (ECDSA P-256 r||s
+// atas SHA-256 header) + isi. Lihat kernel/ota.c dan client/ota-sign.py.
+#define OTA_HDR          64
+#define OTA_SIG          64
+#define OTA_PREFIX       (OTA_HDR + OTA_SIG)
+#define OTA_JENIS_KERNEL 1u
+#define OTA_JENIS_APP    2u
+#define OTA_KERNEL_MAX   (FAT32_MAP_MAX * 512u)   // slot KERNA/KERNB 1 MB
+#define OTA_APP_MAX      4096u
+enum {
+    OTA_OK = 0, OTA_ERR_FORMAT = -1, OTA_ERR_JENIS = -2, OTA_ERR_UKURAN = -3,
+    OTA_ERR_TTD = -4, OTA_ERR_HASH = -5, OTA_ERR_ELF = -6,
+};
+typedef struct {
+    uint32_t jenis, versi, ukuran;
+    uint8_t sha256[32];
+} ota_info_t;
+int ota_check(const uint8_t *buf, uint32_t len, const uint8_t *pub65, ota_info_t *out);
+const char *ota_strerror(int rc);
+const uint8_t *ota_pubkey(void);
+uint32_t ota_max_size(uint32_t jenis);
+int ota_selftest(void);
+
 // ---- net.c (ARP/IPv4/ICMP/UDP/TCP) ----
 #define NET_UDP_BUDGET_PER_SEC 100
 #define NET_UDP_SRC_PER_SEC 20

@@ -835,6 +835,7 @@ void kmain(void)
     cpu_features_init();
     kprintf_selftest();
     boot_cmdline_init();   // P7-1a
+    ota_selftest();        // P7-1
     entropy_init();
 #ifdef BMAHOS_ASSERTTEST
     ASSERT(1 + 1 == 3);

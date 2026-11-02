@@ -159,7 +159,7 @@ HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host -Ithird_party/bearssl/inc
 HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config panic metrics logdisk \
-               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock
+               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock ota
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
@@ -207,6 +207,9 @@ host_srcs_dhcp    := $(KERNEL_DIR)/kprintf.c
 host_deps_dhcp    := $(KERNEL_DIR)/dhcp.c      # P3-4: di-#include oleh test_dhcp.c
 host_srcs_sock    := $(KERNEL_DIR)/kprintf.c
 host_deps_sock    := $(KERNEL_DIR)/sock.c      # P5-1: di-#include oleh test_sock.c
+host_srcs_ota     := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/kprintf.c
+host_libs_ota      = $(HOST_BEARSSL_LIB)
+host_deps_ota     := $(KERNEL_DIR)/ota.c client/ota-sign.py tests/ota/ota-uji.pem   # P7-1: butuh openssl
 
 # D9a: BearSSL versi host (clang + ASan/UBSan) dan test_crypto upstream untuk
 # implementasi yang dipakai profil TLS D9. -fno-sanitize=function: vtable BearSSL
@@ -254,7 +257,7 @@ host-test: $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS)) $(HOST_BUILD)/bearssl_
 #   make fuzz [FUZZ_TARGETS="net auth"] [FUZZ_TIME=600]: tiap target FUZZ_TIME detik,
 #     korpus kerja build/fuzz/corpus/X, temuan build/fuzz/crash-X-*, log build/fuzz/X.log
 #   make fuzz-regress: korpus awal + tests/fuzz/regress/X (temuan yang sudah diperbaiki)
-FUZZ_TARGETS ?= net auth config fat32 logdisk dhcp dns sntp filter   # + parser Fase 5
+FUZZ_TARGETS ?= net auth config fat32 logdisk dhcp dns sntp filter ota   # + parser Fase 5, P7-1
 FUZZ_TIME    ?= 600
 FUZZ_BUILD   := $(BUILD_DIR)/fuzz
 FUZZ_CFLAGS   = $(HOST_CFLAGS) -DBMAHOS_FUZZ -Wno-unused-function -Itests/fuzz
