@@ -218,7 +218,8 @@ Linux, dan klien Python.
 - [x] **P2** (2026-10-27/29, 6bfebf2 + 63b76a2 `pci` berhalaman; VMware 46 perangkat, HPET) Enumerasi PCI generik (tidak hardcode bus/dev/fn) dan parsing ACPI (RSDP, XSDT, MADT, HPET).
 - [x] **P3** (2026-10-27/28, 562ef10 RTC, 1c9ca4f + bc84714 SNTP, 02e0a61 DNS, 2ef5c8f DHCP; VMware lulus, DHCP diuji jalur tanpa sewa) DHCP client, DNS client + cache kecil, SNTP + RTC (cap waktu log yang benar).
 - [x] **P4** (2026-10-27, 5a3b24b; VMware lulus) Packet filter: aturan port/IP/laju.
-- [ ] **P5** Socket API untuk user mode agar program di disk bisa memakai TCP/UDP. Daftar syscall stabil
+- [x] **P5** (2026-11-02, P5-1 a8d8045, P5-2 5c17f90, P5-3 5f926ec, P5-4 c6c9cc4; VMware lulus, APP.BIN juga di PROD)
+  Socket API untuk user mode agar program di disk bisa memakai TCP/UDP. Daftar syscall stabil
   dan terdokumentasi.
 - [x] **P6** (2026-10-28, 5100c30 + c51ca56; VMware lulus, syslog 7 pesan) Monitor jaringan sebagai task: ping, TCP-connect, DNS berkala, ambang "naik/turun", alert via syslog UDP.
 - [ ] **P7** OTA A/B: dua slot kernel, verifikasi tanda tangan digital (library teruji), boot percobaan dengan
