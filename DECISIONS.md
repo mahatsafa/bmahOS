@@ -511,3 +511,10 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Tanpa tanda tangan**: integritas APP.BIN bergantung pada akses fisik ke disk (sama seperti KEY.TXT);
   sha256 hanya dicatat di serial/`app` untuk dicocokkan manual. Verifikasi tanda tangan datang bersama P7.
 - **PROD tidak lagi menjalankan PROG.BIN** (uji FAT32-4B lama; slotnya pun direset di kmain). Dev tetap.
+
+## 2026-11-02 (P7 OTA A/B: rencana)
+- **Disetujui pengguna** (semua saran Claude, rincian di `docs/P7-rencana.md`): tanda tangan ECDSA P-256 +
+  SHA-256 dari BearSSL; kunci uji di-commit untuk dev, kunci privat PROD hanya di CentOS; boot dari disk dengan
+  `limine.conf` 512 byte yang ditimpa satu sektor untuk berganti slot (`cmdline: slot=A|B`); slot `KERNA.ELF`/
+  `KERNB.ELF` 1 MB tetap + status `OTA.BIN`; kiriman lewat `ota terima` + port TCP 7781 sekali pakai; boot
+  percobaan 3 kali lalu rollback, sehat 60 s -> dikukuhkan, anti-downgrade; APP.BIN wajib bertanda tangan.
