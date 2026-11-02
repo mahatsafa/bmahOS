@@ -1668,28 +1668,25 @@ static uint32_t net_tcp_app_rx(tcp_tcb_t *t, const volatile uint8_t *d, uint32_t
     return net_tcp_queue(t, d, len);
 }
 
-// P5-2a: TCB baru dari SYN (slot sudah dipilih, ISN dan nonce dari isn[]),
-// lalu SYN-ACK. tls_slot = -1 untuk teks polos.
-static void net_tcp_tcb_open(tcp_tcb_t *t, const volatile uint8_t *buf, uint32_t r,
-                             uint16_t sport, uint16_t dport, uint32_t seq,
-                             const uint8_t isn[20], int app, int tls_slot)
+// P5-3a: isi TCB baru (alamat peer, ISN dari isn[0..3], keadaan aplikasi
+// kosong). irs/rcv_nxt/snd_wnd/nonce/state diisi pemanggil.
+static void net_tcp_tcb_init(tcp_tcb_t *t, const volatile uint8_t *mac,
+                             const volatile uint8_t *ip, uint16_t rport, uint16_t lport,
+                             const uint8_t *isn, int app, int tls_slot)
 {
     for (int i = 0; i < 6; i++) {
-        t->mac[i] = buf[6 + i];
+        t->mac[i] = mac[i];
     }
     for (int i = 0; i < 4; i++) {
-        t->ip[i] = buf[26 + i];
+        t->ip[i] = ip[i];
     }
-    t->rport = sport;
-    t->lport = dport;
+    t->rport = rport;
+    t->lport = lport;
     t->iss = ((uint32_t)isn[0] << 24) | ((uint32_t)isn[1] << 16) |
              ((uint32_t)isn[2] << 8) | (uint32_t)isn[3];
     t->snd_nxt = t->iss + 1;
-    t->irs = seq;
-    t->rcv_nxt = seq + 1;
     t->last = timer_ticks;
     t->snd_una = t->iss;
-    t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
     t->buf_head = 0;
     t->buf_count = 0;
     t->rto = TCP_RTO_INIT;
@@ -1708,6 +1705,18 @@ static void net_tcp_tcb_open(tcp_tcb_t *t, const volatile uint8_t *buf, uint32_t
     t->reboot_after = 0;
     t->out_len = 0;
     t->out_pos = 0;
+}
+
+// P5-2a: TCB baru dari SYN (slot sudah dipilih, ISN dan nonce dari isn[]),
+// lalu SYN-ACK. tls_slot = -1 untuk teks polos.
+static void net_tcp_tcb_open(tcp_tcb_t *t, const volatile uint8_t *buf, uint32_t r,
+                             uint16_t sport, uint16_t dport, uint32_t seq,
+                             const uint8_t isn[20], int app, int tls_slot)
+{
+    net_tcp_tcb_init(t, buf + 6, buf + 26, sport, dport, isn, app, tls_slot);
+    t->irs = seq;
+    t->rcv_nxt = seq + 1;
+    t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
     for (int i = 0; i < 16; i++) {
         t->nonce[i] = isn[4 + i];
     }
