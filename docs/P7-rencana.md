@@ -36,6 +36,12 @@ sudah ada.
 
 - **P7-0** uji boot dari disk di QEMU dan VMware (tanpa kode kernel): limine.conf 512 byte, `cmdline slot=`,
   boot order .vmx lewat skrip.
+  **Hasil P7-0 (2026-11-02): LULUS, MBR tidak perlu.** QEMU (OVMF): superfloppy FAT32 boot, `default_entry: 2`
+  memilih slot B, slot terpilih rusak -> tidak boot (config benar-benar dipakai), slot 1 MB berisi ELF + nol
+  dimuat, kernel tetap `mode=tulis` dengan folder EFI + entri LFN limine.conf. VMware (`uji-p70.ps1`): CD
+  dilepas -> boot dari disk.vmdk slot B (kernel PROD), PCI-1 2, fault 0; CD terpasang -> ISO tetap
+  didahulukan (alur uji lama tidak berubah). disk.vmdk kini berisi EFI/BOOT/BOOTX64.EFI, limine.conf,
+  KERNA.ELF (dev P5-4), KERNB.ELF (PROD P5-4); cadangan disk.vmdk.bak-p70, .vmx.bak-p70.
 - **P7-1a** refactor: peta file besar + baca cmdline Limine.
 - **P7-1** `kernel/ota.c`: parser header + verifikasi ECDSA, `tools/ota-sign.py`, host-test + target fuzz.
 - **P7-2** `ota terima` + port 7781 + tulis slot + `ota status` + klien.
