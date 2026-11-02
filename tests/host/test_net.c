@@ -635,7 +635,7 @@ static void test_limits(void)
 // Semua slot TCB kosong, timer retransmisinya dilepas dari senarai ktimer.
 static void tcp_reset(void)
 {
-    for (int k = 0; k < TCP_MAX_CONN; k++) {
+    for (int k = 0; k < TCP_TCB_N; k++) {
         ktimer_cancel(&g_tcp_rtx_timer[k]);
     }
     memset(g_tcbs, 0, sizeof(g_tcbs));

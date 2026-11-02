@@ -729,6 +729,9 @@ uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
 // C5a: jumlah slot TCB (tabel statis, tanpa heap) dan batas per IP sumber.
 #define TCP_MAX_CONN        4
 #define TCP_MAX_PER_IP      2
+// P5-2a: jumlah seluruh slot TCB. Slot 0..TCP_MAX_CONN-1 = layanan kernel
+// (echo, CLI, TLS); slot sesudahnya disiapkan untuk soket TCP user (P5-2).
+#define TCP_TCB_N           TCP_MAX_CONN
 // D1: CLI port 7779. Setelah handshake server mengirim "bmahOS login\n" dan
 // "nonce: <32 hex>\n" (nonce per koneksi dari DRBG, dibuat saat SYN); klien
 // mengirim "login <hmac-hex64>" (lihat auth_tcp_login, PROTOCOL.md). Satu
@@ -805,14 +808,14 @@ typedef struct {
 
 #define TCB_CHAN(t)  ((t)->tls ? AUDIT_TLS : AUDIT_TCP)
 
-static tcp_tcb_t g_tcbs[TCP_MAX_CONN];
+static tcp_tcb_t g_tcbs[TCP_TCB_N];
 // D2: reboot diminta lewat CLI; batas waktunya global (bukan di TCB) supaya
 // tetap jalan walau koneksi sudah ditutup/RST sebelum keluaran di-ACK.
 static int g_cli_reboot;
 static uint64_t g_cli_reboot_at;
-static uint8_t g_tcp_buf[TCP_MAX_CONN][TCP_BUF_SIZE];
+static uint8_t g_tcp_buf[TCP_TCB_N][TCP_BUF_SIZE];
 // C3c: di luar TCB (ada di senarai ktimer), satu per slot.
-static ktimer_t g_tcp_rtx_timer[TCP_MAX_CONN];
+static ktimer_t g_tcp_rtx_timer[TCP_TCB_N];
 
 #define TCB_BUF(t)   (g_tcp_buf[(t) - g_tcbs])
 #define TCB_TIMER(t) (&g_tcp_rtx_timer[(t) - g_tcbs])
@@ -824,7 +827,7 @@ static int net_tcp_cli_flushed(const tcp_tcb_t *t);
 // Metrics tcp_state: keadaan slot aktif pertama, 0 bila semua CLOSED.
 int net_tcp_state(void)
 {
-    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+    for (uint32_t k = 0; k < TCP_TCB_N; k++) {
         if (g_tcbs[k].state != TCP_CLOSED) {
             return g_tcbs[k].state;
         }
@@ -836,7 +839,7 @@ int net_tcp_conn_active(void)
 {
     int n = 0;
 
-    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+    for (uint32_t k = 0; k < TCP_TCB_N; k++) {
         n += g_tcbs[k].state != TCP_CLOSED;
     }
     return n;
@@ -847,7 +850,7 @@ static int net_tcp_port_active(uint16_t port)
 {
     int n = 0;
 
-    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+    for (uint32_t k = 0; k < TCP_TCB_N; k++) {
         n += g_tcbs[k].state != TCP_CLOSED && g_tcbs[k].lport == port;
     }
     return n;
@@ -1008,7 +1011,7 @@ static tcp_tcb_t *net_tcp_find(const volatile uint8_t *buf, uint32_t r)
     uint16_t sport = (uint16_t)(((uint32_t)buf[r + 0] << 8) | buf[r + 1]);
     uint16_t dport = (uint16_t)(((uint32_t)buf[r + 2] << 8) | buf[r + 3]);
 
-    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+    for (uint32_t k = 0; k < TCP_TCB_N; k++) {
         tcp_tcb_t *t = &g_tcbs[k];
         int match = t->state != TCP_CLOSED && sport == t->rport &&
                     dport == t->lport;
@@ -1568,15 +1571,79 @@ void net_tcp_tick(void)
     // sudah tertutup): reboot juga.
     if (g_cli_reboot && timer_ticks - g_cli_reboot_at > TCP_REBOOT_WAIT) {
         g_cli_reboot = 0;
-        for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+        for (uint32_t k = 0; k < TCP_TCB_N; k++) {
             g_tcbs[k].reboot_after = 0;
         }
         net_tcp_log("CLI reboot (keluaran belum di-ACK)");
         auth_reboot();
     }
-    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+    for (uint32_t k = 0; k < TCP_TCB_N; k++) {
         net_tcp_tick_one(&g_tcbs[k]);
     }
+}
+
+// P5-2a: data dalam urutan untuk aplikasi koneksi. Return jumlah byte yang
+// diterima (sisanya tidak di-ACK; peer mengirim ulang).
+static uint32_t net_tcp_app_rx(tcp_tcb_t *t, const volatile uint8_t *d, uint32_t len)
+{
+    if (t->tls) {
+        return tls_feed(t->tls - 1, d, len);   // D9: record
+    }
+    if (t->app == TCP_APP_CLI) {
+        return net_tcp_cli_rx(t, d, len);
+    }
+    // Echo: data masuk langsung jadi data kirim, hanya sebanyak ruang buffer
+    // (= jendela yang kita iklankan).
+    return net_tcp_queue(t, d, len);
+}
+
+// P5-2a: TCB baru dari SYN (slot sudah dipilih, ISN dan nonce dari isn[]),
+// lalu SYN-ACK. tls_slot = -1 untuk teks polos.
+static void net_tcp_tcb_open(tcp_tcb_t *t, const volatile uint8_t *buf, uint32_t r,
+                             uint16_t sport, uint16_t dport, uint32_t seq,
+                             const uint8_t isn[20], int app, int tls_slot)
+{
+    for (int i = 0; i < 6; i++) {
+        t->mac[i] = buf[6 + i];
+    }
+    for (int i = 0; i < 4; i++) {
+        t->ip[i] = buf[26 + i];
+    }
+    t->rport = sport;
+    t->lport = dport;
+    t->iss = ((uint32_t)isn[0] << 24) | ((uint32_t)isn[1] << 16) |
+             ((uint32_t)isn[2] << 8) | (uint32_t)isn[3];
+    t->snd_nxt = t->iss + 1;
+    t->irs = seq;
+    t->rcv_nxt = seq + 1;
+    t->last = timer_ticks;
+    t->snd_una = t->iss;
+    t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
+    t->buf_head = 0;
+    t->buf_count = 0;
+    t->rto = TCP_RTO_INIT;
+    t->retries = 0;
+    t->fin_sent = 0;
+    t->app = app;
+    t->tls = tls_slot + 1;
+    t->tls_banner = 0;
+    t->tls_closing = 0;
+    t->cli_authed = 0;
+    t->role = AUTH_ROLE_NONE;
+    t->cli_last = 0;
+    t->close_after = 0;
+    t->line_len = 0;
+    t->cmd_seq = 0;
+    t->reboot_after = 0;
+    t->out_len = 0;
+    t->out_pos = 0;
+    for (int i = 0; i < 16; i++) {
+        t->nonce[i] = isn[4 + i];
+    }
+    t->state = TCP_SYN_RCVD;
+    net_tcp_tcb_send(t, t->iss, TCP_SYN | TCP_ACK, 1);
+    net_tcp_rtx_arm(t);
+    net_tcp_log("SYN diterima, SYN-ACK dikirim (SYN_RCVD)");
 }
 
 // Return 1 jika segmen sudah ditangani, 0 jika harus dibalas RST (port tutup).
@@ -1704,15 +1771,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         }
 
         if (t->state == TCP_ESTABLISHED && dlen > 0) {
-            // Echo: data masuk langsung jadi data kirim, hanya sebanyak ruang
-            // buffer (= jendela yang kita iklankan).
-            if (t->tls) {
-                n = tls_feed(t->tls - 1, buf + r + doff, dlen);   // D9: record
-            } else if (t->app == TCP_APP_CLI) {
-                n = net_tcp_cli_rx(t, buf + r + doff, dlen);
-            } else {
-                n = net_tcp_queue(t, buf + r + doff, dlen);
-            }
+            n = net_tcp_app_rx(t, buf + r + doff, dlen);
             t->rcv_nxt += n;
             g_tcp_rx_bytes += n;
             if (n > 0) {
@@ -1847,47 +1906,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             }
         }
 
-        for (int i = 0; i < 6; i++) {
-            t->mac[i] = buf[6 + i];
-        }
-        for (int i = 0; i < 4; i++) {
-            t->ip[i] = buf[26 + i];
-        }
-        t->rport = sport;
-        t->lport = dport;
-        t->iss = ((uint32_t)isn[0] << 24) | ((uint32_t)isn[1] << 16) |
-                 ((uint32_t)isn[2] << 8) | (uint32_t)isn[3];
-        t->snd_nxt = t->iss + 1;
-        t->irs = seq;
-        t->rcv_nxt = seq + 1;
-        t->last = timer_ticks;
-        t->snd_una = t->iss;
-        t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
-        t->buf_head = 0;
-        t->buf_count = 0;
-        t->rto = TCP_RTO_INIT;
-        t->retries = 0;
-        t->fin_sent = 0;
-        t->app = dport == NET_TCP_ECHO_PORT ? TCP_APP_ECHO : TCP_APP_CLI;
-        t->tls = tls_slot + 1;
-        t->tls_banner = 0;
-        t->tls_closing = 0;
-        t->cli_authed = 0;
-        t->role = AUTH_ROLE_NONE;
-        t->cli_last = 0;
-        t->close_after = 0;
-        t->line_len = 0;
-        t->cmd_seq = 0;
-        t->reboot_after = 0;
-        t->out_len = 0;
-        t->out_pos = 0;
-        for (int i = 0; i < 16; i++) {
-            t->nonce[i] = isn[4 + i];
-        }
-        t->state = TCP_SYN_RCVD;
-        net_tcp_tcb_send(t, t->iss, TCP_SYN | TCP_ACK, 1);
-        net_tcp_rtx_arm(t);
-        net_tcp_log("SYN diterima, SYN-ACK dikirim (SYN_RCVD)");
+        net_tcp_tcb_open(t, buf, r, sport, dport, seq, isn,
+                         dport == NET_TCP_ECHO_PORT ? TCP_APP_ECHO : TCP_APP_CLI, tls_slot);
         return 1;
     }
 
