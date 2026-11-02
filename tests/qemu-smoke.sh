@@ -1100,8 +1100,13 @@ cp "$OVMF_VARS" "$WORK/vars-app.fd"
     -vga none -display none -serial file:"$ALOG" -no-reboot \
     >"$WORK/qemu-app.out" 2>&1 &
 QPID=$!
+# Dev: udpgema bisa siap SESUDAH appgema (sendto .77 menunggu ARP gagal dulu); "keluar"
+# yang tiba sebelum bind 5555 hilang -> tabel soket tetap 4/4 -> accept appgema -24.
+A_WAIT_U=1
+grep -q "PROD: task uji dilewati" "$LOG" && A_WAIT_U=0
 for _ in $(seq 1 "$BOOT_TIMEOUT"); do
-    grep -aq "^P5: appgema siap port 5558" "$ALOG" 2>/dev/null && grep -aq "Entropi: siap" "$ALOG" && break
+    grep -aq "^P5: appgema siap port 5558" "$ALOG" 2>/dev/null && grep -aq "Entropi: siap" "$ALOG" &&
+        { [ "$A_WAIT_U" = 0 ] || grep -aq "^P5: udpgema siap port 5555" "$ALOG"; } && break
     kill -0 "$QPID" 2>/dev/null || break
     sleep 1
 done
