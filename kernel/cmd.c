@@ -84,7 +84,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
         cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks config tls "
-                 "netcon logdisk wd pci acpi waktu filter dns pantau dhcp soket\n");
+                 "netcon logdisk wd pci acpi waktu filter dns pantau dhcp soket app\n");
         cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti set "
                  "filter tambah|hapus|kosong waktu sinkron dns <nama> pantau ping|tcp|dns|hapus|syslog\n");
         cmd_puts("berprivilege: pping reboot audit (audit gagal)\n");
@@ -302,6 +302,8 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         }
     } else if (net_cmd_is(cmd, len, "wd")) {
         watchdog_status();   // R5
+    } else if (net_cmd_is(cmd, len, "app")) {
+        app_status(cmd_puts);   // P5-4
     } else if (net_cmd_is(cmd, len, "logdisk") ||
                (len > 8 && net_cmd_is(cmd, 8, "logdisk "))) {
         logdisk_execute(cmd + 7, len - 7);   // R4

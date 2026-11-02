@@ -65,6 +65,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Packet filter (P4) | Aturan salah mengunci admin, FILTER.CFG dimanipulasi lewat disk, aturan dilewati dengan IP palsu | Parser ketat (satu baris salah -> tanpa aturan + catatan serial), maks 16 aturan statis, hanya admin yang mengubah (tercatat di audit), tulis atomik lewat FILTER.TMP, FILTER.CFG dilindungi dari `tulis`/`hapus`; TCP 7780 selalu lolos; hanya koneksi baru yang diperiksa |
 | Netconsole UDP (R2) | Log polos di LAN, tujuan dibelokkan lewat ARP palsu, banjir log | Bawaan mati; hanya baris ring log (tanpa AUDIT, tanpa register umum panic, tanpa teks perintah/kunci); tujuan hanya di /24 sendiri; antrean statis 4 KB, maks 20 datagram/s, penuh -> baris dibuang + penanda; tidak ada data masuk yang diproses selain ARP dari IP tujuan |
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |
+| Program dari disk APP.BIN (P5-4) | Biner diganti di disk, ukuran/isi rusak menghentikan boot | Hanya dibaca saat boot lewat jalur baca FAT32 tervalidasi; 1..4096 byte dan slot task dicek sebelum `spawn()`, gagal -> tidak dijalankan, boot lanjut; berjalan di ring 3 dengan isolasi + NX + batas soket yang sama dengan program lain; APP.BIN ditolak semua perintah fs (tidak bisa ditulis lewat jaringan); sha256 dicatat di serial dan `app`; tanpa restart otomatis |
 | Syscall | Pointer jahat dari user mode | Validasi pointer (R6) |
 | Soket UDP user (P5-1) | Program user menghabiskan soket/antrean, mengirim ke mana saja, membaca port sistem; datagram jaringan ke program | Maks 4 soket statis, antrean 4 x 1472 per soket (penuh -> buang), fd hanya milik task pembuat dan ditutup saat task mati; bind hanya 1024..49151 selain port sistem; kirim hanya ke /24 sendiri (bukan .0/.255/diri sendiri), maks 1472 byte, lewat net task; semua pointer user dicek (buf, cap, alamat 8 byte writable); datagram masuk lewat filter P4, batas laju UDP per IP + global, dan checksum seperti port sistem |
 | Klien TCP user (P5-3) | Program membuka koneksi ke host LAN mana pun, menghabiskan slot/port, memalsukan keadaan TCB lewat syscall | `connect` hanya ke /24 sendiri (bukan .0/.255/diri sendiri), memakai 2 slot TCB user yang sama (penuh -> `-24`, tanpa menggusur), port lokal acak dari kernel (tidak bisa dipilih program); slot, port, ISN, dan SYN hanya diurus net task; SYN-ACK dicek ACK = ISN + 1 (selain itu RST), RST hanya diterima bila ACK sah; percobaan berakhir paling lama ~31 s |
@@ -169,6 +170,9 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    RST palsu; ISN 32 bit acak dan port 14 bit acak membuatnya sulit dari luar jalur, tetapi tidak dari dalam
    jalur (sama seperti TCP tanpa TLS di mana pun). Program yang mengulang `connect` ke host mati memegang satu
    slot sampai ~31 s per percobaan.
+23. APP.BIN (P5-4) tidak ditandatangani: siapa pun yang bisa menulis disk (akses fisik, atau OS lain di mesin
+   yang sama) bisa mengganti program yang dijalankan saat boot. Program itu tetap di ring 3 dan memakai socket
+   API (UDP/TCP ke /24 sendiri, port 1024..49151). Verifikasi tanda tangan direncanakan bersama P7 (OTA).
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

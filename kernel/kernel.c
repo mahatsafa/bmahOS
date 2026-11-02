@@ -697,6 +697,13 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
     serial_write_hex(prog_size);
     serial_write("\r\n");
 
+#ifdef BMAHOS_PROD
+    // P5-4: PROD tidak menjalankan PROG.BIN (slotnya pun direset di kmain);
+    // program dari disk hanya APP.BIN (app.c).
+    if (prog_found) {
+        serial_write("FAT32-4B: PROD: PROG.BIN tidak dijalankan (pakai APP.BIN)\r\n");
+    }
+#else
     if (prog_found) {
         uint8_t *prog_buf = fat32_load_file(prog_cluster, prog_size);
 
@@ -709,6 +716,7 @@ static void ahci_probe_and_log(uint64_t pml4_phys)
             spawn(prog_buf, prog_size);
         }
     }
+#endif
 }
 
 // B3: Limine memetakan HHDM (seluruh RAM fisik, termasuk stack boot) tanpa NX,
@@ -1240,6 +1248,9 @@ void kmain(void)
     } else {
         serial_write("Idle: WARNING - slot task penuh, tanpa task idle\r\n");
     }
+
+    // P5-4: APP.BIN sesudah net task + idle: nomor slot lain tidak bergeser.
+    app_load();
 
     static task_t kernel_dummy_task;
     // current_index WAJIB di-set sebelum switch pertama -- kalau

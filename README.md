@@ -52,6 +52,9 @@ Belum pernah diuji di hardware asli.
   menggemakan TCP port 5556. Metrics `sock_tcp_*`
 - Klien TCP untuk program user (P5-3): syscall connect (12), tujuan /24 sendiri, port lokal acak, memakai 2 slot
   koneksi user yang sama; `userspace/tcpklien.c` (build dev) diperintah lewat UDP 5557. Metrics `sock_connect`
+- Program dari disk (P5-4): `APP.BIN` (biner datar <= 4096 byte) di root disk dijalankan saat boot, juga di
+  build PROD; sha256 di serial, perintah `app`, metrics `app_*`. `build/user/appgema.bin` (gema TCP port 5558)
+  adalah contoh: `mcopy -i disk.img build/user/appgema.bin ::APP.BIN`
 - Packet filter (P4): `FILTER.CFG`, maks 16 aturan cocok-pertama
   `<izinkan|tolak> <semua|tcp|udp|icmp> <semua|a.b.c.d[/n]> [port A[-B]] [laju N]` untuk UDP, ICMP, dan
   SYN TCP baru; TCP 7780 selalu lolos. Perintah `filter`, `filter tambah|hapus <n>|kosong` (admin)

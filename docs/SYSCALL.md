@@ -26,6 +26,9 @@ dengan nomor baru, perilaku nomor lama tidak diubah. Pembungkus C: `userspace/bm
   Tiga program ditanam di kernel dan hanya dijalankan build dev: `udpgema` (P5-1, gema UDP port 5555),
   `tcpgema` (P5-2, server gema TCP port 5556), dan `tcpklien` (P5-3, klien TCP yang diperintah lewat UDP
   port 5557: `konek <port> [oktet]`, `gema <port> [oktet]`, `batas <port> <oktet> <tick>`, `keluar`).
+- Program dari disk (P5-4): biner yang sama disalin ke root disk sebagai `APP.BIN` dan dijalankan saat boot
+  (PROD dan dev), sekali, tanpa restart. Contoh `build/user/appgema.bin` = `tcpgema.c` dengan `-DPORT=5558
+  -DNAMA='"appgema"'`. Status: perintah `app`, metrics `app_loaded`/`app_size`/`app_exit`.
 
 ## Daftar
 

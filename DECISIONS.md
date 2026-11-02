@@ -498,3 +498,16 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Gagal connect** tidak dihitung `sock_tcp_reset`; fd tetap soket TCP baru dan boleh dipakai lagi.
 - **Program uji** `tcpklien` (dev, slot 10) diperintah lewat UDP 5557 supaya bisa diuji dari QEMU (slirp .1 ->
   127.0.0.1) dan VMware (Windows 192.168.50.1). MAX_TASKS 12 -> 13.
+
+## 2026-11-02 (P5-4 program dari disk: APP.BIN)
+- **Disetujui pengguna**: satu program `APP.BIN` (biner datar, 1..4096 byte) di root FAT32 dimuat sekali saat
+  boot, di build PROD dan dev; isi uji = `appgema` (sumber `tcpgema.c`, port 5558); perintah `app` (ro boleh)
+  dan metrics `app_loaded`/`app_size`/`app_exit`.
+- **Urutan**: dimuat sesudah net task dan idle dibuat (PROD: slot 2, dev: slot 13), jadi nomor slot task lain
+  tidak bergeser. MAX_TASKS 13 -> 14. Dibaca lewat `fat32_read_name` (jalur baca tervalidasi D6), bukan
+  `fat32_load_file` lama. Semua batas dicek sebelum `spawn()` (yang berhenti total bila melewati batas).
+- **Gagal tertutup**: tidak ada, kosong, > 4096 byte, galat FAT32, atau slot task penuh -> program tidak
+  dijalankan, satu baris serial, sistem tetap jalan. Tanpa restart otomatis bila program keluar atau crash.
+- **Tanpa tanda tangan**: integritas APP.BIN bergantung pada akses fisik ke disk (sama seperti KEY.TXT);
+  sha256 hanya dicatat di serial/`app` untuk dicocokkan manual. Verifikasi tanda tangan datang bersama P7.
+- **PROD tidak lagi menjalankan PROG.BIN** (uji FAT32-4B lama; slotnya pun direset di kmain). Dev tetap.

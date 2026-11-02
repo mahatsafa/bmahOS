@@ -18,6 +18,7 @@
 static const char *const g_fs_protected[] = {
     "KEY     TXT", "KEYRO   TXT", "PROG    BIN",
     "TLSKEY  DER", "TLSCERT DER",   // D9
+    "APP     BIN",   // P5-4: program yang dijalankan saat boot
 };
 
 static const char *const g_fs_wprotected[] = {

@@ -53,6 +53,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `monitor.c` | P6: pemantau ping/tcp/dns (maks 4 target, ARP + ICMP echo / SYN setengah terbuka / query lewat dns.c tiap interval, NAIK/TURUN dengan ambang), alert syslog RFC 5424 lewat UDP, perintah `pantau` | net (`net_ipv4_hdr`, `net_checksum16`, `net_arp_request_build`, `net_tcp_syn_build`, `net_udp_build`), dns (`dns_probe_start`), rtc, entropy, e1000, pmm, cmd, kprintf |
 | `sock.c` | P5-1: soket UDP program user (4 soket statis, antrean 4 datagram, bind 1024..49151 selain port sistem, kirim lewat net task dengan cache ARP 8 entri, tidur/bangun lewat `task_sleep`/`task_wake`, tutup saat `task_exit`, perintah `soket`). P5-2: soket TCP server (listen/accept/send/recv), P5-3: klien (connect lewat net task), 2 slot koneksi dengan ring masuk/keluar 1024 byte; TCB tetap milik net.c, ditukar lewat kait `sock_tcp_*` | net (`net_udp_build`, `net_arp_request_build`), e1000, sched, vmm (`is_valid_user_ptr`), pmm, cmd, kprintf |
 | `userbin.S` | P5-1..P5-3: menanam `build/user/*.bin` (udpgema, tcpgema, tcpklien) (program dari `userspace/`, biner datar 0x400000) ke .rodata kernel | `userspace/` |
+| `app.c` | P5-4: memuat `APP.BIN` (1..4096 byte) dari root FAT32 sekali saat boot sesudah net task + idle, sha256, `spawn`; perintah `app`, metrics `app_*`, tanda berhenti dari `task_exit` | fat32, sched, crypto, kprintf |
 | `filter.c` | P4: packet filter (maks 16 aturan cocok-pertama dari `FILTER.CFG`, UDP/ICMP/SYN TCP, laju per aturan, TCP 7780 selalu lolos), perintah `filter` | fat32 (`read_name`/`replace_name`), cmd, kprintf |
 | `netcon.c` | R2: netconsole UDP (antrean statis 4 KB dari `log_capture`, ARP tujuan, batas 20 datagram/s, kirim langsung saat panic, perintah `netcon`) | net (`net_udp_build`), e1000, pmm, cmd, kprintf |
 | `tls.c` | D9: server TLS 1.2 BearSSL untuk CLI 7780 (`tls_load` identitas TLSKEY/TLSCERT.DER, pool 2 sesi statis, pembungkus engine untuk net.c, perintah `tls`) | BearSSL, fat32, entropy, cmd, kprintf |
@@ -67,7 +68,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 1. `serial_init`, `cpu_features_init` (CPUID), `kprintf_selftest`, `entropy_init` (self-test DRBG, rdseed/rdrand, RTC), PCI scan dan `pci_find_devices`, `nx_init`.
 2. GDT + TSS, IDT (vektor 0-19, 32, 33, 0x80), cetak register segmen.
 3. PMM dari memmap Limine (uji alloc/free), VMM (dump PML4, NX di half atas), heap kernel.
-4. ACPI (MADT, FADT), Local APIC, AHCI (lalu FAT32: baca `HELLO.TXT`, `spawn` dari `PROG.BIN`),
+4. ACPI (MADT, FADT), Local APIC, AHCI (lalu FAT32: baca `HELLO.TXT`, `spawn` dari `PROG.BIN` di build dev),
    E1000 (ring TX/RX, crypto self-test, muat kunci dari `KEY.TXT`), IOAPIC untuk IRQ0, eksperimen GSI E1000,
    remap PIC, PIT 100 Hz.
 5. Task: A/B (uji semaphore), tiga task user (isolasi, `sys_write`, `sys_exit`), `spawn` kode uji,

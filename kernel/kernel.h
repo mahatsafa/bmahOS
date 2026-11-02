@@ -820,7 +820,8 @@ extern uint64_t g_audit_seq;    // audit.c: nomor urut entri terakhir
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----
-#define MAX_TASKS 13   // P5-3: 12 -> 13 (slot dev: 8 task uji + udpgema + tcpgema + tcpklien + net + idle)
+#define MAX_TASKS 14   // P5-4: 13 -> 14 (slot dev: 8 task uji + udpgema + tcpgema + tcpklien + net + idle
+                      // + APP.BIN; PROD: net + idle + APP.BIN)
 
 typedef enum {
     TASK_READY,
@@ -1056,5 +1057,13 @@ void watchdog_check(struct exception_context *c); // irq_handler (timer), hanya 
 void watchdog_status(void);                       // perintah `wd`
 uint64_t watchdog_timeout_ticks(void);
 int wd_test_execute(const volatile uint8_t *cmd, uint32_t len);   // build dev saja
+
+// ---- app.c (P5-4: program user APP.BIN dari disk) ----
+#define APP_MAX 4096   // = satu halaman kode spawn()
+extern uint64_t g_app_loaded, g_app_size, g_app_exit;   // metrics app_*
+extern int64_t g_app_slot;
+void app_load(void);                 // kmain, sesudah net task + idle dibuat
+void app_task_exited(size_t slot);   // task_exit()
+void app_status(void (*out)(const char *));   // perintah `app`
 
 #endif

@@ -554,6 +554,7 @@ void task_exit(void)
     uint64_t flags = irq_save();
 
     sock_task_exit(current_index);   // P5-1
+    app_task_exited(current_index);  // P5-4
     tasks[current_index].status = TASK_DEAD;
     schedule();
 

@@ -325,6 +325,8 @@ static void test_basic(int spc)
     CHECK_STR(run("baca key.txt"), "ERR: fs: nama dilindungi\n");
     CHECK_STR(run("tulis keyro.txt x"), "ERR: fs: nama dilindungi\n");
     CHECK_STR(run("tambah PROG.BIN x"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("tulis app.bin x"), "ERR: fs: nama dilindungi\n");   // P5-4
+    CHECK_STR(run("baca APP.BIN"), "ERR: fs: nama dilindungi\n");
     CHECK_STR(run("tulis A.B.C x"), "ERR: fs: nama bukan 8.3 (A-Z 0-9 _ -)\n");
     CHECK_STR(run("tulis NAMAPANJANG.TXT x"), "ERR: fs: nama bukan 8.3 (A-Z 0-9 _ -)\n");
     CHECK_STR(run("tulis .TXT x"), "ERR: fs: nama bukan 8.3 (A-Z 0-9 _ -)\n");

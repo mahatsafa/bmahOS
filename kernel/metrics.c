@@ -271,6 +271,9 @@ static const metric_t g_metrics[] = {
     M64("sock_tcp_tx_bytes", g_sock_tcp_tx),
     M64("sock_tcp_reset", g_sock_tcp_reset),
     M64("sock_connect", g_sock_connect),   // P5-3
+    M64("app_loaded", g_app_loaded),   // P5-4
+    M64("app_size", g_app_size),
+    M64("app_exit", g_app_exit),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

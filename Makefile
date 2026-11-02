@@ -147,7 +147,7 @@ run: iso
 	@cp -n /usr/share/edk2/ovmf/OVMF_VARS.fd $(BUILD_DIR)/ovmf/OVMF_VARS.fd
 	$(QEMU) -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd -drive if=pflash,format=raw,file=$(BUILD_DIR)/ovmf/OVMF_VARS.fd -cdrom $(ISO_OUT) -serial stdio -m 512M
 
-test: iso $(BEARSSL_LIB)
+test: iso $(BEARSSL_LIB) $(BUILD_DIR)/user/appgema.bin
 	QEMU=$(QEMU) OVMF_CODE=$(OVMF) tests/qemu-smoke.sh
 
 # F1.7: uji unit fungsi murni di host (Linux), dengan ASan + UBSan.

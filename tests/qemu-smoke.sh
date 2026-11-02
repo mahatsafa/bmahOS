@@ -250,14 +250,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=125   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect
+R3_N=128   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir sock_connect" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^sock_connect="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir app_exit" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^app_exit="'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -963,6 +963,13 @@ else
         '[ "$KL_K" = diam ] && [ "$($BM "metrics sock_connect" 2>&1)" = "sock_connect=0" ]'
 fi
 
+sleep 1.2
+# P5-4: disk boot pertama tanpa APP.BIN (boot kelima memuatnya).
+AP_ST="$($BM app 2>&1)"
+AP_M="$($BM "metrics app_" 2>&1)"
+check "P5-4: tanpa APP.BIN: baris serial, app, metrics app_* = 0" \
+    'grep -aq "^P5-4: APP.BIN tidak ada" "$LOG" && ! grep -aq "^P5-4: APP.BIN tidak ada (tanpa disk)" "$LOG" && [ "$AP_ST" = "app: tidak ada" ] && [ "$AP_M" = "$(printf "app_loaded=0\napp_size=0\napp_exit=0")" ]'
+
 sleep 1.2   # jendela batas laju baru (lihat di atas)
 # P3-4: dhcp=1 untuk boot kedua (qemu-rawnet.py berperan sebagai server DHCP, lalu
 # mengembalikan dhcp=0); boot ini tetap memakai IP statis sampai reboot.
@@ -1064,6 +1071,92 @@ check "D7: tanpa disk: CONFIG: sumber=bawaan (tanpa disk)" \
 check "P1: tanpa VGA: fbcon nonaktif, boot lanjut" 'grep -aq "P1: fbcon nonaktif (tanpa framebuffer)" "$BARE"'
 check "P4: tanpa disk: filter tanpa aturan" 'grep -aq "P4: filter tanpa aturan (tanpa disk)" "$BARE"'
 check "D9: tanpa disk: TLS nonaktif" 'grep -q "TLS: nonaktif (TLSKEY.DER tidak ada)" "$BARE"'
+check "P5-4: tanpa disk: APP.BIN tidak ada (tanpa disk)" 'grep -aq "^P5-4: APP.BIN tidak ada (tanpa disk)" "$BARE"'
+
+# P5-4: boot kelima: salinan disk + APP.BIN (appgema = tcpgema.c dengan port 5558,
+# build/user/appgema.bin). Dev: tabel soket 4/4 (udpgema, tcpgema, tcpklien, appgema),
+# jadi udpgema diminta keluar dulu supaya accept appgema dapat fd. PROD: hanya appgema,
+# slot 2 (sesudah net task + idle). Program tidak di-restart setelah keluar.
+echo
+echo "boot kelima: APP.BIN dari disk..."
+APORT="${BMTEST_APP_PORT:-17558}"
+APPBIN="$ROOT/build/user/appgema.bin"
+ADISK="$WORK/disk-app.img"
+ALOG="$WORK/serial-app.log"
+cp "$DISK" "$ADISK"
+mcopy -o -i "$ADISK" "$APPBIN" ::APP.BIN
+A_SZ="$(stat -c %s "$APPBIN")"
+A_SHA="$(sha256sum "$APPBIN" | cut -c1-64)"
+A_SLOT=13
+grep -q "PROD: task uji dilewati" "$LOG" && A_SLOT=2
+cp "$OVMF_VARS" "$WORK/vars-app.fd"
+"$QEMU" -machine q35 -m 512M -cpu max \
+    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,format=raw,file="$WORK/vars-app.fd" \
+    -cdrom "$ISO" \
+    -drive id=d0,file="$ADISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
+    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=udp:127.0.0.1:$UPORT-192.168.50.200:5555,hostfwd=tcp:127.0.0.1:$APORT-192.168.50.200:5558 \
+    -device e1000,netdev=n0 \
+    -vga none -display none -serial file:"$ALOG" -no-reboot \
+    >"$WORK/qemu-app.out" 2>&1 &
+QPID=$!
+for _ in $(seq 1 "$BOOT_TIMEOUT"); do
+    grep -aq "^P5: appgema siap port 5558" "$ALOG" 2>/dev/null && grep -aq "Entropi: siap" "$ALOG" && break
+    kill -0 "$QPID" 2>/dev/null || break
+    sleep 1
+done
+sleep 1
+if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    A_U="$(ugema keluar 2>&1)"
+    sleep 0.5
+fi
+A_ST="$($BM app 2>&1)"
+A_M="$($BM "metrics app_" 2>&1)"
+A_FS="$($BM "baca APP.BIN" 2>&1)"
+sleep 1.2
+A_T="$(TCPORT=$APORT tgema gema 2>&1)"
+A_K="$(TCPORT=$APORT tgema keluar lagi 2>&1)"
+sleep 0.5
+A_ST2="$($BM app 2>&1)"
+A_M2="$($BM "metrics app_" 2>&1)"
+kill "$QPID" 2>/dev/null
+wait "$QPID" 2>/dev/null
+echo "info  P5-4: $(echo "$A_ST" | head -1) | $(echo "$A_T $A_K $A_ST2" | tr '\n' '|')"
+check "P5-4: serial: APP.BIN dimuat (ukuran, sha256 = host, slot $A_SLOT), tanpa FATAL" \
+    'grep -aq "^P5-4: APP.BIN dimuat $A_SZ byte sha256=$A_SHA slot $A_SLOT" "$ALOG" && ! grep -aq "FATAL" "$ALOG"'
+check "P5-4: app jalan + sha256; metrics app_loaded=1 app_size app_exit=0" \
+    '[ "$A_ST" = "$(printf "app: dimuat %s byte slot %s jalan\nsha256=%s" "$A_SZ" "$A_SLOT" "$A_SHA")" ] && [ "$A_M" = "$(printf "app_loaded=1\napp_size=%s\napp_exit=0" "$A_SZ")" ]'
+check "P5-4: APP.BIN dilindungi dari perintah fs" '[ "$A_FS" = "ERR: fs: nama dilindungi" ]'
+check "P5-4: gema TCP 5558 dari program disk: teks, 3000 byte utuh, FIN -> recv 0" \
+    '[ "$A_T" = "$(printf "halo P5-2\nlen=3000 cocok\neof")" ] && grep -aq "^P5: appgema recv 0 (FIN), total 3010$" "$ALOG"'
+check "P5-4: keluar -> program berhenti, 5558 ditolak, app berhenti, app_exit=1, tanpa restart" \
+    '[ "$A_K" = "$(printf "keluar=tutup\nlagi=ditolak")" ] && grep -aq "^P5: appgema selesai$" "$ALOG" && [ "$A_ST2" = "$(printf "app: dimuat %s byte slot %s berhenti\nsha256=%s" "$A_SZ" "$A_SLOT" "$A_SHA")" ] && [ "$A_M2" = "$(printf "app_loaded=1\napp_size=%s\napp_exit=1" "$A_SZ")" ] && [ "$(grep -ac "^P5-4: APP.BIN dimuat" "$ALOG")" -eq 1 ]'
+check "P5-4: boot APP.BIN tanpa exception" '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$ALOG"'
+
+# P5-4: boot keenam: APP.BIN 5000 byte (> 1 halaman) ditolak, boot berlanjut.
+echo
+echo "boot keenam: APP.BIN terlalu besar..."
+head -c 5000 /dev/urandom > "$WORK/app-besar.bin"
+mcopy -o -i "$ADISK" "$WORK/app-besar.bin" ::APP.BIN
+OLOG="$WORK/serial-app2.log"
+cp "$OVMF_VARS" "$WORK/vars-app2.fd"
+"$QEMU" -machine q35 -m 512M -cpu max \
+    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,format=raw,file="$WORK/vars-app2.fd" \
+    -cdrom "$ISO" \
+    -drive id=d0,file="$ADISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
+    -nic none -vga none -display none -serial file:"$OLOG" -no-reboot \
+    >"$WORK/qemu-app2.out" 2>&1 &
+QPID=$!
+for _ in $(seq 1 "$BOOT_TIMEOUT"); do
+    grep -aq "RX belum di-init, net task berhenti" "$OLOG" 2>/dev/null && break
+    kill -0 "$QPID" 2>/dev/null || break
+    sleep 1
+done
+kill "$QPID" 2>/dev/null
+wait "$QPID" 2>/dev/null
+check "P5-4: APP.BIN 5000 byte ditolak, tidak dijalankan, scheduler tetap jalan" \
+    'grep -aq "^P5-4: APP.BIN ditolak (lebih dari 4096 byte)" "$OLOG" && ! grep -aq "^P5-4: APP.BIN dimuat" "$OLOG" && ! grep -aq "FATAL" "$OLOG" && grep -aq "RX belum di-init, net task berhenti" "$OLOG"'
 
 # R1: panic handler (build dev saja). Satu QEMU TANPA -no-reboot: panic pf ->
 # reboot otomatis -> panic df (RSP rusak, harus lewat IST1) -> reboot -> panic
