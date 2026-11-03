@@ -32,6 +32,7 @@ SLPORT="${BMTEST_SYSLOG_PORT:-17514}"   # P6-2: penerima syslog uji
 UPORT="${BMTEST_SOCK_PORT:-17555}"   # P5-1: soket UDP program user (udpgema port 5555)
 TCPORT="${BMTEST_SOCK_TCP_PORT:-17556}"   # P5-2: soket TCP program user (tcpgema port 5556)
 KPORT="${BMTEST_SOCK_KLIEN_PORT:-17557}"   # P5-3: perintah UDP ke tcpklien (port 5557)
+OPORT="${BMTEST_OTA_PORT:-17781}"   # P7-2: penerimaan file OTA (port 7781)
 BOOT_TIMEOUT="${BMTEST_BOOT_TIMEOUT:-180}"
 
 PASS=0
@@ -63,8 +64,10 @@ KEY="$WORK/KEY.TXT"
 DISK="$WORK/disk.img"
 
 python3 -c 'import secrets; print(secrets.token_hex(16), end="")' > "$KEY"
-dd if=/dev/zero of="$DISK" bs=1M count=64 status=none
-mkfs.vfat -F 32 "$DISK" >/dev/null
+# P7-2: 128 MB, cluster 1 KB: kernel hanya membaca cluster root pertama (32 entri);
+# cluster 512 B (16 entri) penuh setelah slot OTA + LFN limine.conf ikut di root.
+dd if=/dev/zero of="$DISK" bs=1M count=128 status=none
+mkfs.vfat -F 32 -s 2 "$DISK" >/dev/null
 mcopy -i "$DISK" "$KEY" ::KEY.TXT
 # D4: kunci peran read-only (acak, berbeda dari KEY.TXT).
 ROKEY="$WORK/KEYRO.TXT"
@@ -79,6 +82,31 @@ mcopy -i "$DISK" "$WORK/TLSCERT.DER" ::TLSCERT.DER
 # R4: LOG.BIN 64 KB (128 rekaman) dialokasikan di host; kernel hanya menimpa isinya.
 head -c 65536 /dev/zero > "$WORK/LOG.BIN"
 mcopy -i "$DISK" "$WORK/LOG.BIN" ::LOG.BIN
+# P7-2: slot OTA seperti disk.vmdk P7-0 (dibuat di host, kernel hanya menimpa isinya):
+# KERNA/KERNB 1 MB nol, limine.conf 512 byte default_entry 2 -> slot aktif B (dari
+# limine.conf), slot tujuan A. OTA.BIN sengaja tidak ada: kernel membuatnya (512 nol).
+head -c 1048576 /dev/zero > "$WORK/KSLOT.ELF"
+mcopy -i "$DISK" "$WORK/KSLOT.ELF" ::KERNA.ELF
+mcopy -i "$DISK" "$WORK/KSLOT.ELF" ::KERNB.ELF
+head -c 512 /dev/zero > "$WORK/OTA.BIN"
+python3 - "$WORK/limine.conf" <<'LCEOF'
+import sys
+t = ("timeout: 3\ndefault_entry: 2\n\n"
+     "/bmahOS slot A\n    protocol: limine\n    path: boot():/KERNA.ELF\n    cmdline: slot=A\n\n"
+     "/bmahOS slot B\n    protocol: limine\n    path: boot():/KERNB.ELF\n    cmdline: slot=B\n\n")
+t += "#" + "-" * (512 - len(t) - 2) + "\n"
+assert len(t) == 512
+open(sys.argv[1], "w").write(t)
+LCEOF
+mcopy -i "$DISK" "$WORK/limine.conf" ::limine.conf
+# Penggantian atomik (CONFIG.CFG, FILTER.CFG: D7) butuh .TMP di SEKTOR root yang
+# sama (16 entri). Sektor pertama diisi penuh di sini (9 entri di atas + 7 pengisi),
+# jadi file buatan kernel (OTA.BIN, CONFIG.CFG, ...) mulai di sektor kedua yang
+# kosong, seperti disk sebelum P7-2.
+for i in 1 2 3 4 5 6 7; do
+    printf 'pengisi root %s\n' "$i" > "$WORK/ISI$i.TXT"
+    mcopy -i "$DISK" "$WORK/ISI$i.TXT" "::ISI$i.TXT"
+done
 TLSPIN="$(sha256sum "$WORK/TLSCERT.DER" | cut -d" " -f1)"
 cp "$OVMF_VARS" "$WORK/vars.fd"
 
@@ -87,7 +115,7 @@ cp "$OVMF_VARS" "$WORK/vars.fd"
     -drive if=pflash,format=raw,file="$WORK/vars.fd" \
     -cdrom "$ISO" \
     -drive id=d0,file="$DISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
-    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=tcp:127.0.0.1:$TPORT-192.168.50.200:7,hostfwd=tcp:127.0.0.1:$CPORT-192.168.50.200:7779,hostfwd=tcp:127.0.0.1:$SPORT-192.168.50.200:7780,hostfwd=udp:127.0.0.1:$UPORT-192.168.50.200:5555,hostfwd=tcp:127.0.0.1:$TCPORT-192.168.50.200:5556,hostfwd=udp:127.0.0.1:$KPORT-192.168.50.200:5557 \
+    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=tcp:127.0.0.1:$TPORT-192.168.50.200:7,hostfwd=tcp:127.0.0.1:$CPORT-192.168.50.200:7779,hostfwd=tcp:127.0.0.1:$SPORT-192.168.50.200:7780,hostfwd=udp:127.0.0.1:$UPORT-192.168.50.200:5555,hostfwd=tcp:127.0.0.1:$TCPORT-192.168.50.200:5556,hostfwd=udp:127.0.0.1:$KPORT-192.168.50.200:5557,hostfwd=tcp:127.0.0.1:$OPORT-192.168.50.200:7781 \
     -object filter-dump,id=fd0,netdev=n0,file="$WORK/net.pcap" \
     -device e1000,netdev=n0 \
     -display none -serial file:"$LOG" -no-reboot \
@@ -254,14 +282,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=128   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*
+R3_N=131   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir app_exit" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^app_exit="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir ota_gagal" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^ota_gagal="'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -459,7 +487,7 @@ for i in $(seq 0 127); do
 done
 FS_ARGS+=("tambah PANJANG.TXT lebih" "baca PANJANG.TXT 4064")
 FS_OUT="$($BMT --key "$KEY" "${FS_ARGS[@]}" 2>&1)"
-check "D6: 128 baris -> 4096 byte (8 cluster), baris ke-129 ERR melebihi 4096" \
+check "D6: 128 baris -> 4096 byte (4 cluster 1 KB), baris ke-129 ERR melebihi 4096" \
     '[ "$(echo "$FS_OUT" | grep -c "^OK PANJANG.TXT ukuran=")" -eq 129 ] && echo "$FS_OUT" | grep -q "^OK PANJANG.TXT ukuran=4096$" && echo "$FS_OUT" | grep -q "^ERR: fs: file melebihi 4096 byte$" && echo "$FS_OUT" | grep -q "^baris-0127-x*$"'
 sleep 2.5
 FS_OUT="$($BMT --key "$ROKEY" ls "tulis RO.TXT x" "baca CATATAN.TXT" 2>&1)"
@@ -967,6 +995,106 @@ else
         '[ "$KL_K" = diam ] && [ "$($BM "metrics sock_connect" 2>&1)" = "sock_connect=0" ]'
 fi
 
+# P7-2: penerimaan kernel lewat `ota terima` + port 7781 (boot ISO: berjalan=ISO,
+# aktif B dari limine.conf -> tujuan A). Dev: kernel.elf bertanda tangan kunci uji
+# versi 7 diterima + ditulis ke KERNA.ELF (dicek dari host setelah QEMU keluar).
+# PROD: kiriman bertanda tangan kunci uji ditolak (kunci PROD tidak ada di sini).
+# Penolakan: kunci lain, versi 0 (<= aktif 0), sha16 salah, file terpotong, UDP, ro,
+# 7781 tanpa `ota terima`. Jeda 2,5 s antar sesi: TIME_WAIT ikut batas 2 TCB per IP
+# (sesi CLI + koneksi 7781 = 2).
+OD="$WORK/ota"
+mkdir -p "$OD"
+OSIGN="python3 $ROOT/client/ota-sign.py"
+openssl ecparam -name prime256v1 -genkey -noout -out "$OD/lain.pem" 2>/dev/null
+{ printf '\177ELF'; head -c 3000 /dev/urandom; } > "$OD/kecil.elf"
+$OSIGN --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis kernel --versi 7 "$ROOT/build/kernel.elf" "$OD/k7.bmo" >/dev/null
+$OSIGN --kunci "$OD/lain.pem" --jenis kernel --versi 8 "$OD/kecil.elf" "$OD/lain.bmo" >/dev/null
+$OSIGN --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis kernel --versi 0 "$OD/kecil.elf" "$OD/k0.bmo" >/dev/null
+$OSIGN --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis kernel --versi 9 "$OD/kecil.elf" "$OD/k9.bmo" >/dev/null
+KSZ="$(stat -c %s "$ROOT/build/kernel.elf")"
+K7SHA="$(sha256sum "$ROOT/build/kernel.elf" | cut -c1-16)"
+check "P7-2: serial boot: OTA.BIN dibuat kernel; ota siap berjalan=ISO aktif=B (limine.conf)" \
+    'grep -aq "^P7: OTA.BIN dibuat (512 byte kosong)" "$LOG" && grep -aq "^P7: ota siap berjalan=ISO aktif=B (limine.conf) OTA.BIN=kosong slot A v0 slot B v0" "$LOG"'
+sleep 1.2
+OT_ST="$($BM ota 2>&1)"
+OT_U="$($BM "ota terima kernel 3256 0123456789abcdef" 2>&1)"
+check "P7-2: ota (UDP): status awal; ota terima lewat UDP ditolak" \
+    'echo "$OT_ST" | head -1 | grep -q "^ota: berjalan=ISO aktif=B (limine.conf) OTA.BIN=kosong seq=0$" && echo "$OT_ST" | grep -q "^slot A: tanpa-catatan versi=0 ukuran=0 " && echo "$OT_ST" | grep -q "^terima: diam$" && [ "$OT_U" = "ERR: ota terima hanya lewat sesi TCP 7779 / TLS 7780" ]'
+OT_NO="$(python3 - "$OPORT" <<'OEOF'
+import socket, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+try:
+    s.sendall(b"x" * 200)
+    print("ditolak" if s.recv(10) == b"" else "diterima")
+except OSError:
+    print("ditolak")
+OEOF
+)"
+check "P7-2: port 7781 tanpa ota terima -> ditolak (RST)" '[ "$OT_NO" = ditolak ]'
+sleep 2.5
+OT_RO="$($BMT --key "$ROKEY" ota "ota terima kernel 3256 0123456789abcdef" 2>&1)"
+check "P7-2: read-only: ota boleh, ota terima -> ERR peran read-only" \
+    'echo "$OT_RO" | grep -q "^ota: berjalan=ISO " && echo "$OT_RO" | grep -q "^ERR: peran read-only$"'
+ota_kirim() {   # $1 = file .bmo, sisanya opsi bmctl
+    local f="$1"
+    shift
+    sleep 2.5
+    $BMT --key "$KEY" --ota-port "$OPORT" --ota "$f" "$@" 2>&1
+}
+# Kiriman pertama menahan soket 7781 8 s setelah hasil (bmahOS FIN_WAIT_2, seperti
+# klien Windows yang terlambat mengirim FIN); kiriman berikutnya harus tetap diterima.
+ota_kirim "$OD/k7.bmo" --ota-tahan 8 > "$WORK/ota-a.out" 2>&1 &
+OT_A_PID=$!
+for i in $(seq 1 240); do
+    grep -q "^bmctl: ota .* dikirim dalam" "$WORK/ota-a.out" && break
+    kill -0 "$OT_A_PID" 2>/dev/null || break
+    sleep 0.5
+done
+OT_B="$(ota_kirim "$OD/lain.bmo")"
+wait "$OT_A_PID"
+OT_A_RC=$?
+OT_A="$(cat "$WORK/ota-a.out")"
+echo "$OT_A" | sed "s/^/info  ota k7: /"
+if [ "$OTA_KUNCI" = uji ]; then
+    check "P7-2: kernel.elf versi 7 (kunci uji) -> OK slot A ditulis + dibaca balik, rc 0" \
+        '[ "$OT_A_RC" -eq 0 ] && echo "$OT_A" | grep -q "^OK ota: kirim $((KSZ + 128)) byte ke port 7781 dalam 60 s (slot A)$" && echo "$OT_A" | grep -q "^OK ota: slot A versi 7 ukuran $KSZ sha256 $K7SHA ditulis + dibaca balik$" && grep -aq "^P7: ota OK ota: slot A versi 7" "$LOG"'
+else
+    check "P7-2: PROD: kernel bertanda tangan kunci uji -> ERR tanda tangan, rc 1" \
+        '[ "$OT_A_RC" -eq 1 ] && echo "$OT_A" | grep -q "^ERR ota: tanda tangan tidak sah$"'
+fi
+check "P7-2: kunci lain (7781 lama masih ditahan) -> lama di-RST, ERR tanda tangan tidak sah" \
+    'echo "$OT_B" | grep -q "^ERR ota: tanda tangan tidak sah$" && grep -aq "^C2: TCP 7781 lama ditutup (RST) untuk koneksi OTA baru" "$LOG"'
+OT_C="$(ota_kirim "$OD/k0.bmo")"
+if [ "$OTA_KUNCI" = uji ]; then
+    check "P7-2: versi 0 <= versi slot aktif B (0) -> ditolak (anti-downgrade)" \
+        'echo "$OT_C" | grep -q "^ERR ota: versi 0 <= versi slot aktif B (0), ditolak$"'
+else
+    check "P7-2: PROD: versi 0 kunci uji -> ERR tanda tangan" \
+        'echo "$OT_C" | grep -q "^ERR ota: tanda tangan tidak sah$"'
+fi
+OT_D="$(ota_kirim "$OD/k9.bmo" --ota-sha16 0000000000000000)"
+check "P7-2: sha16 di perintah salah -> ERR sha256 file tidak cocok" \
+    'echo "$OT_D" | grep -q "^ERR ota: sha256 file tidak cocok dengan perintah$"'
+OT_E="$(ota_kirim "$OD/k9.bmo" --ota-potong 1000)"
+check "P7-2: file terpotong (FIN setelah 1000 byte) -> ERR koneksi ditutup" \
+    'echo "$OT_E" | grep -q "^ERR ota: koneksi 7781 ditutup setelah 1000 dari $(stat -c %s "$OD/k9.bmo") byte$"'
+sleep 2.5
+OT_F="$($BMT --key "$KEY" ota "metrics ota_" "ota terima kernel 3256 0123456789abcdef" "ota terima kernel 3256 0123456789abcdef" "ota terima app 300 0123456789abcdef" "ota terima kernel 99 0123456789abcdef" "ota terima kernel 3256 xyz" 2>&1)"
+echo "$OT_F" | sed "s/^/info  ota: /"
+if [ "$OTA_KUNCI" = uji ]; then
+    check "P7-2: ota status: slot A sah versi 7, OTA.BIN seq 2; metrics terima 5 ok 1 gagal 4" \
+        'echo "$OT_F" | head -1 | grep -q "^ota: berjalan=ISO aktif=B (limine.conf) OTA.BIN=OTA.BIN seq=2$" && echo "$OT_F" | grep -q "^slot A: sah versi=7 ukuran=$KSZ sha256=$K7SHA$" && echo "$OT_F" | grep -q "^slot B: tanpa-catatan versi=0" && echo "$OT_F" | grep -q "^terakhir: ERR ota: koneksi 7781 ditutup" && echo "$OT_F" | grep -A3 "^ota_terima=" | tr "\n" " " | grep -q "^ota_terima=5 ota_ok=1 ota_gagal=4 "'
+else
+    check "P7-2: PROD: slot A tetap tanpa-catatan, OTA.BIN tidak ditulis; terima 5 ok 0 gagal 5" \
+        'echo "$OT_F" | head -1 | grep -q "OTA.BIN=kosong seq=0$" && echo "$OT_F" | grep -q "^slot A: tanpa-catatan versi=0 ukuran=0" && echo "$OT_F" | grep -A3 "^ota_terima=" | tr "\n" " " | grep -q "^ota_terima=5 ota_ok=0 ota_gagal=5 "'
+fi
+check "P7-2: ota terima kedua -> sibuk; app belum didukung; ukuran/sha16 salah -> ERR" \
+    'echo "$OT_F" | grep -q "^OK ota: kirim 3256 byte ke port 7781 dalam 60 s (slot A)$" && echo "$OT_F" | grep -q "^ERR: ota sibuk (menunggu koneksi 7781)$" && echo "$OT_F" | grep -q "^ERR: ota terima app belum didukung (P7-4)$" && echo "$OT_F" | grep -q "^ERR: ukuran harus 129..1048704 byte$" && echo "$OT_F" | grep -q "^ERR: format: ota terima kernel <ukuran> <sha16>$"'
+sleep 2.5
+OT_FS="$($BMT --key "$KEY" "tulis KERNA.ELF x" "hapus OTA.BIN" "ganti KERNB.ELF X.ELF" 2>&1)"
+check "P7-2: KERNA/KERNB.ELF dan OTA.BIN dilindungi dari tulis/hapus/ganti" \
+    '[ "$(echo "$OT_FS" | grep -c "^ERR: fs: nama dilindungi$")" -eq 3 ]'
+
 sleep 1.2
 # P5-4: disk boot pertama tanpa APP.BIN (boot kelima memuatnya).
 AP_ST="$($BM app 2>&1)"
@@ -1018,6 +1146,17 @@ echo "info  R4: $(python3 "$ROOT/tools/logdump.py" --status "$WORK/log1.bin" 2>&
 # rekaman tertua tertimpa. Yang wajib: diawali rekaman boot 1, diakhiri baris reboot.
 check "R4: logdump.py dari host: ukuran 65536, boot 1, baris terakhir = reboot ACPI" \
     '[ "$(wc -c < "$WORK/log1.bin")" -eq 65536 ] && head -1 "$WORK/log1.txt" | grep -Eq "^=== boot 1 seq [0-9]+ ===$" && [ "$(tail -1 "$WORK/log1.txt")" = "ACPI-R: reboot via register reset FADT" ] && ! grep -q "^AUDIT" "$WORK/log1.txt"'
+# P7-2: isi slot A dari host: dev = kernel.elf + nol sampai 1 MB, OTA.BIN slot A sah;
+# PROD = tetap nol, OTA.BIN tetap nol.
+mcopy -n -i "$DISK" ::KERNA.ELF "$WORK/kerna.out" 2>/dev/null
+mcopy -n -i "$DISK" ::OTA.BIN "$WORK/ota.out" 2>/dev/null
+if [ "$OTA_KUNCI" = uji ]; then
+    check "P7-2: KERNA.ELF dari host = kernel.elf + nol (1 MB); OTA.BIN magic + slot A sah" \
+        '[ "$(stat -c %s "$WORK/kerna.out")" -eq 1048576 ] && head -c "$KSZ" "$WORK/kerna.out" | cmp -s - "$ROOT/build/kernel.elf" && [ "$(tail -c +$((KSZ + 1)) "$WORK/kerna.out" | tr -d "\000" | wc -c)" -eq 0 ] && [ "$(head -c 8 "$WORK/ota.out")" = BMOTAST1 ] && [ "$(od -An -tu1 -j16 -N1 "$WORK/ota.out" | tr -d " ")" = 1 ] && cmp -s "$WORK/KSLOT.ELF" <(mtype -i "$DISK" ::KERNB.ELF)'
+else
+    check "P7-2: PROD: KERNA.ELF dan OTA.BIN tidak berubah (nol)" \
+        'cmp -s "$WORK/kerna.out" "$WORK/KSLOT.ELF" && cmp -s "$WORK/ota.out" "$WORK/OTA.BIN"'
+fi
 check "D7: mtype CONFIG.CFG kanonik; CONFIG.TMP/HAPUS.TXT/GANTI.TXT tidak ada; GANTI2.TXT ada" \
     'mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1 && ! mtype -i "$DISK" ::HAPUS.TXT >/dev/null 2>&1 && ! mtype -i "$DISK" ::GANTI.TXT >/dev/null 2>&1 && [ "$(mtype -i "$DISK" ::GANTI2.TXT)" = "isi ganti" ]'
 
@@ -1033,6 +1172,10 @@ PASS=$((PASS + $(echo "$RAW_OUT" | grep -c '^PASS')))
 FAIL=$((FAIL + $(echo "$RAW_OUT" | grep -c '^FAIL')))
 if [ "$RAW_RC" -ne 0 ] && ! echo "$RAW_OUT" | grep -q '^FAIL'; then
     bad "qemu-rawnet.py keluar dengan kode $RAW_RC"
+fi
+if [ "$OTA_KUNCI" = uji ]; then
+    check "P7-2: boot kedua membaca OTA.BIN: aktif B (OTA.BIN), slot A v7" \
+        'grep -aq "^P7: ota siap berjalan=ISO aktif=B (OTA.BIN) OTA.BIN=OTA.BIN slot A v7 slot B v0" "$WORK/serial-rawnet.log"'
 fi
 # D7: boot kedua menulis CONFIG.CFG lewat UDP (set echo/udp_rate, dikembalikan).
 check "D7: setelah boot kedua: fsck.fat -n bersih, CONFIG.CFG kanonik" \

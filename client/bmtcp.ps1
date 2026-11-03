@@ -14,6 +14,9 @@
 #         bmtls              D9: sama dengan bmtcp lewat TLS 1.2 port 7780; pin
 #                            (sha256 sertifikat, 64 hex) dari $BmPinFile (default
 #                            $env:USERPROFILE\.bmahos\tlspin.txt). Beda -> ditutup.
+#         bmota file.bmo     P7-2: kirim kernel bertanda tangan (sesi admin bmtcp/bmtls):
+#                            "ota terima kernel <ukuran> <sha16>" lalu file ke port 7781,
+#                            cetak baris hasil (OK ota / ERR ota).
 # Catatan: nama variabel PowerShell tidak peka huruf besar-kecil.
 
 if (-not $BmKeyFile) { $BmKeyFile = Join-Path $env:USERPROFILE ".bmahos\key.txt" }
@@ -30,6 +33,7 @@ function bmhmac($msg) {
 }
 
 function bmtcp($addr = "192.168.50.200", $tport = 7779) {
+  $script:BmAddr = $addr
   $script:BmTc = New-Object Net.Sockets.TcpClient
   $script:BmTc.Connect($addr, $tport)
   $st = $script:BmTc.GetStream()
@@ -41,6 +45,7 @@ function bmtcp($addr = "192.168.50.200", $tport = 7779) {
 # sebelum byte aplikasi apa pun. Tanpa verifikasi CA (self-signed).
 function bmtls($addr = "192.168.50.200", $tport = 7780) {
   $script:BmPin = (Get-Content $BmPinFile -Raw).Trim().ToLower()
+  $script:BmAddr = $addr
   $script:BmTc = New-Object Net.Sockets.TcpClient
   $script:BmTc.Connect($addr, $tport)
   $raw = $script:BmTc.GetStream()
@@ -142,6 +147,34 @@ function bmlogdisk($seq = 1) {
     if ($lines.Count -gt 1) { $lines[0..($lines.Count - 2)] }
   }
   "bmlogdisk: halaman terlalu banyak"
+}
+
+# P7-2: kirim file .bmo. sha16 = 16 hex pertama sha256 seluruh file.
+function bmota($file, $oport = 7781) {
+  $fb = [IO.File]::ReadAllBytes((Resolve-Path $file))
+  $jn = [BitConverter]::ToUInt32($fb, 8)
+  $jenis = "?"
+  if ($jn -eq 1) { $jenis = "kernel" }
+  if ($jn -eq 2) { $jenis = "app" }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $hb = $sha.ComputeHash($fb)
+  $hx = ($hb | ForEach-Object { $_.ToString("x2") }) -join ""
+  $s16 = $hx.Substring(0, 16)
+  $r = @(bmt "ota terima $jenis $($fb.Length) $s16")
+  $r
+  if ($r.Count -lt 1 -or -not $r[0].StartsWith("OK ota")) { return }
+  $t0 = Get-Date
+  $oc = New-Object Net.Sockets.TcpClient
+  $oc.Connect($script:BmAddr, $oport)
+  $os = $oc.GetStream()
+  $os.ReadTimeout = 120000
+  $os.Write($fb, 0, $fb.Length)
+  $ord = New-Object IO.StreamReader($os)
+  $hasil = $ord.ReadToEnd()
+  $oc.Close()
+  $dt = ((Get-Date) - $t0).TotalSeconds
+  $hasil.TrimEnd()
+  "bmota: $($fb.Length) byte dikirim dalam $([Math]::Round($dt, 1)) s"
 }
 
 function bmtx {

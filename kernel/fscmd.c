@@ -25,6 +25,7 @@ static const char *const g_fs_wprotected[] = {
     "CONFIG  CFG", "CONFIG  TMP",
     "FILTER  CFG", "FILTER  TMP",   // P4: hanya lewat perintah filter
     "LOG     BIN",   // R4: dipetakan logdisk, ukuran/rantai tidak boleh berubah
+    "KERNA   ELF", "KERNB   ELF", "OTA     BIN", "LIMINE~1CON",   // P7-2: slot OTA + boot
 };
 
 static uint8_t g_fs_buf[FAT32_WRITE_MAX];

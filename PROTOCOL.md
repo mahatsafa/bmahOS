@@ -392,3 +392,34 @@ register umum dump panic), maks 160 karakter.
 - Syslog (UDP, port sumber 514): `<PRI>1 TIMESTAMP 192.168.50.200 bmahOS - pantau - <teks>` (RFC 5424, fasilitas
   local0: PRI 133 NAIK, 132 TURUN, 134 pesan uji); TIMESTAMP `YYYY-MM-DDTHH:MM:SSZ` bila jam dari SNTP, selain itu
   `-`; `<teks>` = teks baris serial tanpa `P6: `.
+
+## OTA: `ota`, `ota terima` + TCP 7781 (P7-2)
+
+- File kiriman `.bmo` (P7-1, `client/ota-sign.py`): header 64 byte + tanda tangan ECDSA P-256 64 byte + isi.
+- `ota` (admin dan read-only, juga UDP): `ota: berjalan=<A|B|ISO> aktif=<A|B> (<sumber>) OTA.BIN=<OTA.BIN|kosong|rusak>
+  seq=<n>`, `slot A|B: <tanpa-catatan|sah|DITULIS(tidak lengkap)> versi= ukuran= sha256=<16 hex>`,
+  `terima: <diam|menunggu koneksi 7781 dari a.b.c.d (sisa N s) slot X|menerima n/N byte|menulis slot n/2048
+  sektor|...>`, `terakhir: <baris hasil terakhir>`. Tanpa slot di disk: `ota: mati (<alasan>)`.
+  Sumber aktif: OTA.BIN; bila kosong/rusak `default_entry` limine.conf, lalu cmdline, lalu A.
+- `ota terima kernel <ukuran> <sha16>` (admin, HANYA sesi TCP 7779 / TLS 7780; UDP -> `ERR: ota terima hanya
+  lewat sesi TCP 7779 / TLS 7780`): ukuran = panjang file .bmo (129..1048704), sha16 = 16 hex pertama sha256
+  seluruh file. Slot tujuan = bukan aktif dan bukan yang sedang berjalan. Balasan `OK ota: kirim N byte ke
+  port 7781 dalam 60 s (slot X)`; galat: `ERR: ota sibuk (...)`, `ERR: ota terima app belum didukung (P7-4)`,
+  `ERR: ukuran harus 129..1048704 byte`, `ERR: slot tujuan sedang berjalan`, `ERR: disk baca saja`, format.
+- TCP 7781: satu koneksi, hanya dari IP sesi itu, selama 60 s; selain itu RST. Koneksi 7781 sebelumnya
+  yang masih menutup (mis. FIN_WAIT_2 karena klien belum menutup soket) di-RST saat SYN baru diterima,
+  jadi tidak menghalangi kiriman berikutnya dan tidak dihitung batas 2 TCB per IP. Klien mengirim file mentah
+  (tanpa framing); jendela terima maks 4 KB. Setelah N byte: sha16 -> tanda tangan + sha256 isi + ELF (P7-1)
+  -> versi harus > versi slot aktif -> OTA.BIN slot tujuan DITULIS -> slot ditulis (sisa sampai 1 MB nol) ->
+  dibaca balik (sha256 + ekor nol) -> OTA.BIN slot tujuan sah. Server lalu mengirim SATU baris dan FIN:
+  `OK ota: slot X versi V ukuran U sha256 <16 hex> ditulis + dibaca balik` atau `ERR ota: <alasan>` (antara
+  lain `sha256 file tidak cocok dengan perintah`, `tanda tangan tidak sah`, `versi V <= versi slot aktif X (W),
+  ditolak`, `koneksi 7781 ditutup setelah n dari N byte`, `tidak ada koneksi 7781 dalam 60 s`, `tulis slot
+  gagal (slot ditandai DITULIS)`). Serial: `P7: ota terima ...`, `P7: ota OK ota: ...` / `P7: ota ERR ota: ...`.
+- Disk: `KERNA.ELF`, `KERNB.ELF` (tepat 1 MB), `limine.conf` (512 byte) dibuat dari host (P7-0); `OTA.BIN`
+  (512 byte) dibuat kernel saat boot bila belum ada (`P7: OTA.BIN dibuat (512 byte kosong)`). Keempatnya dilindungi
+  dari `tulis`/`hapus`/`ganti`. OTA.BIN: magic `BMOTAST1`, seq, aktif, coba/sisa (P7-3), 2 x {status, versi,
+  ukuran, sha256}, SHA-256 8 byte di akhir (lihat kernel/ota.c).
+- Metrics `ota_terima`, `ota_ok`, `ota_gagal`.
+- Klien: `bmctl.py --tcp|--tls ... --ota FILE.bmo [--ota-port P]` (rc 0 hanya bila `OK ota`), PowerShell
+  `bmota FILE.bmo` setelah `bmtcp`/`bmtls`.

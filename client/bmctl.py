@@ -36,6 +36,14 @@ aplikasi apa pun dikirim; beda -> kode keluar 2 tanpa login. Verifikasi CA
 tidak dipakai (sertifikat self-signed); tanda tangan handshake tetap
 diverifikasi OpenSSL dengan kunci di sertifikat itu.
 
+--ota FILE.bmo (P7-2, butuh --tcp/--tls dan kunci admin): kirim kernel baru
+bertanda tangan (client/ota-sign.py). Di sesi itu dijalankan
+"ota terima kernel <ukuran> <sha16>", lalu file dikirim ke port 7781
+(--ota-port / $BMAHOS_OTA_PORT) dan baris hasil dari bmahOS dicetak (kernel
+memeriksa tanda tangan, menulis slot yang tidak aktif, membaca balik).
+Perintah lain di baris perintah dijalankan sesudahnya. Kode keluar 0 bila
+hasilnya "OK ota", 1 bila ERR.
+
 Kunci dibaca dari file (sama dengan KEY.TXT di disk bmahOS); spasi/CR/LF/NUL
 di akhir file dibuang, sama seperti yang dilakukan kernel.
 """
@@ -54,6 +62,8 @@ DEFAULT_HOST = "192.168.50.200"
 DEFAULT_PORT = 7778
 DEFAULT_TCP_PORT = 7779
 DEFAULT_TLS_PORT = 7780
+DEFAULT_OTA_PORT = 7781
+OTA_JENIS = {1: "kernel", 2: "app"}
 CMD_MAX = 64   # panjang perintah maks di shell TCP (kernel/auth.c)
 
 READ_CMDS = ("help", "ping", "uptime", "mem", "log", "irq", "stats",
@@ -230,6 +240,56 @@ def check_cmd(cmd):
     return None
 
 
+def ota_send(sess, args, port):
+    """P7-2: kirim file .bmo lewat `ota terima` + port 7781. Return rc 0/1."""
+    with open(args.ota, "rb") as f:
+        data = f.read()
+    if len(data) < 128 or data[:8] != b"BMOTA1\0\0":
+        sys.stderr.write("bmctl: %s bukan file .bmo\n" % args.ota)
+        return 1
+    jenis = OTA_JENIS.get(int.from_bytes(data[8:12], "little"), "?")
+    sha16 = args.ota_sha16 or hashlib.sha256(data).hexdigest()[:16]
+    out, ok = sess.command("ota terima %s %d %s" % (jenis, len(data), sha16))
+    for line in out:
+        sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+    if not ok or not out or not out[0].startswith("OK ota"):
+        return 1
+    kirim = data if args.ota_potong is None else data[:args.ota_potong]
+    t0 = time.time()
+    try:
+        s = socket.create_connection((args.host, port), timeout=args.timeout)
+    except OSError as e:
+        sys.stdout.write("bmctl: ota: gagal terhubung ke %s:%d: %s\n" % (args.host, port, e))
+        return 1
+    s.settimeout(max(args.timeout, 120.0))   # tulis + baca balik 1 MB
+    got = b""
+    try:
+        s.sendall(kirim)
+        if args.ota_potong is not None:
+            s.shutdown(socket.SHUT_WR)
+        while True:
+            d = s.recv(4096)
+            if not d:
+                break
+            got += d
+        text = got.decode(errors="replace").rstrip("\n")
+        sys.stdout.write("%s\n" % (text or "bmctl: 7781 ditutup tanpa hasil"))
+        sys.stdout.write("bmctl: ota %d byte dikirim dalam %.1f s\n"
+                         % (len(kirim), time.time() - t0))
+        sys.stdout.flush()
+        if args.ota_tahan:
+            # uji: sesi CLI selesai, soket 7781 belum ditutup (bmahOS FIN_WAIT_2)
+            for line in sess.command("exit")[0]:
+                sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+            sess.close()
+            time.sleep(args.ota_tahan)
+    finally:
+        s.close()
+    return 0 if text.startswith("OK ota") else 1
+
+
 def run_tcp(args):
     key = load_key(args.key)
     pin = None
@@ -265,7 +325,12 @@ def run_tcp(args):
         if sess.login_reply not in ("OK login", "OK login ro"):
             sys.stdout.write("%s\n" % (sess.login_reply or "bmctl: koneksi ditutup server"))
             return 1
-        interactive = not args.command
+        if args.ota:
+            port_ota = args.ota_port or int(os.environ.get("BMAHOS_OTA_PORT", DEFAULT_OTA_PORT))
+            rc = ota_send(sess, args, port_ota)
+            if args.ota_tahan:
+                return rc   # sesi sudah ditutup di ota_send
+        interactive = not args.command and not args.ota
         tty = interactive and sys.stdin.isatty()
         cmds = iter(args.command) if not interactive else None
         while True:
@@ -317,6 +382,9 @@ def run_tcp(args):
 def run(args):
     if args.tcp or args.tls:
         return run_tcp(args)
+    if args.ota:
+        sys.stderr.write("bmctl: --ota butuh --tcp atau --tls\n")
+        return 2
     if len(args.command) != 1:
         sys.stderr.write("bmctl: jalur UDP butuh tepat satu perintah (pakai --tcp untuk sesi)\n")
         return 2
@@ -382,6 +450,14 @@ def main():
                    help="tidak diperlukan lagi (semua perintah lewat CHAL); diabaikan")
     p.add_argument("--timeout", type=float, default=None,
                    help="detik per balasan (default UDP 3, TCP 10)")
+    p.add_argument("--ota", default=None, metavar="FILE.bmo",
+                   help="P7-2: kirim kernel bertanda tangan lewat port 7781 (butuh --tcp/--tls)")
+    p.add_argument("--ota-port", type=int, default=None,
+                   help="port penerimaan OTA (default %d atau $BMAHOS_OTA_PORT)" % DEFAULT_OTA_PORT)
+    # uji: sha16 lain / hanya N byte pertama yang dikirim
+    p.add_argument("--ota-sha16", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--ota-potong", type=int, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--ota-tahan", type=float, default=0, help=argparse.SUPPRESS)
     args = p.parse_args()
     if args.timeout is None:
         args.timeout = 10.0 if args.tcp or args.tls else 3.0

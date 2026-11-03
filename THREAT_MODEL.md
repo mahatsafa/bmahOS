@@ -173,6 +173,16 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 23. APP.BIN (P5-4) tidak ditandatangani: siapa pun yang bisa menulis disk (akses fisik, atau OS lain di mesin
    yang sama) bisa mengganti program yang dijalankan saat boot. Program itu tetap di ring 3 dan memakai socket
    API (UDP/TCP ke /24 sendiri, port 1024..49151). Verifikasi tanda tangan direncanakan bersama P7 (OTA).
+24. Penerimaan OTA (P7-2): port 7781 hanya terbuka setelah `ota terima` admin, 60 s, satu koneksi, hanya IP sesi
+   itu; data mentah tanpa TLS (isi kernel tidak rahasia, keaslian dari tanda tangan ECDSA, bukan dari kanal).
+   Penyerang di LAN yang memalsukan IP admin bisa menyerobot koneksi 7781 dan mengirim sampah: hasilnya hanya
+   penolakan (tanda tangan/sha16) dan admin mengulang. Satu penerimaan sekaligus (buffer statis 1 MB + 128);
+   selama slot ditulis (beberapa detik) net task tetap jalan karena tulis/baca balik 32 sektor per putaran.
+   Anti-downgrade membandingkan versi dengan slot aktif di OTA.BIN; slot yang ditulis dari host = versi 0, jadi
+   kernel bertanda tangan lama mana pun bisa dipasang sekali ke slot tidak aktif selama slot aktif belum
+   dipasang lewat OTA. OTA.BIN tidak bertanda tangan (siapa pun yang bisa menulis disk bisa mengubahnya, sama
+   seperti limine.conf dan slot itu sendiri; akses tulis disk = di luar cakupan, bagian 8). Slot belum di-boot
+   (P7-3).
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

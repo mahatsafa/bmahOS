@@ -356,3 +356,38 @@ int test_hex_eq(const unsigned char *buf, size_t len, const char *hex)
     }
     return 1;
 }
+
+// P7-2: ota (kernel/otaslot.c) tidak ikut uji net/auth; port 7781 selalu tertutup.
+WEAK const uint8_t *g_cmd_src_ip;
+WEAK int ota_listen_ok(const volatile uint8_t *ip)
+{
+    (void)ip;
+    return 0;
+}
+WEAK void ota_conn_open(void)
+{
+}
+WEAK uint32_t ota_rx_space(void)
+{
+    return 0;
+}
+WEAK uint32_t ota_rx(const volatile uint8_t *d, uint32_t n)
+{
+    (void)d;
+    (void)n;
+    return 0;
+}
+WEAK int ota_busy(void)
+{
+    return 0;
+}
+WEAK const char *ota_reply_take(void)
+{
+    return 0;
+}
+WEAK int ota_execute(const volatile uint8_t *cmd, uint32_t len)
+{
+    (void)cmd;
+    (void)len;
+    return 0;
+}

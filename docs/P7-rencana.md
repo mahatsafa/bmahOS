@@ -45,6 +45,9 @@ sudah ada.
 - **P7-1a** refactor: peta file besar + baca cmdline Limine.
 - **P7-1** `kernel/ota.c`: parser header + verifikasi ECDSA, `tools/ota-sign.py`, host-test + target fuzz.
 - **P7-2** `ota terima` + port 7781 + tulis slot + `ota status` + klien.
+  Penyesuaian saat dikerjakan: argumen sha = 16 hex pertama sha256 file (sha256 penuh tidak muat di batas
+  perintah 64 byte); status = perintah `ota` (tanpa kata `status`); OTA.BIN dibuat kernel bila belum ada
+  (disk P7-0 tidak perlu diubah dari host); `ota terima app` menunggu P7-4. Rincian di PROTOCOL.md.
 - **P7-3** boot percobaan, penghitung, rollback, pengukuhan; `tests/qemu-ota.sh` (boot dari disk): B sehat
   dikukuhkan, B rusak (flag uji panic dini) kembali ke A setelah 3 kali.
 - **P7-4** APP.BIN bertanda tangan; uji VMware penuh; PROTOCOL/THREAT_MODEL/DECISIONS; centang P7 -> M-B.

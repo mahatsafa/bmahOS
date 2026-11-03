@@ -727,6 +727,42 @@ const char *ota_strerror(int rc);
 const uint8_t *ota_pubkey(void);
 uint32_t ota_max_size(uint32_t jenis);
 int ota_selftest(void);
+// P7-2: OTA.BIN (512 byte, satu sektor) = status slot A/B. Lihat kernel/ota.c.
+#define OTA_SLOT_KOSONG  0u   // tanpa catatan (mis. slot ditulis dari host)
+#define OTA_SLOT_SAH     1u   // ditulis OTA + dibaca balik cocok
+#define OTA_SLOT_DITULIS 2u   // penulisan dimulai, belum selesai (tidak boleh dicoba)
+#define OTA_COBA_TIDAK   0xFFu
+typedef struct {
+    uint8_t status;
+    uint32_t versi, ukuran;
+    uint8_t sha256[32];
+} ota_slot_t;
+typedef struct {
+    uint32_t seq;
+    uint8_t aktif;   // 0 = A, 1 = B (slot yang dikukuhkan)
+    uint8_t coba;    // P7-3: slot boot percobaan, OTA_COBA_TIDAK = tidak ada
+    uint8_t sisa;    // P7-3: sisa boot percobaan
+    ota_slot_t s[2];
+} ota_st_t;
+void ota_st_init(ota_st_t *st, uint8_t aktif);
+void ota_st_encode(const ota_st_t *st, uint8_t *b512);
+int ota_st_decode(const uint8_t *b512, ota_st_t *st);   // 1 sah, 0 kosong, -1 rusak
+int ota_conf_default(const uint8_t *b, uint32_t n);    // default_entry 1/2, 0 = tidak ada
+int ota_cmdline_slot(const char *s);                   // "slot=A" 0, "slot=B" 1, lain -1
+// P7-2: penerimaan + penulisan slot (kernel/otaslot.c, net task).
+void ota_init(void);
+void ota_poll(void);
+int ota_execute(const volatile uint8_t *cmd, uint32_t len);   // 1 = ditangani
+int ota_listen_ok(const volatile uint8_t *ip);
+void ota_conn_open(void);
+uint32_t ota_rx_space(void);
+uint32_t ota_rx(const volatile uint8_t *d, uint32_t n);
+int ota_busy(void);
+const char *ota_reply_take(void);
+int net_tcp_ota_alive(void);   // net.c: TCB 7781: 0 tidak ada, 1 terbuka, 2 peer FIN/tutup
+extern uint64_t g_ota_terima, g_ota_ok, g_ota_gagal;
+// P7-2: alamat IP sesi TCP/TLS yang sedang menjalankan perintah (0 = UDP).
+extern const uint8_t *g_cmd_src_ip;
 
 // ---- net.c (ARP/IPv4/ICMP/UDP/TCP) ----
 #define NET_UDP_BUDGET_PER_SEC 100

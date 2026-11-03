@@ -33,6 +33,23 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
     } else {
         FUZZ_ASSERT(rc < 0 && inf.jenis == 0 && inf.versi == 0 && inf.ukuran == 0);
     }
+    // P7-2: OTA.BIN dari disk (512 byte pertama) dan limine.conf (seluruh input).
+    if (xn >= 512) {
+        ota_st_t st;
+        uint8_t re[512];
+
+        memset(&st, 0xAA, sizeof(st));
+        rc = ota_st_decode(b, &st);
+        FUZZ_ASSERT(rc >= -1 && rc <= 1);
+        if (rc == 1) {
+            ota_st_encode(&st, re);
+            FUZZ_ASSERT(memcmp(re, b, 512) == 0);
+        } else {
+            FUZZ_ASSERT(st.seq == 0xAAAAAAAAu);
+        }
+    }
+    rc = ota_conf_default(b, (uint32_t)xn);
+    FUZZ_ASSERT(rc >= 0 && rc <= 2);
     free(b);
     return 0;
 }

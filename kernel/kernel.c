@@ -478,6 +478,7 @@ static void net_task_entry(void)
     dns_init();      // P3-3
     monitor_init();  // P6-1
     logdisk_init();  // R4
+    ota_init();      // P7-2: OTA.BIN + slot KERNA/KERNB
 
     for (;;) {
         static int irq_reported = 0;
@@ -512,6 +513,7 @@ static void net_task_entry(void)
         monitor_poll();   // P6-1
         sock_poll();      // P5-1
         logdisk_poll();   // R4
+        ota_poll();       // P7-2
         sem_wait(&g_net_rx_sem);
     }
 }

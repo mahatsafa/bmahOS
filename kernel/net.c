@@ -767,7 +767,12 @@ uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
 // sejak ESTABLISHED TCP (termasuk handshake). Error TLS -> RST.
 #define NET_TCP_TLS_PORT    7780
 #define TCP_CLI_IDLE        ((uint64_t)g_cli_idle_s * 100)  // tick (D7: cli_idle)
-enum { TCP_APP_ECHO = 0, TCP_APP_CLI, TCP_APP_USER };
+// P7-2: port 7781 = penerimaan file OTA (kernel/otaslot.c). SYN hanya diterima
+// selama `ota terima` menunggu, hanya dari IP sesi admin itu, satu koneksi;
+// selain itu RST. Data -> ota_rx (jendela = ota_rx_space, maks 4 KB); selama
+// diproses (cek + tulis slot) tanpa batas diam; FIN kita setelah baris hasil.
+#define NET_TCP_OTA_PORT    7781
+enum { TCP_APP_ECHO = 0, TCP_APP_CLI, TCP_APP_USER, TCP_APP_OTA };
 
 // Nilai juga dipakai metrics tcp_state. P5-3: SYN_SENT (connect) di akhir
 // supaya nilai lama tetap.
@@ -875,6 +880,24 @@ int net_tcp_tls_active(void)
     return net_tcp_port_active(NET_TCP_TLS_PORT);
 }
 
+// 1 = ada TCB 7781 SYN_RCVD/ESTABLISHED, 2 = hanya yang sedang menutup, 0 = tidak ada.
+int net_tcp_ota_alive(void)
+{
+    int r = 0;
+
+    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+        int s = g_tcbs[k].state;
+
+        if (s != TCP_CLOSED && g_tcbs[k].app == TCP_APP_OTA) {
+            if (s == TCP_SYN_RCVD || s == TCP_ESTABLISHED) {
+                return 1;
+            }
+            r = 2;
+        }
+    }
+    return r;
+}
+
 static inline int seq_lt(uint32_t a, uint32_t b)
 {
     return (int32_t)(a - b) < 0;
@@ -889,6 +912,9 @@ static uint32_t net_tcp_rcv_wnd(const tcp_tcb_t *t)
 {
     if (t->app == TCP_APP_USER) {
         return sock_tcp_rx_space(TCB_USER(t));   // P5-2: ruang ring masuk
+    }
+    if (t->app == TCP_APP_OTA) {
+        return ota_rx_space();   // P7-2: sisa file (maks 4 KB)
     }
     return TCP_BUF_SIZE - t->buf_count;
 }
@@ -1101,8 +1127,9 @@ static int net_tcp_output(tcp_tcb_t *t)
         // C3d: peer sudah FIN dan echo habis terkirim + di-ACK: FIN kita
         // (sekaligus ACK untuk FIN peer).
         // P5-2: soket user: hanya setelah program menutup fd (close_after).
+        // P7-2: OTA: hanya setelah baris hasil diantre (close_after).
         if (t->state == TCP_CLOSE_WAIT && t->buf_count == 0 &&
-            (t->app != TCP_APP_USER || t->close_after)) {
+            ((t->app != TCP_APP_USER && t->app != TCP_APP_OTA) || t->close_after)) {
             net_tcp_send_fin(t, TCP_LAST_ACK);
             net_tcp_log("FIN dikirim (LAST_ACK)");
             return 1;
@@ -1338,7 +1365,9 @@ static void net_tcp_cli_cmd(tcp_tcb_t *t, uint32_t len)
         }
         t->close_after = 1;
     } else {
+        g_cmd_src_ip = t->ip;   // P7-2: `ota terima` mengikat IP sesi ini
         n = auth_tcp_exec(t->role, t->line, clen, t->out, TCP_CLI_OUT_MAX - 32, &reboot);
+        g_cmd_src_ip = 0;
     }
     if (reboot) {
         t->reboot_after = 1;
@@ -1580,6 +1609,21 @@ static void net_tcp_tick_one(tcp_tcb_t *t)
         }
         net_tcp_output(t);
     }
+    // P7-2: baris hasil OTA -> antrean kirim, lalu FIN setelah di-ACK.
+    if (t->app == TCP_APP_OTA && !t->close_after &&
+        (t->state == TCP_ESTABLISHED || t->state == TCP_CLOSE_WAIT)) {
+        const char *m = ota_reply_take();
+
+        if (m) {
+            net_tcp_queue(t, (const volatile uint8_t *)m, (uint32_t)strlen(m));
+            t->close_after = 1;
+            net_tcp_output(t);
+            return;
+        }
+        if (ota_busy() && t->buf_count == 0) {
+            return;   // sedang memeriksa/menulis slot: tanpa batas diam
+        }
+    }
     // D1: login CLI harus selesai dalam TCP_LOGIN_TIMEOUT sejak ESTABLISHED.
     if (t->app == TCP_APP_CLI && t->state == TCP_ESTABLISHED && !t->cli_authed &&
         !t->close_after && timer_ticks - t->opened > TCP_LOGIN_TIMEOUT) {
@@ -1679,6 +1723,9 @@ static uint32_t net_tcp_app_rx(tcp_tcb_t *t, const volatile uint8_t *d, uint32_t
     }
     if (t->app == TCP_APP_USER) {
         return sock_tcp_rx(TCB_USER(t), d, len);   // P5-2: ring masuk soket
+    }
+    if (t->app == TCP_APP_OTA) {
+        return ota_rx(d, len);   // P7-2: file .bmo
     }
     // Echo: data masuk langsung jadi data kirim, hanya sebanyak ruang buffer
     // (= jendela yang kita iklankan).
@@ -1783,6 +1830,58 @@ static int net_tcp_user_syn(const volatile uint8_t *buf, uint32_t r, uint16_t sp
     }
     sock_tcp_syn(TCB_USER(t), buf + 26, sport, dport);
     net_tcp_tcb_open(t, buf, r, sport, dport, seq, isn, TCP_APP_USER, -1);
+    return 1;
+}
+
+// P7-2: SYN 7781 yang ditunggu `ota terima`: slot layanan kernel kosong (tanpa
+// penggusuran), batas per IP tetap berlaku. Penuh -> RST (pengirim mengulang).
+static int net_tcp_ota_syn(const volatile uint8_t *buf, uint32_t r, uint16_t sport,
+                           uint16_t dport, uint32_t seq)
+{
+    tcp_tcb_t *t = 0;
+    uint32_t same_ip = 0;
+
+    // Koneksi 7781 lama yang masih menutup (hasilnya sudah dikirim; mis. peer
+    // belum mengirim FIN sehingga FIN_WAIT_2 sampai 10 s) diganti: RST lalu
+    // dibebaskan, supaya tidak dihitung batas per IP dan tidak ada dua TCB OTA.
+    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+        tcp_tcb_t *e = &g_tcbs[k];
+
+        if (e->state != TCP_CLOSED && e->app == TCP_APP_OTA) {
+            net_tcp_tcb_send(e, e->snd_nxt, TCP_RST | TCP_ACK, 0);
+            net_tcp_close(e, "7781 lama ditutup (RST) untuk koneksi OTA baru");
+        }
+    }
+    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+        tcp_tcb_t *e = &g_tcbs[k];
+
+        if (e->state == TCP_CLOSED) {
+            if (t == 0) {
+                t = e;
+            }
+            continue;
+        }
+        same_ip += e->ip[0] == buf[26] && e->ip[1] == buf[27] && e->ip[2] == buf[28] &&
+                   e->ip[3] == buf[29];
+    }
+    if (same_ip >= TCP_MAX_PER_IP) {
+        g_tcp_src_full++;
+        return 0;
+    }
+    if (t == 0) {
+        g_tcp_busy++;
+        return 0;
+    }
+
+    uint8_t isn[20];
+
+    if (!entropy_get(isn, sizeof(isn))) {
+        g_tcp_noentropy++;
+        net_tcp_log("SYN 7781 dibuang: entropi belum cukup");
+        return 1;
+    }
+    net_tcp_tcb_open(t, buf, r, sport, dport, seq, isn, TCP_APP_OTA, -1);
+    ota_conn_open();
     return 1;
 }
 
@@ -2063,6 +2162,11 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
 
     if ((flags & TCP_SYN) && !(flags & (TCP_ACK | TCP_RST)) && sock_tcp_listening(dport)) {
         return net_tcp_user_syn(buf, r, sport, dport, seq);
+    }
+
+    if (dport == NET_TCP_OTA_PORT && (flags & TCP_SYN) && !(flags & (TCP_ACK | TCP_RST)) &&
+        ota_listen_ok(buf + 26)) {
+        return net_tcp_ota_syn(buf, r, sport, dport, seq);
     }
 
     if (((dport == NET_TCP_ECHO_PORT && g_net_echo) ||
