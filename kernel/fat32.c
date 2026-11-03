@@ -829,10 +829,16 @@ static int fw_alloc(uint32_t n, uint32_t hint, uint32_t *out)
 // Rantai file: ceil(size / ukuran cluster) cluster sah, berbeda satu sama lain.
 // Rantai yang lebih panjang dari ukuran diterima (sisanya diabaikan = lost
 // cluster): itu keadaan sah setelah crash di antara fase 3 dan 4 di bawah.
+// P7-2a: sektor FAT dibaca sekali per 128 entri (cache lokal satu sektor yang
+// berlaku hanya selama satu penelusuran; FAT tidak diubah di tengahnya). Dulu
+// satu baca AHCI per cluster: peta slot OTA 1 MB = 2048 baca.
+static uint8_t g_fw_walk_sec[512];
+
 static int fw_walk(uint32_t first, uint32_t size, uint32_t *chain, uint32_t *count)
 {
     uint32_t cs = g_fat32_volume.sectors_per_cluster * 512;
     uint32_t need = (size + cs - 1) / cs;
+    uint64_t cached = ~(uint64_t)0;
 
     *count = 0;
 
@@ -847,22 +853,32 @@ static int fw_walk(uint32_t first, uint32_t size, uint32_t *chain, uint32_t *cou
             return FAT32_ERR_CORRUPT;
         }
 
-        for (uint32_t j = 0; j < i; j++) {
-            if (chain[j] == c) {
-                return FAT32_ERR_CORRUPT;   // rantai melingkar
-            }
-        }
-
         chain[i] = c;
 
-        uint32_t next = fat32_read_fat_entry(c);
+        uint64_t lba = g_fat32_volume.fat_start_lba + ((uint64_t)c * 4) / 512;
 
-        if (next == 0xFFFFFFFFu) {
-            return FAT32_ERR_IO;
+        if (lba != cached) {
+            if (fw_read(lba, 1, g_fw_walk_sec) != FAT32_OK) {
+                return FAT32_ERR_IO;
+            }
+            cached = lba;
         }
+
+        uint32_t next = fat32_le32(g_fw_walk_sec + (c * 4) % 512) & 0x0FFFFFFFu;
 
         if (i + 1 < need) {
             c = next;
+        }
+    }
+
+    // Rantai melingkar: cluster berikutnya hanya bergantung pada cluster ini,
+    // jadi bila ada cluster berulang di chain[0..need), barisan berperiode
+    // sejak pengulangan pertama dan elemen terakhir pasti sudah muncul
+    // sebelumnya (dan sebaliknya). Satu pemeriksaan O(n) setara dengan
+    // membandingkan semua pasangan.
+    for (uint32_t j = 0; j + 1 < need; j++) {
+        if (chain[j] == chain[need - 1]) {
+            return FAT32_ERR_CORRUPT;
         }
     }
 
