@@ -52,7 +52,7 @@ __attribute__((section(".text.start"), noreturn)) void _start(void)
 {
     char buf[PFX + BM_DGRAM_MAX - PFX];
     bm_u64 from = 0;
-    bm_i64 fd = bm_socket(BM_SOCK_UDP);
+    bm_i64 fd = bm_socket_ulang(BM_SOCK_UDP);
 
     if (fd < 0) {
         tulis_angka("P5: udpgema socket gagal ", fd);

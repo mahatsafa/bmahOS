@@ -107,7 +107,7 @@ static int layani(bm_i64 c, char *buf)
 __attribute__((section(".text.start"), noreturn)) void _start(void)
 {
     char buf[BM_TCP_RING];
-    bm_i64 fd = bm_socket(BM_SOCK_TCP);
+    bm_i64 fd = bm_socket_ulang(BM_SOCK_TCP);
 
     if (fd < 0) {
         tulis_angka(PFX "socket gagal ", fd);

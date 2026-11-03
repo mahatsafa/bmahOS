@@ -81,6 +81,24 @@ static inline bm_i64 bm_socket(int type)
     return bm_sys5(BM_SYS_SOCKET, (bm_u64)type, 0, 0, 0, 0);
 }
 
+// Tabel soket kernel (4 slot) bisa penuh SESAAT oleh soket uji program lain
+// (build dev: tcpklien membuka/menutup soket uji saat boot). Siapa yang kalah
+// bergantung pada timing; program uji yang harus hidup mengulang socket()
+// selama hasilnya BM_EMFILE, dengan jeda putaran sibuk (tidak ada syscall
+// tidur), maks BM_SOCKET_ULANG kali. Galat lain langsung dikembalikan.
+#define BM_SOCKET_ULANG 3000
+static inline bm_i64 bm_socket_ulang(int type)
+{
+    bm_i64 fd = bm_socket(type);
+
+    for (int k = 0; fd == BM_EMFILE && k < BM_SOCKET_ULANG; k++) {
+        for (volatile int s = 0; s < 100000; s++) {
+        }
+        fd = bm_socket(type);
+    }
+    return fd;
+}
+
 static inline bm_i64 bm_bind(bm_i64 fd, unsigned port)
 {
     return bm_sys5(BM_SYS_BIND, (bm_u64)fd, port, 0, 0, 0);
