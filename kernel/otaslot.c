@@ -20,7 +20,7 @@
 // OTA.BIN yang belum ada dibuat sekali saat boot (512 byte nol = kosong) bila
 // kedua slot ada dan volume bisa ditulis (disk P7-0 belum punya OTA.BIN). Mati listrik di
 // tengah penulisan meninggalkan status DITULIS (slot tidak boleh dicoba, P7-3).
-// Semua dari net task (tanpa lock).
+// ota_init dari kmain sebelum net task dibuat; sisanya dari net task (tanpa lock).
 #include "kernel.h"
 
 #define OTA_PORT          7781

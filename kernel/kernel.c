@@ -478,7 +478,6 @@ static void net_task_entry(void)
     dns_init();      // P3-3
     monitor_init();  // P6-1
     logdisk_init();  // R4
-    ota_init();      // P7-2: OTA.BIN + slot KERNA/KERNB
 
     for (;;) {
         static int irq_reported = 0;
@@ -1256,6 +1255,10 @@ void kmain(void)
     task_count = 0;
     serial_write("PROD: task uji dilewati (task_count direset ke 0)\r\n");
 #endif
+
+    // P7-2: OTA.BIN + slot KERNA/KERNB. Di kmain (bukan net task) supaya
+    // keputusan boot percobaan P7-3 tetap jalan walau net task tidak ada.
+    ota_init();
 
     if (task_count < MAX_TASKS) {
         task_create(&tasks[task_count], net_task_entry, NET_TASK_STACK);
