@@ -20,6 +20,19 @@
 // OTA.BIN yang belum ada dibuat sekali saat boot (512 byte nol = kosong) bila
 // kedua slot ada dan volume bisa ditulis (disk P7-0 belum punya OTA.BIN). Mati listrik di
 // tengah penulisan meninggalkan status DITULIS (slot tidak boleh dicoba, P7-3).
+//
+// P7-3 boot percobaan: `ota coba` -> OTA.BIN {coba = slot tujuan, sisa = 3}
+// lalu digit default_entry limine.conf (satu sektor, lewat peta file) lalu
+// reboot. Saat boot (ota_init, dari kmain sebelum net task) ota_boot_decide
+// (ota.c) memutuskan: slot coba berjalan -> sisa-1 (mode percobaan), sisa
+// habis -> rollback (slot GAGAL, limine.conf ke slot aktif, reboot); lihat
+// ota.c untuk kasus lain. Mode percobaan: sehat (uptime >= 60 s, entropi siap,
+// jalur admin TLS atau teks polos terbuka; net task jalan karena ota_poll
+// dipanggil di sana) -> slot dikukuhkan (OTA.BIN aktif = coba). `ota sah`
+// mengukuhkan lebih cepat, `ota batal` membatalkan + reboot. Tidak sehat
+// dalam 300 s atau net task tidak jalan -> panic (reboot, percobaan terpakai).
+// Urutan tulis selalu OTA.BIN dulu, limine.conf kedua: crash di antaranya
+// diselesaikan ota_boot_decide pada boot berikutnya.
 // ota_init dari kmain sebelum net task dibuat; sisanya dari net task (tanpa lock).
 #include "kernel.h"
 
@@ -29,6 +42,8 @@
 #define OTA_RX_WND_MAX    4096u   // jendela terima TCP 7781
 #define OTA_SLOT_SEC      (OTA_KERNEL_MAX / 512u)
 #define OTA_MSG_MAX       120
+#define OTA_SEHAT_TICKS   6000u    // P7-3: sehat 60 s sejak boot -> dikukuhkan
+#define OTA_SAKIT_TICKS   30000u   // P7-3: belum sehat 300 s -> panic
 
 enum { OS_IDLE = 0, OS_LISTEN, OS_RX, OS_CHECK, OS_MARK, OS_WRITE, OS_VERIFY, OS_COMMIT };
 static const char *const g_os_state_name[] = {
@@ -39,6 +54,13 @@ static const char *const g_os_state_name[] = {
 static uint8_t g_ota_buf[OTA_PREFIX + OTA_KERNEL_MAX] __attribute__((aligned(16)));
 static fat32_map_t g_os_slot_map;   // slot tujuan (dipetakan saat `ota terima`)
 static fat32_map_t g_os_st_map;     // OTA.BIN
+static fat32_map_t g_os_conf_map;   // P7-3: limine.conf (1 sektor), nsec 0 = tidak ada
+static int g_os_trial;              // P7-3: kernel ini boot percobaan, belum dikukuhkan
+// P7-3: penanda uji. Skrip uji menambal "sehat" -> "panik" di ELF sebelum
+// ditandatangani: kernel itu panic tepat setelah keputusan boot percobaan.
+// Hanya berarti di image bertanda tangan sah (pemegang kunci bisa
+// menandatangani kernel apa pun), jadi juga ada di PROD.
+static const volatile char g_ota_uji[] = "P7UJI:sehat";
 static int g_os_on;                 // OTA.BIN + kedua slot ada
 static const char *g_os_why = "belum diperiksa";
 static ota_st_t g_os_st;
@@ -79,6 +101,117 @@ static int os_st_write(void)
     }
     g_os_st_src = "OTA.BIN";
     return 1;
+}
+
+// P7-3: simpan status baru; gagal -> status RAM tetap yang lama.
+static int os_st_save(const ota_st_t *n)
+{
+    ota_st_t old = g_os_st;
+
+    g_os_st = *n;
+    if (os_st_write()) {
+        return 1;
+    }
+    g_os_st = old;
+    return 0;
+}
+
+// P7-3: default_entry limine.conf = slot (0 A, 1 B). 1 berhasil (atau sudah).
+static int os_conf_write(int slot)
+{
+    uint8_t b[512];
+
+    if (g_os_conf_map.nsec != 1 || fat32_map_read(&g_os_conf_map, 0, b) != FAT32_OK) {
+        return 0;
+    }
+    if (ota_conf_default(b, 512) == slot + 1) {
+        return 1;
+    }
+    if (!ota_conf_set(b, 512, slot + 1)) {
+        return 0;
+    }
+    return fat32_map_write(&g_os_conf_map, 0, b) == FAT32_OK;
+}
+
+static void os_note(const char *msg)
+{
+    uint32_t i;
+
+    for (i = 0; msg[i] && i < OTA_MSG_MAX - 1; i++) {
+        g_os_last[i] = msg[i];
+    }
+    g_os_last[i] = 0;
+    kprintf("P7: %s\r\n", g_os_last);
+}
+
+// P7-3: keputusan boot (dari ota_init, OTA.BIN sah, disk bisa ditulis).
+static void os_boot(void)
+{
+    uint8_t b[512];
+    char m[OTA_MSG_MAX];
+    int conf = 0, act;
+    ota_st_t n = g_os_st;
+    char ak = os_slot_ch(g_os_st.aktif);
+
+    if (g_os_conf_map.nsec == 1 && fat32_map_read(&g_os_conf_map, 0, b) == FAT32_OK) {
+        conf = ota_conf_default(b, 512);
+    }
+    act = ota_boot_decide(&n, g_os_run, conf);
+    switch (act) {
+    case OTA_BOOT_COBA:
+        g_os_trial = 1;
+        ksnprintf(m, sizeof(m), "boot percobaan slot %c versi %u (sisa %u)%s",
+                  os_slot_ch(n.coba), n.s[n.coba].versi, n.sisa,
+                  os_st_save(&n) ? "" : " (tulis OTA.BIN gagal)");
+        os_note(m);
+        if (g_ota_uji[6] == 'p' && g_ota_uji[7] == 'a' && g_ota_uji[8] == 'n' &&
+            g_ota_uji[9] == 'i' && g_ota_uji[10] == 'k') {
+            panic_msg("P7: uji kernel rusak (penanda P7UJI:panik)");
+        }
+        break;
+    case OTA_BOOT_ROLLBACK: {
+        char c = os_slot_ch(g_os_st.coba);
+
+        if (os_st_save(&n) && os_conf_write(n.aktif)) {
+            ksnprintf(m, sizeof(m), "rollback: slot %c gagal %u boot percobaan, kembali ke slot %c,"
+                      " reboot", c, OTA_COBA_SISA, ak);
+            os_note(m);
+            machine_reboot();
+        }
+        ksnprintf(m, sizeof(m), "rollback ke slot %c gagal ditulis, tetap di slot %c", ak, c);
+        os_note(m);
+        break;
+    }
+    case OTA_BOOT_BATAL:
+        ksnprintf(m, sizeof(m), "percobaan slot %c dibatalkan (slot aktif %c berjalan)%s",
+                  os_slot_ch(g_os_st.coba), ak,
+                  os_st_save(&n) && os_conf_write(n.aktif) ? "" : " (tulis gagal)");
+        os_note(m);
+        break;
+    case OTA_BOOT_PERBAIKI:
+        if (os_conf_write(g_os_st.aktif)) {
+            ksnprintf(m, sizeof(m), "limine.conf menunjuk slot %c, bukan aktif %c: diperbaiki, reboot",
+                      os_slot_ch(g_os_run), ak);
+            os_note(m);
+            machine_reboot();
+        }
+        ksnprintf(m, sizeof(m), "limine.conf menunjuk slot %c, bukan aktif %c: perbaikan gagal",
+                  os_slot_ch(g_os_run), ak);
+        os_note(m);
+        break;
+    case OTA_BOOT_MANUAL:
+        ksnprintf(m, sizeof(m), "slot %c dipilih manual (aktif %c), tidak diubah",
+                  os_slot_ch(g_os_run), ak);
+        os_note(m);
+        break;
+    case OTA_BOOT_ISO_COBA:
+        ksnprintf(m, sizeof(m), "boot ISO, percobaan slot %c tertunda (tidak diubah)",
+                  os_slot_ch(g_os_st.coba));
+        os_note(m);
+        break;
+    default:
+        break;
+    }
 }
 
 void ota_init(void)
@@ -124,19 +257,20 @@ void ota_init(void)
 
     if (g_os_on) {
         rc = ota_st_decode(b, &g_os_st);
+        if (fat32_file_map("LIMINE~1CON", &g_os_conf_map) != FAT32_OK ||
+            g_os_conf_map.nsec != 1) {
+            g_os_conf_map.nsec = 0;
+        }
         if (rc == 1) {
             g_os_st_src = "OTA.BIN";
             g_os_aktif_src = "OTA.BIN";
         } else {
-            fat32_map_t *m = &g_os_slot_map;   // dipinjam sebentar
             int d = 0;
 
             g_os_st_src = rc == 0 ? "kosong" : "rusak";
-            if (fat32_file_map("LIMINE~1CON", m) == FAT32_OK && m->nsec == 1 &&
-                fat32_map_read(m, 0, b) == FAT32_OK) {
+            if (g_os_conf_map.nsec == 1 && fat32_map_read(&g_os_conf_map, 0, b) == FAT32_OK) {
                 d = ota_conf_default(b, 512);
             }
-            m->nsec = 0;
             if (d) {
                 ota_st_init(&g_os_st, (uint8_t)(d - 1));
                 g_os_aktif_src = "limine.conf";
@@ -151,6 +285,14 @@ void ota_init(void)
         kprintf("P7: ota siap berjalan=%s aktif=%c (%s) OTA.BIN=%s slot A v%u slot B v%u\r\n",
                 g_os_run < 0 ? "ISO" : g_os_run == 0 ? "A" : "B", os_slot_ch(g_os_st.aktif),
                 g_os_aktif_src, g_os_st_src, g_os_st.s[0].versi, g_os_st.s[1].versi);
+        if (rc == 1) {
+            if (fat32_writable()) {
+                os_boot();
+            } else if (g_os_st.coba != OTA_COBA_TIDAK) {
+                kprintf("P7: disk baca saja, percobaan slot %c tidak diproses\r\n",
+                        os_slot_ch(g_os_st.coba));
+            }
+        }
     } else {
         kprintf("P7: ota mati (%s)\r\n", g_os_why);
     }
@@ -309,10 +451,53 @@ static void os_check(void)
     g_os_state = OS_MARK;
 }
 
+// P7-3: kukuhkan slot percobaan (sehat atau `ota sah`). 1 berhasil.
+static int os_kukuh(const char *why)
+{
+    ota_st_t n = g_os_st;
+    char m[OTA_MSG_MAX];
+    int c = n.coba;
+
+    g_os_trial = 0;
+    if (c == OTA_COBA_TIDAK) {
+        return 0;
+    }
+    n.aktif = (uint8_t)c;
+    n.coba = OTA_COBA_TIDAK;
+    n.sisa = 0;
+    if (!os_st_save(&n)) {
+        ksnprintf(m, sizeof(m), "slot %c gagal dikukuhkan (tulis OTA.BIN)", os_slot_ch(c));
+        os_note(m);
+        return 0;
+    }
+    ksnprintf(m, sizeof(m), "slot %c versi %u dikukuhkan (%s)", os_slot_ch(c), n.s[c].versi, why);
+    os_note(m);
+    return 1;
+}
+
+static void os_trial_poll(void)
+{
+    if (timer_ticks >= OTA_SEHAT_TICKS && g_entropy_ready && (tls_enabled() || g_cli_plain)) {
+        os_kukuh("sehat 60 s");
+    } else if (timer_ticks >= OTA_SAKIT_TICKS) {
+        panic_msg("P7: boot percobaan tidak sehat dalam 300 s");
+    }
+}
+
+void ota_net_dead(void)
+{
+    if (g_os_trial) {
+        panic_msg("P7: boot percobaan tanpa net task");
+    }
+}
+
 void ota_poll(void)
 {
     uint8_t sec[512];
 
+    if (g_os_trial) {
+        os_trial_poll();
+    }
     switch (g_os_state) {
     case OS_LISTEN:
         if (net_tcp_ota_alive() == 1) {
@@ -425,7 +610,7 @@ void ota_poll(void)
 // ---- perintah ----
 static void os_status(void)
 {
-    static const char *const st[] = { "tanpa-catatan", "sah", "DITULIS(tidak lengkap)" };
+    static const char *const st[] = { "tanpa-catatan", "sah", "DITULIS(tidak lengkap)", "gagal" };
     char l[160], hx[17];
 
     if (!g_os_on) {
@@ -437,12 +622,17 @@ static void os_status(void)
               g_os_run < 0 ? "ISO" : g_os_run == 0 ? "A" : "B", os_slot_ch(g_os_st.aktif),
               g_os_aktif_src, g_os_st_src, g_os_st.seq);
     cmd_puts(l);
+    if (g_os_st.coba != OTA_COBA_TIDAK) {
+        ksnprintf(l, sizeof(l), "coba: slot %c sisa %u%s\n", os_slot_ch(g_os_st.coba), g_os_st.sisa,
+                  g_os_trial ? " (berjalan; dikukuhkan setelah sehat 60 s)" : "");
+        cmd_puts(l);
+    }
     for (int i = 0; i < 2; i++) {
         const ota_slot_t *s = &g_os_st.s[i];
 
         os_hex(hx, s->sha256, 8);
         ksnprintf(l, sizeof(l), "slot %c: %s versi=%u ukuran=%u sha256=%s\n", os_slot_ch(i),
-                  s->status <= 2 ? st[s->status] : "?", s->versi, s->ukuran, hx);
+                  s->status <= OTA_SLOT_GAGAL ? st[s->status] : "?", s->versi, s->ukuran, hx);
         cmd_puts(l);
     }
     if (g_os_state == OS_LISTEN) {
@@ -542,6 +732,12 @@ static void os_terima(const volatile uint8_t *a, uint32_t n)
         cmd_puts(l);
         return;
     }
+    if (g_os_st.coba != OTA_COBA_TIDAK) {
+        ksnprintf(l, sizeof(l), "ERR: percobaan slot %c tertunda (ota sah / ota batal dulu)\n",
+                  os_slot_ch(g_os_st.coba));
+        cmd_puts(l);
+        return;
+    }
     int target = g_os_st.aktif ? 0 : 1;
 
     if (target == g_os_run) {
@@ -576,10 +772,139 @@ static void os_terima(const volatile uint8_t *a, uint32_t n)
             g_os_ip[0], g_os_ip[1], g_os_ip[2], g_os_ip[3]);
 }
 
+// P7-3: `ota coba` (admin): slot bukan-aktif yang sah dan lebih baru dicoba.
+static void os_coba(void)
+{
+    char l[OTA_MSG_MAX];
+    ota_st_t n = g_os_st;
+    int t = g_os_st.aktif ? 0 : 1;
+
+    if (!g_os_on) {
+        ksnprintf(l, sizeof(l), "ERR: ota mati (%s)\n", g_os_why);
+        cmd_puts(l);
+        return;
+    }
+    if (g_os_run < 0) {
+        cmd_puts("ERR: ota coba butuh boot dari disk (kini berjalan dari ISO)\n");
+        return;
+    }
+    if (g_os_st.coba != OTA_COBA_TIDAK) {
+        cmd_puts("ERR: percobaan sudah berjalan / tertunda (ota sah / ota batal)\n");
+        return;
+    }
+    if (g_os_run != g_os_st.aktif) {
+        cmd_puts("ERR: slot berjalan bukan slot aktif\n");
+        return;
+    }
+    if (g_os_state != OS_IDLE) {
+        ksnprintf(l, sizeof(l), "ERR: ota sibuk (%s)\n", g_os_state_name[g_os_state]);
+        cmd_puts(l);
+        return;
+    }
+    if (!fat32_writable() || g_os_conf_map.nsec != 1) {
+        cmd_puts("ERR: disk baca saja / limine.conf tidak ada\n");
+        return;
+    }
+    if (g_os_st.s[t].status != OTA_SLOT_SAH) {
+        ksnprintf(l, sizeof(l), "ERR: slot %c tidak berstatus sah\n", os_slot_ch(t));
+        cmd_puts(l);
+        return;
+    }
+    if (g_os_st.s[t].versi <= g_os_st.s[g_os_st.aktif].versi) {
+        ksnprintf(l, sizeof(l), "ERR: versi slot %c (%u) <= versi slot aktif (%u)\n", os_slot_ch(t),
+                  g_os_st.s[t].versi, g_os_st.s[g_os_st.aktif].versi);
+        cmd_puts(l);
+        return;
+    }
+    n.coba = (uint8_t)t;
+    n.sisa = OTA_COBA_SISA;
+    if (!os_st_save(&n)) {
+        cmd_puts("ERR: tulis OTA.BIN gagal\n");
+        return;
+    }
+    if (!os_conf_write(t)) {
+        n.coba = OTA_COBA_TIDAK;
+        n.sisa = 0;
+        os_st_save(&n);
+        cmd_puts("ERR: tulis limine.conf gagal (percobaan dibatalkan)\n");
+        return;
+    }
+    ksnprintf(l, sizeof(l), "OK ota: coba slot %c versi %u, %u boot percobaan; reboot\n",
+              os_slot_ch(t), g_os_st.s[t].versi, OTA_COBA_SISA);
+    cmd_puts(l);
+    l[strlen(l) - 1] = 0;
+    os_note(l + 8);
+    auth_reboot_request();
+}
+
+static void os_sah(void)
+{
+    char l[OTA_MSG_MAX];
+    int c = g_os_st.coba;
+
+    if (!g_os_trial) {
+        cmd_puts("ERR: tidak ada boot percobaan yang berjalan\n");
+        return;
+    }
+    if (!os_kukuh("ota sah")) {
+        cmd_puts("ERR: tulis OTA.BIN gagal\n");
+        return;
+    }
+    ksnprintf(l, sizeof(l), "OK ota: slot %c dikukuhkan\n", os_slot_ch(c));
+    cmd_puts(l);
+}
+
+static void os_batal(void)
+{
+    char l[OTA_MSG_MAX];
+    ota_st_t n = g_os_st;
+    int c = g_os_st.coba, reboot = g_os_trial;
+
+    if (c == OTA_COBA_TIDAK) {
+        cmd_puts("ERR: tidak ada percobaan\n");
+        return;
+    }
+    if (!fat32_writable()) {
+        cmd_puts("ERR: disk baca saja\n");
+        return;
+    }
+    n.coba = OTA_COBA_TIDAK;
+    n.sisa = 0;
+    if (!os_st_save(&n)) {
+        cmd_puts("ERR: tulis OTA.BIN gagal\n");
+        return;
+    }
+    g_os_trial = 0;
+    // limine.conf gagal ditulis: boot berikut (slot coba, tanpa coba) diperbaiki
+    // ota_boot_decide (PERBAIKI).
+    ksnprintf(l, sizeof(l), "OK ota: percobaan slot %c dibatalkan, slot aktif %c%s%s\n",
+              os_slot_ch(c), os_slot_ch(n.aktif),
+              os_conf_write(n.aktif) ? "" : " (limine.conf gagal ditulis)",
+              reboot ? "; reboot" : "");
+    cmd_puts(l);
+    l[strlen(l) - 1] = 0;
+    os_note(l + 8);
+    if (reboot) {
+        auth_reboot_request();
+    }
+}
+
 int ota_execute(const volatile uint8_t *cmd, uint32_t len)
 {
     if (net_cmd_is(cmd, len, "ota")) {
         os_status();
+        return 1;
+    }
+    if (net_cmd_is(cmd, len, "ota coba")) {
+        os_coba();
+        return 1;
+    }
+    if (net_cmd_is(cmd, len, "ota sah")) {
+        os_sah();
+        return 1;
+    }
+    if (net_cmd_is(cmd, len, "ota batal")) {
+        os_batal();
         return 1;
     }
     if (len > 11 && net_cmd_is(cmd, 11, "ota terima ")) {
@@ -587,7 +912,7 @@ int ota_execute(const volatile uint8_t *cmd, uint32_t len)
         return 1;
     }
     if (len > 4 && net_cmd_is(cmd, 4, "ota ")) {
-        cmd_puts("ERR: format: ota | ota terima kernel <ukuran> <sha16>\n");
+        cmd_puts("ERR: format: ota | ota terima kernel <ukuran> <sha16> | ota coba|sah|batal\n");
         return 1;
     }
     return 0;

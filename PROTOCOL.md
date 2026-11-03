@@ -423,3 +423,32 @@ register umum dump panic), maks 160 karakter.
 - Metrics `ota_terima`, `ota_ok`, `ota_gagal`.
 - Klien: `bmctl.py --tcp|--tls ... --ota FILE.bmo [--ota-port P]` (rc 0 hanya bila `OK ota`), PowerShell
   `bmota FILE.bmo` setelah `bmtcp`/`bmtls`.
+
+## OTA: boot percobaan `ota coba` / `ota sah` / `ota batal` (P7-3)
+
+- `ota coba` (admin, semua jalur admin): syarat boot dari disk (`ERR: ota coba butuh boot dari disk (kini
+  berjalan dari ISO)`), slot berjalan = slot aktif, tanpa percobaan tertunda, slot bukan-aktif berstatus `sah`
+  (`ERR: slot X tidak berstatus sah`) dan versinya > slot aktif. Lalu OTA.BIN {coba = slot itu, sisa = 3},
+  digit `default_entry` limine.conf diganti (satu sektor), balasan `OK ota: coba slot X versi V, 3 boot
+  percobaan; reboot`, reboot setelah balasan terkirim.
+- Saat boot (dari kmain, sebelum net task), serial `P7: ...`:
+  - slot coba berjalan, sisa > 0: `boot percobaan slot X versi V (sisa N)` (sisa dikurangi dulu, ditulis);
+  - slot coba berjalan, sisa 0: `rollback: slot X gagal 3 boot percobaan, kembali ke slot Y, reboot` (slot X
+    berstatus `gagal`; tidak bisa dicoba lagi sampai dikirim ulang);
+  - percobaan tertunda tetapi slot aktif berjalan: `percobaan slot X dibatalkan (slot aktif Y berjalan)`;
+  - tanpa percobaan, slot bukan-aktif berjalan dan limine.conf menunjuknya: `limine.conf menunjuk slot X,
+    bukan aktif Y: diperbaiki, reboot`; limine.conf sudah benar (dipilih dari menu Limine): `slot X dipilih
+    manual (aktif Y), tidak diubah`;
+  - boot ISO saat percobaan tertunda: `boot ISO, percobaan slot X tertunda (tidak diubah)`.
+- Mode percobaan: sehat = uptime >= 60 s, entropi siap, TLS aktif atau `cli_plain=1` (net task jalan) ->
+  `slot X versi V dikukuhkan (sehat 60 s)` (OTA.BIN aktif = X). Belum sehat dalam 300 s atau net task tidak
+  jalan -> panic (reboot, satu percobaan terpakai).
+- `ota sah` (admin): kukuhkan sekarang -> `OK ota: slot X dikukuhkan`; tanpa percobaan berjalan -> `ERR: tidak
+  ada boot percobaan yang berjalan`.
+- `ota batal` (admin): OTA.BIN tanpa percobaan (slot tetap `sah`, boleh dicoba lagi), limine.conf ke slot aktif,
+  `OK ota: percobaan slot X dibatalkan, slot aktif Y; reboot` (reboot hanya bila slot coba sedang berjalan).
+  Tanpa percobaan -> `ERR: tidak ada percobaan`.
+- `ota` menampilkan `coba: slot X sisa N[ (berjalan; dikukuhkan setelah sehat 60 s)]` selama ada percobaan;
+  status slot bisa `gagal`. `ota terima` ditolak selama percobaan tertunda.
+- Uji: kernel bertanda tangan berisi penanda `P7UJI:panik` (skrip uji menambal string `P7UJI:sehat` di ELF
+  sebelum ditandatangani) panic tepat setelah keputusan boot percobaan (`PANIC: P7: uji kernel rusak ...`).

@@ -228,7 +228,9 @@ static void test_status(void)
 
     // hash sah tetapi isi di luar batas -> rusak
     static const struct { int off; uint8_t v; } bad[] = {
-        { 12, 2 }, { 13, 2 }, { 15, 1 }, { 16, 3 }, { 17, 1 }, { 28, 1 }, { 112, 1 }, { 503, 1 },
+        { 12, 2 }, { 13, 2 }, { 15, 1 }, { 16, 4 }, { 17, 1 }, { 28, 1 }, { 112, 1 }, { 503, 1 },
+        { 13, 1 },   // P7-3: coba == aktif (1)
+        { 14, 4 },   // P7-3: sisa > 3
     };
     for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
         memcpy(x, buf, 512);
@@ -258,6 +260,105 @@ static void test_status(void)
     a.sisa = 3;
     ota_st_encode(&a, x);
     CHECK(ota_st_decode(x, &b) == 1 && b.coba == 0 && b.sisa == 3);
+    // P7-3: status gagal sah
+    a.s[0].status = OTA_SLOT_GAGAL;
+    ota_st_encode(&a, x);
+    CHECK(ota_st_decode(x, &b) == 1 && b.s[0].status == OTA_SLOT_GAGAL);
+}
+
+// P7-3: ganti default_entry di tempat.
+static void test_conf_set(void)
+{
+    char b[513];
+    int n = snprintf(b, sizeof(b), "timeout: 3\ndefault_entry: 2\n\n/bmahOS slot A\n"
+                     "    protocol: limine\n    path: boot():/KERNA.ELF\n    cmdline: slot=A\n");
+    memset(b + n, '#', 512 - (size_t)n);
+    b[512] = 0;
+    char asli[513];
+    memcpy(asli, b, sizeof(b));
+
+    CHECK(ota_conf_set((uint8_t *)b, 512, 1) == 1 && ota_conf_default((uint8_t *)b, 512) == 1);
+    // hanya satu byte berubah
+    int beda = 0;
+    for (int i = 0; i < 512; i++) {
+        beda += b[i] != asli[i];
+    }
+    CHECK(beda == 1 && b[26] == '1');
+    CHECK(ota_conf_set((uint8_t *)b, 512, 2) == 1 && memcmp(b, asli, 512) == 0);
+    CHECK(ota_conf_set((uint8_t *)b, 512, 0) == 0 && ota_conf_set((uint8_t *)b, 512, 3) == 0 &&
+          memcmp(b, asli, 512) == 0);
+    char x[] = "timeout: 3\n# default_entry: 2\n";
+    CHECK(ota_conf_set((uint8_t *)x, (uint32_t)strlen(x), 1) == 0 &&
+          strcmp(x, "timeout: 3\n# default_entry: 2\n") == 0);
+    char y[] = "default_entry: 12\n";
+    CHECK(ota_conf_set((uint8_t *)y, (uint32_t)strlen(y), 1) == 0 && strcmp(y, "default_entry: 12\n") == 0);
+    CHECK(ota_conf_set(NULL, 0, 1) == 0);
+}
+
+static ota_st_t st_buat(int aktif, int coba, int sisa, int status_coba)
+{
+    ota_st_t s;
+
+    ota_st_init(&s, (uint8_t)aktif);
+    s.coba = coba < 0 ? OTA_COBA_TIDAK : (uint8_t)coba;
+    s.sisa = (uint8_t)sisa;
+    s.s[0].status = s.s[1].status = OTA_SLOT_SAH;
+    s.s[0].versi = 10;
+    s.s[1].versi = 11;
+    if (coba >= 0) {
+        s.s[coba].status = (uint8_t)status_coba;
+    }
+    return s;
+}
+
+// P7-3: keputusan boot.
+static void test_decide(void)
+{
+    ota_st_t s, a;
+
+    // tanpa coba, slot aktif berjalan / ISO -> biasa, st tetap
+    s = st_buat(0, -1, 0, 0);
+    a = s;
+    CHECK(ota_boot_decide(&s, 0, 1) == OTA_BOOT_BIASA && memcmp(&s, &a, sizeof(s)) == 0);
+    CHECK(ota_boot_decide(&s, -1, 2) == OTA_BOOT_BIASA && memcmp(&s, &a, sizeof(s)) == 0);
+    // tanpa coba, slot lain berjalan: limine.conf menunjuk slot itu -> perbaiki;
+    // limine.conf sudah benar / tak terbaca
+    CHECK(ota_boot_decide(&s, 1, 2) == OTA_BOOT_PERBAIKI && memcmp(&s, &a, sizeof(s)) == 0);
+    CHECK(ota_boot_decide(&s, 1, 1) == OTA_BOOT_MANUAL && memcmp(&s, &a, sizeof(s)) == 0);
+    CHECK(ota_boot_decide(&s, 1, 0) == OTA_BOOT_PERBAIKI);
+    // percobaan B, 3 boot: sisa 3 -> 2 -> 1 -> 0, lalu rollback
+    s = st_buat(0, 1, OTA_COBA_SISA, OTA_SLOT_SAH);
+    CHECK(ota_boot_decide(&s, 1, 2) == OTA_BOOT_COBA && s.coba == 1 && s.sisa == 2);
+    CHECK(ota_boot_decide(&s, 1, 2) == OTA_BOOT_COBA && s.sisa == 1);
+    CHECK(ota_boot_decide(&s, 1, 2) == OTA_BOOT_COBA && s.sisa == 0);
+    CHECK(ota_boot_decide(&s, 1, 2) == OTA_BOOT_ROLLBACK && s.coba == OTA_COBA_TIDAK &&
+          s.sisa == 0 && s.aktif == 0 && s.s[1].status == OTA_SLOT_GAGAL &&
+          s.s[0].status == OTA_SLOT_SAH && s.s[1].versi == 11);
+    // sesudah rollback, limine.conf belum kembali (crash) -> perbaiki
+    CHECK(ota_boot_decide(&s, 1, 2) == OTA_BOOT_PERBAIKI);
+    CHECK(ota_boot_decide(&s, 0, 1) == OTA_BOOT_BIASA);
+    // slot coba tidak sah (DITULIS) -> rollback tanpa menandai gagal
+    s = st_buat(1, 0, 2, OTA_SLOT_DITULIS);
+    CHECK(ota_boot_decide(&s, 0, 1) == OTA_BOOT_ROLLBACK && s.coba == OTA_COBA_TIDAK &&
+          s.s[0].status == OTA_SLOT_DITULIS && s.aktif == 1);
+    // ada coba, slot aktif berjalan -> batal
+    s = st_buat(1, 0, 3, OTA_SLOT_SAH);
+    CHECK(ota_boot_decide(&s, 1, 1) == OTA_BOOT_BATAL && s.coba == OTA_COBA_TIDAK && s.sisa == 0 &&
+          s.aktif == 1 && s.s[0].status == OTA_SLOT_SAH);
+    // ISO saat coba tertunda -> tidak diubah
+    s = st_buat(1, 0, 3, OTA_SLOT_SAH);
+    a = s;
+    CHECK(ota_boot_decide(&s, -1, 1) == OTA_BOOT_ISO_COBA && memcmp(&s, &a, sizeof(s)) == 0);
+    // hasil tiap keputusan tetap OTA.BIN yang sah
+    uint8_t buf[512];
+    ota_st_t d;
+    s = st_buat(0, 1, 1, OTA_SLOT_SAH);
+    ota_boot_decide(&s, 1, 2);
+    ota_st_encode(&s, buf);
+    CHECK(ota_st_decode(buf, &d) == 1 && d.sisa == 0 && d.coba == 1);
+    ota_boot_decide(&s, 1, 2);
+    ota_st_encode(&s, buf);
+    CHECK(ota_st_decode(buf, &d) == 1 && d.coba == OTA_COBA_TIDAK && d.s[1].status == OTA_SLOT_GAGAL);
 }
 
 static int conf(const char *s)
@@ -305,6 +406,8 @@ int main(void)
     test_selftest();
     test_status();
     test_conf();
+    test_conf_set();
+    test_decide();
     return test_done("ota");
 }
 #endif

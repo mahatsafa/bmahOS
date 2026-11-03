@@ -447,6 +447,7 @@ static void net_task_entry(void)
         // Dulu hlt selamanya dengan IF=0 (warisan context_switch, lihat sti di
         // bawah): tick berhenti dan seluruh sistem membeku. Kini task keluar.
         serial_write("Net-7: RX belum di-init, net task berhenti (task_exit)\r\n");
+        ota_net_dead();   // P7-3: boot percobaan tanpa net task -> panic
         __asm__ volatile ("sti");
         task_exit();
     }

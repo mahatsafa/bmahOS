@@ -175,7 +175,7 @@ int ota_selftest(void)
 
 // ---- P7-2: OTA.BIN, limine.conf, cmdline ----
 // OTA.BIN (512 byte): magic "BMOTAST1" @0, seq u32 @8, aktif u8 @12 (0 A,
-// 1 B), coba u8 @13 (OTA_COBA_TIDAK atau 0/1, P7-3), sisa u8 @14, 0 @15,
+// 1 B), coba u8 @13 (OTA_COBA_TIDAK atau slot 0/1 selain aktif, P7-3), sisa u8 @14 (<= 3), 0 @15,
 // slot A @16 dan slot B @64 (48 byte: status u8, 0 x3, versi u32, ukuran u32,
 // 0 u32, sha256 isi 32), nol s.d. 503, 8 byte pertama SHA-256(0..503) @504.
 // Ditulis utuh satu sektor (atomik seperti rekaman LOG.BIN). Byte cadangan
@@ -252,7 +252,8 @@ int ota_st_decode(const uint8_t *b, ota_st_t *st)
     t.aktif = b[12];
     t.coba = b[13];
     t.sisa = b[14];
-    if (t.aktif > 1 || (t.coba != OTA_COBA_TIDAK && t.coba > 1) || b[15] != 0) {
+    if (t.aktif > 1 || (t.coba != OTA_COBA_TIDAK && (t.coba > 1 || t.coba == t.aktif)) ||
+        t.sisa > OTA_COBA_SISA || b[15] != 0) {
         return -1;
     }
     for (uint32_t i = 0; i < 2; i++) {
@@ -262,7 +263,7 @@ int ota_st_decode(const uint8_t *b, ota_st_t *st)
         t.s[i].versi = ota_le32(p + 4);
         t.s[i].ukuran = ota_le32(p + 8);
         memcpy(t.s[i].sha256, p + 16, 32);
-        if (t.s[i].status > OTA_SLOT_DITULIS || p[1] || p[2] || p[3] ||
+        if (t.s[i].status > OTA_SLOT_GAGAL || p[1] || p[2] || p[3] ||
             ota_le32(p + 12) != 0 || t.s[i].ukuran > OTA_KERNEL_MAX) {
             return -1;
         }
@@ -277,7 +278,8 @@ int ota_st_decode(const uint8_t *b, ota_st_t *st)
 }
 
 // limine.conf: baris (di awal baris) "default_entry:" + spasi + 1 atau 2.
-int ota_conf_default(const uint8_t *b, uint32_t n)
+// Return indeks digit itu, -1 bila tidak ada / tidak sah.
+static int ota_conf_find(const uint8_t *b, uint32_t n)
 {
     static const char key[] = "default_entry:";
     const uint32_t kl = sizeof(key) - 1;
@@ -291,12 +293,77 @@ int ota_conf_default(const uint8_t *b, uint32_t n)
             }
             if (j < n && (b[j] == '1' || b[j] == '2') &&
                 (j + 1 >= n || b[j + 1] < '0' || b[j + 1] > '9')) {
-                return b[j] - '0';
+                return (int)j;
             }
-            return 0;
+            return -1;
         }
     }
-    return 0;
+    return -1;
+}
+
+int ota_conf_default(const uint8_t *b, uint32_t n)
+{
+    int j = ota_conf_find(b, n);
+
+    return j < 0 ? 0 : b[j] - '0';
+}
+
+// P7-3: ganti digit default_entry (entry 1/2) di tempat; panjang berkas tetap.
+// Return 1 bila berhasil, 0 bila baris default_entry tidak sah.
+int ota_conf_set(uint8_t *b, uint32_t n, int entry)
+{
+    int j = ota_conf_find(b, n);
+
+    if (j < 0 || (entry != 1 && entry != 2)) {
+        return 0;
+    }
+    b[j] = (uint8_t)('0' + entry);
+    return 1;
+}
+
+// P7-3: keputusan saat boot dari isi OTA.BIN (st, sudah sah), slot yang
+// berjalan (run: 0 A, 1 B, -1 ISO) dan default_entry limine.conf (conf: 1/2,
+// 0 = tidak terbaca). st diubah sesuai keputusan; pemanggil menulisnya.
+//   COBA      slot coba berjalan, sisa > 0 -> sisa dikurangi
+//   ROLLBACK  slot coba berjalan, sisa habis (atau slot tidak sah) -> coba
+//             dihapus, slot SAH ditandai GAGAL; pemanggil mengembalikan
+//             limine.conf ke slot aktif lalu reboot
+//   BATAL     ada coba tetapi slot aktif yang berjalan (crash di antara dua
+//             tulisan `ota coba`, atau dipilih dari menu Limine) -> coba dihapus
+//   PERBAIKI  tanpa coba, slot bukan-aktif berjalan, limine.conf menunjuk slot
+//             itu (crash di antara dua tulisan rollback/batal) -> pemanggil
+//             mengembalikan limine.conf lalu reboot
+//   MANUAL    tanpa coba, slot bukan-aktif berjalan tetapi limine.conf sudah
+//             menunjuk slot aktif (dipilih dari menu) -> hanya dicatat
+//   ISO_COBA  boot ISO saat coba tertunda -> tidak diubah
+int ota_boot_decide(ota_st_t *st, int run, int conf)
+{
+    if (run < 0) {
+        return st->coba != OTA_COBA_TIDAK ? OTA_BOOT_ISO_COBA : OTA_BOOT_BIASA;
+    }
+    if (st->coba != OTA_COBA_TIDAK) {
+        int c = st->coba;
+
+        if (run != c) {
+            st->coba = OTA_COBA_TIDAK;
+            st->sisa = 0;
+            return OTA_BOOT_BATAL;
+        }
+        if (st->sisa == 0 || st->s[c].status != OTA_SLOT_SAH) {
+            if (st->s[c].status == OTA_SLOT_SAH) {
+                st->s[c].status = OTA_SLOT_GAGAL;
+            }
+            st->coba = OTA_COBA_TIDAK;
+            st->sisa = 0;
+            return OTA_BOOT_ROLLBACK;
+        }
+        st->sisa--;
+        return OTA_BOOT_COBA;
+    }
+    if (run != st->aktif) {
+        return conf == st->aktif + 1 ? OTA_BOOT_MANUAL : OTA_BOOT_PERBAIKI;
+    }
+    return OTA_BOOT_BIASA;
 }
 
 // cmdline Limine P7-0: tepat "slot=A" atau "slot=B" (lain = boot ISO/tidak dikenal).

@@ -67,7 +67,7 @@ ISO_OUT    := $(BUILD_DIR)/bmahOS.iso
 QEMU := $(shell command -v qemu-system-x86_64 2>/dev/null || echo /usr/libexec/qemu-kvm)
 OVMF := /usr/share/edk2/ovmf/OVMF_CODE.fd
 
-.PHONY: all clean run iso test host-test fuzz fuzz-regress
+.PHONY: all clean run iso test test-ota host-test fuzz fuzz-regress
 
 all: iso
 
@@ -148,7 +148,12 @@ run: iso
 	$(QEMU) -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd -drive if=pflash,format=raw,file=$(BUILD_DIR)/ovmf/OVMF_VARS.fd -cdrom $(ISO_OUT) -serial stdio -m 512M
 
 test: iso $(BEARSSL_LIB) $(BUILD_DIR)/user/appgema.bin
-	QEMU=$(QEMU) OVMF_CODE=$(OVMF) tests/qemu-smoke.sh
+	@rc=0; QEMU=$(QEMU) OVMF_CODE=$(OVMF) tests/qemu-smoke.sh || rc=1; \
+	QEMU=$(QEMU) OVMF_CODE=$(OVMF) tests/qemu-ota.sh || rc=1; exit $$rc
+
+# P7-3: boot dari disk + OTA A/B saja (juga bagian dari make test).
+test-ota: iso
+	QEMU=$(QEMU) OVMF_CODE=$(OVMF) tests/qemu-ota.sh
 
 # F1.7: uji unit fungsi murni di host (Linux), dengan ASan + UBSan.
 # Tiap tests/host/test_X.c dikompilasi bersama modul kernel yang diujinya

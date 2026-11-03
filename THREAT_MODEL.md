@@ -181,8 +181,14 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    Anti-downgrade membandingkan versi dengan slot aktif di OTA.BIN; slot yang ditulis dari host = versi 0, jadi
    kernel bertanda tangan lama mana pun bisa dipasang sekali ke slot tidak aktif selama slot aktif belum
    dipasang lewat OTA. OTA.BIN tidak bertanda tangan (siapa pun yang bisa menulis disk bisa mengubahnya, sama
-   seperti limine.conf dan slot itu sendiri; akses tulis disk = di luar cakupan, bagian 8). Slot belum di-boot
-   (P7-3).
+   seperti limine.conf dan slot itu sendiri; akses tulis disk = di luar cakupan, bagian 8).
+25. Boot percobaan (P7-3): kernel baru dicoba maks 3 boot lalu rollback otomatis. Penghitung dikurangi di kmain
+   setelah FAT32 terpasang; kernel yang crash SEBELUM itu (Limine, awal kmain, driver AHCI) tidak pernah
+   mengurangi penghitung -> boot berulang tanpa rollback. Jalan keluar manual: menu Limine (timeout 3 s, pilih
+   slot lama) atau boot ISO. "Sehat" hanya berarti 60 s tanpa panic/watchdog dengan jalur admin terbuka; bug
+   yang muncul belakangan sudah terlanjur dikukuhkan. Penanda uji `P7UJI:panik` ada juga di PROD: hanya
+   berlaku di image bertanda tangan sah, dan pemegang kunci memang bisa menandatangani kernel apa pun.
+   `ota coba`/`ota sah`/`ota batal` khusus admin; peran read-only hanya `ota`.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

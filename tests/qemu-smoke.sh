@@ -1094,6 +1094,15 @@ sleep 2.5
 OT_FS="$($BMT --key "$KEY" "tulis KERNA.ELF x" "hapus OTA.BIN" "ganti KERNB.ELF X.ELF" 2>&1)"
 check "P7-2: KERNA/KERNB.ELF dan OTA.BIN dilindungi dari tulis/hapus/ganti" \
     '[ "$(echo "$OT_FS" | grep -c "^ERR: fs: nama dilindungi$")" -eq 3 ]'
+# P7-3: boot ISO tidak bisa boot percobaan (alur lengkap: tests/qemu-ota.sh, boot dari disk).
+sleep 2.5
+OT_P3="$($BMT --key "$KEY" "ota coba" "ota sah" "ota batal" "ota xyz" 2>&1)"
+sleep 2.5
+OT_P3RO="$($BMT --key "$ROKEY" "ota coba" "ota sah" "ota batal" 2>&1)"
+check "P7-3: boot ISO: ota coba -> ERR butuh boot dari disk; sah/batal tanpa percobaan -> ERR" \
+    'echo "$OT_P3" | grep -q "^ERR: ota coba butuh boot dari disk (kini berjalan dari ISO)$" && echo "$OT_P3" | grep -q "^ERR: tidak ada boot percobaan yang berjalan$" && echo "$OT_P3" | grep -q "^ERR: tidak ada percobaan$" && echo "$OT_P3" | grep -q "^ERR: format: ota | ota terima kernel <ukuran> <sha16> | ota coba|sah|batal$"'
+check "P7-3: read-only: ota coba/sah/batal -> ERR peran read-only" \
+    '[ "$(echo "$OT_P3RO" | grep -c "^ERR: peran read-only$")" -eq 3 ]'
 
 sleep 1.2
 # P5-4: disk boot pertama tanpa APP.BIN (boot kelima memuatnya).

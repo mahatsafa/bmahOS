@@ -190,6 +190,14 @@ void oom_panic(const char *where)
     panic_finish(0, (uint64_t)(uintptr_t)__builtin_frame_address(0));
 }
 
+// P7-3: panic dengan pesan bebas (boot percobaan tidak sehat, uji kernel rusak).
+void panic_msg(const char *msg)
+{
+    panic_begin();
+    kprintf("\r\nPANIC: %s\r\n", msg);
+    panic_finish(0, (uint64_t)(uintptr_t)__builtin_frame_address(0));
+}
+
 void panic_exception(struct exception_context *c)
 {
     panic_begin();

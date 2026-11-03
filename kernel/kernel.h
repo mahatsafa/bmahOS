@@ -260,6 +260,7 @@ extern uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail;
 // Alokasi wajib (tabel halaman, PML4 task, stack task, halaman user saat
 // dibuat) gagal -> panic + reboot, bukan lanjut dengan pemetaan hilang.
 __attribute__((noreturn)) void oom_panic(const char *where);
+__attribute__((noreturn)) void panic_msg(const char *msg);   // P7-3
 
 // ---- acpi.c (RSDP/MADT/FADT) ----
 struct acpi_rsdp
@@ -731,7 +732,9 @@ int ota_selftest(void);
 #define OTA_SLOT_KOSONG  0u   // tanpa catatan (mis. slot ditulis dari host)
 #define OTA_SLOT_SAH     1u   // ditulis OTA + dibaca balik cocok
 #define OTA_SLOT_DITULIS 2u   // penulisan dimulai, belum selesai (tidak boleh dicoba)
+#define OTA_SLOT_GAGAL   3u   // P7-3: boot percobaan habis tanpa sehat -> rollback
 #define OTA_COBA_TIDAK   0xFFu
+#define OTA_COBA_SISA    3u   // P7-3: boot percobaan sebelum rollback
 typedef struct {
     uint8_t status;
     uint32_t versi, ukuran;
@@ -749,6 +752,12 @@ void ota_st_encode(const ota_st_t *st, uint8_t *b512);
 int ota_st_decode(const uint8_t *b512, ota_st_t *st);   // 1 sah, 0 kosong, -1 rusak
 int ota_conf_default(const uint8_t *b, uint32_t n);    // default_entry 1/2, 0 = tidak ada
 int ota_cmdline_slot(const char *s);                   // "slot=A" 0, "slot=B" 1, lain -1
+int ota_conf_set(uint8_t *b, uint32_t n, int entry);    // P7-3: 1 berhasil, 0 tidak sah
+enum {
+    OTA_BOOT_BIASA, OTA_BOOT_COBA, OTA_BOOT_ROLLBACK, OTA_BOOT_BATAL, OTA_BOOT_PERBAIKI,
+    OTA_BOOT_MANUAL, OTA_BOOT_ISO_COBA,
+};
+int ota_boot_decide(ota_st_t *st, int run, int conf);   // P7-3, lihat ota.c
 // P7-2: penerimaan + penulisan slot (kernel/otaslot.c, net task).
 void ota_init(void);
 void ota_poll(void);
@@ -758,6 +767,7 @@ void ota_conn_open(void);
 uint32_t ota_rx_space(void);
 uint32_t ota_rx(const volatile uint8_t *d, uint32_t n);
 int ota_busy(void);
+void ota_net_dead(void);   // P7-3: net task tidak jalan (tanpa NIC)
 const char *ota_reply_take(void);
 int net_tcp_ota_alive(void);   // net.c: TCB 7781: 0 tidak ada, 1 terbuka, 2 peer FIN/tutup
 extern uint64_t g_ota_terima, g_ota_ok, g_ota_gagal;
@@ -828,6 +838,7 @@ int auth_tcp_cmd(const uint8_t nonce[16], int role, uint64_t seq,
 uint32_t auth_tcp_exec(int role, const uint8_t *cmd, uint32_t len, uint8_t *out,
                        uint32_t max, int *reboot);
 void auth_reboot(void);
+void auth_reboot_request(void);   // P7-3: reboot setelah balasan (ota coba/batal)
 int auth_cmd_allowed(int role, const uint8_t *cmd, uint32_t len);
 int net_tcp_state(void);
 int net_tcp_conn_active(void);

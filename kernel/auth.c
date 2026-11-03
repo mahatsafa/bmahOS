@@ -399,6 +399,12 @@ static void priv_do_reboot(void)
     machine_reboot();
 }
 
+// P7-3: perintah lain (ota coba/batal) meminta reboot setelah balasan terkirim.
+void auth_reboot_request(void)
+{
+    g_priv_reboot_pending = 1;
+}
+
 static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
 {
     g_cmd_len = 0;
