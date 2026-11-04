@@ -1086,12 +1086,15 @@ OT_G="$(ota_kirim "$OD/a5.bmo")"
 OT_H="$(ota_kirim "$OD/a5.bmo")"
 OT_I="$(ota_kirim "$OD/k9.bmo" --ota-jenis app)"
 OT_J="$(ota_kirim "$OD/a5.bmo" --ota-jenis kernel)"   # review: app sebagai kernel
+OT_MIN="$($BMT --key "$KEY" ota 2>&1)"
 echo "$OT_G" | sed "s/^/info  ota a5: /"
 if [ "$OTA_KUNCI" = uji ]; then
     check "P7-4: ota terima app v5 -> APP.BIN ditulis + dibaca balik, berlaku setelah reboot" \
         'echo "$OT_G" | grep -q "^OK ota: kirim $((ASZ5 + 128)) byte ke port 7781 dalam 60 s (APP.BIN)$" && echo "$OT_G" | grep -q "^OK ota: APP.BIN versi 5 ukuran $ASZ5 sha256 $ASHA5 ditulis + dibaca balik; berlaku setelah reboot$" && grep -aq "^P7: ota terima $((ASZ5 + 128)) byte APP.BIN dari " "$LOG"'
     check "P7-4: app v5 kedua -> versi <= APP.BIN ditolak; kernel sebagai app / app sebagai kernel -> isi bukan app / kernel" \
         'echo "$OT_H" | grep -q "^ERR ota: versi 5 <= versi APP.BIN (5), ditolak$" && echo "$OT_I" | grep -q "^ERR ota: isi bukan app$" && echo "$OT_J" | grep -q "^ERR ota: isi bukan kernel$"'
+    check "APP-MIN: boot ISO + ota terima app v5 -> minimum app 5 tersimpan di OTA.BIN" \
+        'echo "$OT_MIN" | grep -q "^minimum app: versi=5$" && grep -aq "^P7: minimum versi app naik ke 5" "$LOG"'
 else
     check "P7-4: PROD: app bertanda tangan kunci uji -> ERR tanda tangan (4x)" \
         'echo "$OT_G" | grep -q "^ERR ota: tanda tangan tidak sah$" && echo "$OT_H" | grep -q "^ERR ota: tanda tangan tidak sah$" && echo "$OT_I" | grep -q "^ERR ota: tanda tangan tidak sah$" && echo "$OT_J" | grep -q "^ERR ota: tanda tangan tidak sah$"'
@@ -1104,7 +1107,7 @@ OT_F="$($BMT --key "$KEY" ota "metrics ota_" "ota terima kernel 3256 0123456789a
 echo "$OT_F" | sed "s/^/info  ota: /"
 if [ "$OTA_KUNCI" = uji ]; then
     check "P7-2: ota status: slot A sah versi 7, OTA.BIN seq 2 (app tidak menyentuh); metrics terima 9 ok 2 gagal 7" \
-        'echo "$OT_F" | head -1 | grep -q "^ota: berjalan=ISO aktif=B (limine.conf) OTA.BIN=OTA.BIN seq=2$" && echo "$OT_F" | grep -q "^slot A: sah versi=7 ukuran=$KSZ sha256=$K7SHA$" && echo "$OT_F" | grep -q "^slot B: tanpa-catatan versi=0" && echo "$OT_F" | grep -q "^terakhir: ERR ota: koneksi 7781 ditutup" && echo "$OT_F" | grep -A3 "^ota_terima=" | tr "\n" " " | grep -q "^ota_terima=9 ota_ok=2 ota_gagal=7 "'
+        'echo "$OT_F" | head -1 | grep -q "^ota: berjalan=ISO aktif=B (limine.conf) OTA.BIN=OTA.BIN seq=3$" && echo "$OT_F" | grep -q "^slot A: sah versi=7 ukuran=$KSZ sha256=$K7SHA$" && echo "$OT_F" | grep -q "^slot B: tanpa-catatan versi=0" && echo "$OT_F" | grep -q "^terakhir: ERR ota: koneksi 7781 ditutup" && echo "$OT_F" | grep -A3 "^ota_terima=" | tr "\n" " " | grep -q "^ota_terima=9 ota_ok=2 ota_gagal=7 "'
 else
     check "P7-2: PROD: slot A tetap tanpa-catatan, OTA.BIN tidak ditulis; terima 9 ok 0 gagal 9" \
         'echo "$OT_F" | head -1 | grep -q "OTA.BIN=kosong seq=0$" && echo "$OT_F" | grep -q "^slot A: tanpa-catatan versi=0 ukuran=0" && echo "$OT_F" | grep -A3 "^ota_terima=" | tr "\n" " " | grep -q "^ota_terima=9 ota_ok=0 ota_gagal=9 "'

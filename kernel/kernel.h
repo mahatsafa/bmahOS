@@ -748,10 +748,12 @@ typedef struct {
     uint8_t coba;    // P7-3: slot boot percobaan, OTA_COBA_TIDAK = tidak ada
     uint8_t sisa;    // P7-3: sisa boot percobaan
     ota_slot_t s[2];
+    uint32_t app_min;   // versi APP.BIN minimum (tertinggi yang pernah dipasang)
 } ota_st_t;
 void ota_st_init(ota_st_t *st, uint8_t aktif);
 void ota_st_encode(const ota_st_t *st, uint8_t *b512);
 int ota_st_decode(const uint8_t *b512, ota_st_t *st);   // 1 sah, 0 kosong, -1 rusak
+int ota_app_min_perlu(const ota_st_t *st, uint32_t versi);   // lihat ota.c
 int ota_conf_default(const uint8_t *b, uint32_t n);    // default_entry 1/2, 0 = tidak ada
 int ota_cmdline_slot(const char *s);                   // "slot=A" 0, "slot=B" 1, lain -1
 int ota_conf_set(uint8_t *b, uint32_t n, int entry);    // P7-3: 1 berhasil, 0 tidak sah
@@ -770,6 +772,8 @@ uint32_t ota_rx_space(void);
 uint32_t ota_rx(const volatile uint8_t *d, uint32_t n);
 int ota_busy(void);
 void ota_net_dead(void);   // P7-3: net task tidak jalan (tanpa NIC)
+uint32_t ota_app_min(void);              // versi app minimum (0 = OTA mati / belum ada)
+void ota_app_min_boot(uint32_t versi);   // app.c: APP.BIN sah dibaca saat boot
 const char *ota_reply_take(void);
 int net_tcp_ota_alive(void);   // net.c: TCB 7781: 0 tidak ada, 1 terbuka, 2 peer FIN/tutup
 extern uint64_t g_ota_terima, g_ota_ok, g_ota_gagal;

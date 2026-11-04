@@ -17,6 +17,9 @@
 #           dari host ke slot B (simulasi crash di tengah rollback)
 #   boot 11 B tanpa percobaan -> limine.conf diperbaiki, reboot
 #   boot 12 A biasa
+#   boot 13 APP.BIN v7 dari host -> minimum app naik ke 7 (migrasi)
+#   boot 14 APP.BIN v6 dari host -> ditolak saat boot; kirim v6 ditolak; kirim v7 OK
+#   boot 15 APP.BIN dihapus -> minimum tetap 7; kirim v6 ditolak
 # PROD (kunci uji ditolak): boot dari disk slot A, ota coba ditolak, kiriman ditolak.
 #
 # Pakai: make test (setelah qemu-smoke) atau make test-ota.
@@ -262,6 +265,41 @@ check "P7-3: limine.conf salah (B, tanpa percobaan) -> diperbaiki + reboot -> sl
 stop_qemu
 check "P7-3: hanya 3 panic (uji), tanpa exception/watchdog/tidak sehat" \
     '[ "$(grep -ac "^PANIC: reboot otomatis dalam 10 detik" "$LOG.1")" -eq 3 ] && ! grep -aqE "^PANIC: (exception|watchdog|P7: boot percobaan)" "$LOG.1" && ! grep -aq "PANIC" "$LOG.2"'
+
+# ---- boot 13-15: minimum versi app di OTA.BIN ----
+APPBIN="$ROOT/build/user/appgema.bin"
+python3 "$ROOT/client/ota-sign.py" --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis app --versi 6 "$APPBIN" "$WORK/a6.bmo" >/dev/null
+python3 "$ROOT/client/ota-sign.py" --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis app --versi 7 "$APPBIN" "$WORK/a7.bmo" >/dev/null
+mcopy -i "$DISK" "$WORK/a7.bmo" ::APP.BIN
+start_qemu 3
+SLOG="$LOG.3"
+wait_boot 1
+M1="$(cmd ota)"
+stop_qemu
+check "APP-MIN: boot slot + APP.BIN v7 -> dimuat, minimum app naik ke 7 di OTA.BIN" \
+    'grep -aq "^P7: minimum versi app naik ke 7" "$SLOG" && grep -aq "^P5-4: APP.BIN dimuat .* versi 7 " "$SLOG" && echo "$M1" | grep -q "^minimum app: versi=7$"'
+
+mcopy -o -i "$DISK" "$WORK/a6.bmo" ::APP.BIN
+start_qemu 4
+SLOG="$LOG.4"
+wait_boot 1
+K6="$(kirim "$WORK/a6.bmo")"
+K7="$(kirim "$WORK/a7.bmo")"
+stop_qemu
+check "APP-MIN: APP.BIN v6 < minimum 7 ditolak saat boot, tidak dijalankan" \
+    'grep -aq "^P5-4: APP.BIN ditolak (versi 6 di bawah minimum 7)" "$SLOG" && ! grep -aq "^P5-4: APP.BIN dimuat" "$SLOG"'
+check "APP-MIN: kirim v6 ditolak; v7 (sama dengan minimum) memulihkan APP.BIN" \
+    'echo "$K6" | grep -q "^ERR ota: versi 6 < minimum app (7), ditolak$" && echo "$K7" | grep -q "^OK ota: APP.BIN versi 7 " && mcopy -n -i "$DISK" ::APP.BIN "$WORK/app.out" && cmp -s "$WORK/app.out" "$WORK/a7.bmo"'
+
+mdel -i "$DISK" ::APP.BIN
+start_qemu 5
+SLOG="$LOG.5"
+wait_boot 1
+M3="$(cmd ota)"
+K6B="$(kirim "$WORK/a6.bmo")"
+stop_qemu
+check "APP-MIN: APP.BIN hilang -> minimum tetap 7, kirim v6 ditolak; fsck bersih" \
+    'grep -aq "^P5-4: APP.BIN tidak ada" "$SLOG" && echo "$M3" | grep -q "^minimum app: versi=7$" && echo "$K6B" | grep -q "^ERR ota: versi 6 < minimum app (7), ditolak$" && ! mtype -i "$DISK" ::APP.BIN >/dev/null 2>&1 && fsck.fat -n "$DISK" >"$WORK/fsck2.out" 2>&1'
 
 echo
 echo "hasil qemu-ota: $PASS lulus, $FAIL gagal (log: $LOG.*)"

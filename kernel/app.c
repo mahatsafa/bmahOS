@@ -22,6 +22,7 @@ static uint8_t g_app_buf[APP_FILE_MAX] __attribute__((aligned(16)));
 static uint8_t g_app_hash[32];    // sha256 isi (dari header yang sah)
 static int g_app_rc;              // APP_* di bawah
 static const char *g_app_why = "";
+static char g_app_why_buf[48];
 static int g_app_disk_ok;         // P7-4: APP.BIN di disk bertanda tangan sah
 static uint32_t g_app_disk_v;     // versinya (atau versi tulisan OTA terakhir)
 static int g_app_baru;            // P7-4: ditulis OTA sejak boot ini
@@ -73,7 +74,12 @@ void app_load(void)
         g_app_why = rc == OTA_ERR_FORMAT ? "bukan .bmo bertanda tangan" : ota_strerror(rc);
     } else if (inf.jenis != OTA_JENIS_APP) {
         g_app_why = "isi bukan app";
+    } else if (inf.versi < ota_app_min()) {
+        ksnprintf(g_app_why_buf, sizeof(g_app_why_buf), "versi %u di bawah minimum %u",
+                  inf.versi, ota_app_min());
+        g_app_why = g_app_why_buf;
     } else {
+        ota_app_min_boot(inf.versi);
         g_app_disk_ok = 1;
         g_app_disk_v = inf.versi;
         if (task_count >= MAX_TASKS) {

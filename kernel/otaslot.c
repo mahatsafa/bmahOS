@@ -44,7 +44,11 @@
 // reboot (app.c memeriksa tanda tangan lagi saat boot).
 // Tidak butuh slot/OTA.BIN. Ditolak selama percobaan kernel tertunda: rollback /
 // ota batal bisa kembali ke kernel pra-P7-4 yang menjalankan .bmo sebagai biner mentah.
-// ota_init dari kmain sebelum net task dibuat; sisanya dari net task (tanpa lock).
+// Versi app minimum (OTA.BIN app_min) = versi tertinggi yang pernah dipasang: naik setelah
+// APP.BIN baru ditulis (APP.BIN dulu: crash di antaranya tidak membuat APP.BIN sah ditolak,
+// boot berikutnya mengejar), atau saat boot dari slot bila APP.BIN sah lebih tinggi
+// (migrasi disk lama). Tanpa slot (OTA mati) minimum tidak ada, seperti sebelumnya.
+// ota_init dan ota_app_min_boot dari kmain sebelum scheduler jalan; sisanya dari net task (tanpa lock).
 #include "kernel.h"
 
 #define OTA_PORT          7781
@@ -77,6 +81,7 @@ static int g_os_on;                 // OTA.BIN + kedua slot ada
 static const char *g_os_why = "belum diperiksa";
 static ota_st_t g_os_st;
 static const char *g_os_st_src = "-";   // "OTA.BIN" / "kosong" / "rusak"
+static int g_os_st_rusak;           // OTA.BIN rusak saat boot (tidak ditimpa migrasi)
 static const char *g_os_aktif_src = "-";
 static int g_os_run = -1;           // slot berjalan (cmdline), -1 = ISO/tidak dikenal
 
@@ -167,6 +172,37 @@ static void os_note(const char *msg)
     }
     g_os_last[i] = 0;
     kprintf("P7: %s\r\n", g_os_last);
+}
+
+static void os_app_min_naik(uint32_t versi)
+{
+    ota_st_t n = g_os_st;
+    char m[OTA_MSG_MAX];
+
+    if (!g_os_on || !fat32_writable() || !ota_app_min_perlu(&g_os_st, versi)) {
+        return;
+    }
+    n.app_min = versi;
+    if (os_st_save(&n)) {
+        ksnprintf(m, sizeof(m), "minimum versi app naik ke %u", versi);
+    } else {
+        ksnprintf(m, sizeof(m), "minimum versi app %u gagal ditulis ke OTA.BIN", versi);
+    }
+    os_note(m);
+}
+
+uint32_t ota_app_min(void)
+{
+    return g_os_on ? g_os_st.app_min : 0;
+}
+
+// Migrasi hanya dari slot: slot lain atau ISO bisa jadi tumpuan kernel lama yang
+// menolak app_min != 0, jadi boot ISO tidak mengubah OTA.BIN tanpa perintah.
+void ota_app_min_boot(uint32_t versi)
+{
+    if (g_os_run >= 0 && !g_os_st_rusak) {
+        os_app_min_naik(versi);
+    }
 }
 
 // P7-3: keputusan boot (dari ota_init, OTA.BIN sah, disk bisa ditulis).
@@ -293,6 +329,7 @@ void ota_init(void)
             int d = 0;
 
             g_os_st_src = rc == 0 ? "kosong" : "rusak";
+            g_os_st_rusak = rc != 0;
             if (g_os_conf_map.nsec == 1 && fat32_map_read(&g_os_conf_map, 0, b) == FAT32_OK) {
                 d = ota_conf_default(b, 512);
             }
@@ -470,6 +507,13 @@ static void os_check(void)
     if (g_os_jenis == OTA_JENIS_APP) {
         uint32_t v;
 
+        // Sama dengan minimum boleh: memulihkan APP.BIN yang hilang tanpa tanda tangan baru.
+        if (g_os_inf.versi < ota_app_min()) {
+            ksnprintf(m, sizeof(m), "versi %u < minimum app (%u), ditolak", g_os_inf.versi,
+                      ota_app_min());
+            os_fail(m);
+            return;
+        }
         if (app_disk_versi(&v) && g_os_inf.versi <= v) {
             ksnprintf(m, sizeof(m), "versi %u <= versi APP.BIN (%u), ditolak", g_os_inf.versi, v);
             os_fail(m);
@@ -651,6 +695,7 @@ void ota_poll(void)
 
         if (sama) {
             app_disk_set(g_os_inf.versi);
+            os_app_min_naik(g_os_inf.versi);
         }
         if (wrc == FAT32_ERR_TOOBIG || wrc == FAT32_ERR_NOTFILE) {
             // APP.BIN lama > 4096 byte / beratribut: lapisan tulis FAT32 tidak menyentuhnya.
@@ -704,6 +749,8 @@ static void os_status(void)
                   s->status <= OTA_SLOT_GAGAL ? st[s->status] : "?", s->versi, s->ukuran, hx);
         cmd_puts(l);
     }
+    ksnprintf(l, sizeof(l), "minimum app: versi=%u\n", g_os_st.app_min);
+    cmd_puts(l);
 terima:
     if (g_os_state == OS_LISTEN) {
         uint64_t sisa = g_os_deadline > timer_ticks ? (g_os_deadline - timer_ticks) / 100 : 0;

@@ -177,12 +177,16 @@ int ota_selftest(void)
 // OTA.BIN (512 byte): magic "BMOTAST1" @0, seq u32 @8, aktif u8 @12 (0 A,
 // 1 B), coba u8 @13 (OTA_COBA_TIDAK atau slot 0/1 selain aktif, P7-3), sisa u8 @14 (<= 3), 0 @15,
 // slot A @16 dan slot B @64 (48 byte: status u8, 0 x3, versi u32, ukuran u32,
-// 0 u32, sha256 isi 32), nol s.d. 503, 8 byte pertama SHA-256(0..503) @504.
+// 0 u32, sha256 isi 32), app_min u32 @112 (versi app minimum), nol s.d. 503,
+// 8 byte pertama SHA-256(0..503) @504. Kernel lama (sebelum app_min) membaca
+// app_min != 0 sebagai "rusak"; karena itu ota_app_min_perlu tidak menulisnya
+// selama ada percobaan kernel, dan saat boot ISO tidak dimigrasi (otaslot.c).
 // Ditulis utuh satu sektor (atomik seperti rekaman LOG.BIN). Byte cadangan
 // harus nol: berkas yang tidak dikenal dianggap rusak, bukan ditebak.
 static const uint8_t g_ota_st_magic[8] = { 'B', 'M', 'O', 'T', 'A', 'S', 'T', '1' };
 
 #define OTA_ST_SLOT(i) (16u + 48u * (i))
+#define OTA_ST_APPMIN  112u
 #define OTA_ST_HASH    504u
 
 static void ota_put32(uint8_t *p, uint32_t v)
@@ -219,6 +223,7 @@ void ota_st_encode(const ota_st_t *st, uint8_t *b)
         ota_put32(p + 8, st->s[i].ukuran);
         memcpy(p + 16, st->s[i].sha256, 32);
     }
+    ota_put32(b + OTA_ST_APPMIN, st->app_min);
     sha256_init(&c);
     sha256_update(&c, b, OTA_ST_HASH);
     sha256_final(&c, h);
@@ -268,13 +273,21 @@ int ota_st_decode(const uint8_t *b, ota_st_t *st)
             return -1;
         }
     }
-    for (uint32_t i = OTA_ST_SLOT(2); i < OTA_ST_HASH; i++) {
+    t.app_min = ota_le32(b + OTA_ST_APPMIN);
+    for (uint32_t i = OTA_ST_APPMIN + 4u; i < OTA_ST_HASH; i++) {
         if (b[i] != 0) {
             return -1;
         }
     }
     *st = t;
     return 1;
+}
+
+// Perlu menaikkan app_min ke versi? Tidak selama percobaan kernel tertunda:
+// rollback bisa kembali ke kernel lama yang menolak app_min != 0.
+int ota_app_min_perlu(const ota_st_t *st, uint32_t versi)
+{
+    return st->coba == OTA_COBA_TIDAK && versi > st->app_min;
 }
 
 // limine.conf: baris (di awal baris) "default_entry:" + spasi + 1 atau 2.

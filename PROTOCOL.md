@@ -411,8 +411,9 @@ register umum dump panic), maks 160 karakter.
   dulu)`: rollback / `ota batal` bisa kembali ke kernel pra-P7-4 yang menjalankan .bmo sebagai biner mentah).
   Balasan `OK ota: kirim N byte ke port 7781 dalam 60 s (APP.BIN)`; galat tambahan `ERR: disk tidak ada / baca
   saja`. Setelah data lengkap: sha16 -> tanda tangan ->
-  jenis harus app (`ERR ota: isi bukan app`) -> versi harus > versi APP.BIN sah di disk (`ERR ota: versi V <=
-  versi APP.BIN (W), ditolak`; APP.BIN tidak ada / tidak sah -> versi apa pun) -> file utuh ditimpa (jalur timpa
+  jenis harus app (`ERR ota: isi bukan app`) -> versi harus >= minimum app di OTA.BIN (`ERR ota: versi V < minimum
+  app (M), ditolak`) dan > versi APP.BIN sah di disk (`ERR ota: versi V <= versi APP.BIN (W), ditolak`; APP.BIN tidak
+  ada / tidak sah -> sama dengan minimum boleh, untuk pemulihan) -> file utuh ditimpa (jalur timpa
   D6: rantai baru + satu tulis sektor entri) -> dibaca balik dan dibandingkan -> `OK ota: APP.BIN versi V ukuran U sha256 <16 hex isi> ditulis +
   dibaca balik; berlaku setelah reboot`. Galat tulis: `ERR ota: APP.BIN lama tidak bisa ditimpa (<alasan>), perlu
   akses disk` (APP.BIN lama > 4096 byte / beratribut: lapisan tulis FAT32 hanya menyentuh file biasa <= 4096
@@ -433,7 +434,11 @@ register umum dump panic), maks 160 karakter.
 - Disk: `KERNA.ELF`, `KERNB.ELF` (tepat 1 MB), `limine.conf` (512 byte) dibuat dari host (P7-0); `OTA.BIN`
   (512 byte) dibuat kernel saat boot bila belum ada (`P7: OTA.BIN dibuat (512 byte kosong)`). Keempatnya dilindungi
   dari `tulis`/`hapus`/`ganti`. OTA.BIN: magic `BMOTAST1`, seq, aktif, coba/sisa (P7-3), 2 x {status, versi,
-  ukuran, sha256}, SHA-256 8 byte di akhir (lihat kernel/ota.c).
+  ukuran, sha256}, versi app minimum (`app_min`), SHA-256 8 byte di akhir (lihat kernel/ota.c).
+- `ota` menampilkan `minimum app: versi=<M>` (bila slot ada). Minimum naik setelah `ota terima app` berhasil (juga dari
+  boot ISO) dan saat boot dari slot bila APP.BIN sah lebih tinggi (`P7: minimum versi app naik ke M`); tidak berubah
+  selama percobaan kernel. APP.BIN di bawah minimum: `P5-4: APP.BIN ditolak (versi V di bawah minimum M)`. Tanpa slot
+  (`ota: mati`) tidak ada minimum. Kernel sebelum `app_min` membaca OTA.BIN dengan minimum != 0 sebagai `rusak`.
 - Metrics `ota_terima`, `ota_ok`, `ota_gagal` (kernel dan app).
 - APP.BIN (P7-4) = file .bmo utuh di root disk. Saat boot: tidak ada -> `P5-4: APP.BIN tidak ada`; > 4096 byte /
   bukan .bmo / tanda tangan (kunci OTA build itu) / sha256 isi / jenis bukan app -> `P5-4: APP.BIN ditolak

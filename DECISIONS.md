@@ -561,3 +561,15 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   menolkan sendiri. Menolkan di PMM dibiarkan sebagai kemungkinan kelak bila ada pemetaan user baru.
 - **Uji di kernel dev, bukan program user baru**: 32 frame dikotori lalu dilepas sebelum `spawn` TSS-1, sehingga nomor
   slot task tetap. Baris `UFZ:` mensyaratkan kedua frame benar-benar daur ulang (2/2), jadi uji tidak lolos kosong.
+
+## 2026-11-04 (minimum versi app di OTA.BIN; disetujui pengguna)
+- **`app_min` di OTA.BIN @112** (versi tertinggi yang pernah dipasang), bukan RAM dari APP.BIN. Berlaku saat boot dan saat
+  `ota terima app`. Versi sama dengan minimum boleh bila APP.BIN hilang: pemulihan tanpa tanda tangan baru dan bukan downgrade.
+  Kembali ke app lama berarti menandatangani ulang dengan versi lebih tinggi.
+- **APP.BIN ditulis dulu, OTA.BIN kedua**: crash di antaranya tidak membuat APP.BIN sah ditolak; boot dari slot mengejar.
+- **Kompatibilitas kernel lama**: kernel lama menolak byte cadangan != 0, jadi OTA.BIN dengan minimum != 0 terbaca `rusak`
+  di sana (sistem tetap jalan, catatan slot tidak terbaca). Karena itu minimum tidak ditulis selama percobaan kernel
+  (rollback aman), dan boot ISO tidak memigrasi tanpa perintah (uji ISO tidak mengubah OTA.BIN disk berisi kernel lama).
+  `ota terima app` dari boot ISO tetap menulis: itu perintah eksplisit. Magic tidak diganti: menghasilkan penolakan yang sama.
+- **Migrasi tidak menimpa OTA.BIN rusak** (bukti diagnosa); OTA kernel/app eksplisit tetap menimpa seperti sebelumnya.
+- **Tanpa slot tidak ada minimum**: OTA.BIN tidak dipetakan saat OTA mati, tidak dibuat demi fitur ini.

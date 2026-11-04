@@ -172,11 +172,12 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    slot sampai ~31 s per percobaan.
 23. APP.BIN (P5-4): sejak P7-4 wajib bertanda tangan (dev dan PROD), jadi penulis disk tanpa kunci privat
    tidak bisa menjalankan program lain. Sisa: (a) program bertanda tangan versi LAMA bisa dipasang kembali
-   dengan menulis disk langsung (anti-downgrade hanya di `ota terima app`, bukan saat boot; tidak ada
-   penghitung versi di luar disk); (b) penulis disk bisa menghapus/merusak APP.BIN (program tidak jalan, sistem
+   oleh penulis disk: minimum app di OTA.BIN ditolak saat boot juga, tetapi OTA.BIN hanya di-hash (tanpa kunci)
+   dan tidak ada penghitung versi di luar disk, jadi penulis disk bisa mengubah atau merusaknya; (b) penulis disk bisa menghapus/merusak APP.BIN (program tidak jalan, sistem
    tetap jalan); (c) image dev bertanda tangan kunci uji (publik di repo) hanya diterima build dev;
-   (d) baseline anti-downgrade `ota terima app` = versi APP.BIN sah yang dibaca saat boot (RAM): APP.BIN
-   hilang/rusak -> versi bertanda tangan mana pun diterima (sengaja, untuk pemulihan; bisa dipindah ke OTA.BIN);
+   (d) minimum app ada di OTA.BIN: APP.BIN hilang/rusak tidak lagi membuka versi lama, kecuali tanpa slot
+   (`ota: mati`, hanya versi APP.BIN di RAM) atau OTA.BIN rusak (minimum kembali 0); kernel lama membaca minimum != 0
+   sebagai OTA.BIN rusak, sehingga catatan slot hilang bila kernel itu dipilih dan menerima OTA;
    (e) APP.BIN lama > 4096 byte / beratribut / rantai rusak tidak bisa ditimpa lewat OTA (lapisan tulis FAT32),
    perlu akses disk; (f) kernel pra-P7-4 (slot lain, ISO lama, menu Limine) menjalankan .bmo sebagai biner
    mentah -> crash ring 3 yang dihentikan R6; karena itu `ota terima app` ditolak selama percobaan kernel.

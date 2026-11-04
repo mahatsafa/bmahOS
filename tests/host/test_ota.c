@@ -247,7 +247,7 @@ static void test_status(void)
 
     // hash sah tetapi isi di luar batas -> rusak
     static const struct { int off; uint8_t v; } bad[] = {
-        { 12, 2 }, { 13, 2 }, { 15, 1 }, { 16, 4 }, { 17, 1 }, { 28, 1 }, { 112, 1 }, { 503, 1 },
+        { 12, 2 }, { 13, 2 }, { 15, 1 }, { 16, 4 }, { 17, 1 }, { 28, 1 }, { 116, 1 }, { 503, 1 },
         { 13, 1 },   // P7-3: coba == aktif (1)
         { 14, 4 },   // P7-3: sisa > 3
     };
@@ -274,6 +274,25 @@ static void test_status(void)
         memcpy(x + 504, h, 8);
     }
     CHECK(ota_st_decode(x, &b) == -1);
+    // app_min: posisi, ikut encode/decode, ota_st_init = 0
+    a.app_min = 0x0A0B0C0Du;
+    ota_st_encode(&a, x);
+    CHECK(x[112] == 0x0D && x[115] == 0x0A && x[116] == 0);
+    CHECK(ota_st_decode(x, &b) == 1 && b.app_min == 0x0A0B0C0Du);
+    a.app_min = 0;
+    ota_st_encode(&a, x);
+    CHECK(memcmp(x, buf, 512) == 0);   // app_min 0 = format lama, byte sama persis
+    // ota_app_min_perlu: hanya naik, tidak selama percobaan
+    {
+        ota_st_t m;
+
+        ota_st_init(&m, 0);
+        CHECK(m.app_min == 0 && ota_app_min_perlu(&m, 1) && !ota_app_min_perlu(&m, 0));
+        m.app_min = 5;
+        CHECK(!ota_app_min_perlu(&m, 4) && !ota_app_min_perlu(&m, 5) && ota_app_min_perlu(&m, 6));
+        m.coba = 1;
+        CHECK(!ota_app_min_perlu(&m, 6));
+    }
     // coba 0/1 sah
     a.coba = 0;
     a.sisa = 3;
@@ -333,6 +352,13 @@ static ota_st_t st_buat(int aktif, int coba, int sisa, int status_coba)
 // P7-3: keputusan boot.
 static void test_decide(void)
 {
+    {   // app_min tidak disentuh rollback
+        ota_st_t r = st_buat(0, 1, 0, OTA_SLOT_SAH);
+
+        r.app_min = 7;
+        CHECK(ota_boot_decide(&r, 1, 2) == OTA_BOOT_ROLLBACK && r.app_min == 7);
+    }
+
     ota_st_t s, a;
 
     // tanpa coba, slot aktif berjalan / ISO -> biasa, st tetap
