@@ -222,10 +222,10 @@ Linux, dan klien Python.
   Socket API untuk user mode agar program di disk bisa memakai TCP/UDP. Daftar syscall stabil
   dan terdokumentasi.
 - [x] **P6** (2026-10-28, 5100c30 + c51ca56; VMware lulus, syslog 7 pesan) Monitor jaringan sebagai task: ping, TCP-connect, DNS berkala, ambang "naik/turun", alert via syslog UDP.
-- [ ] **P7** OTA A/B: dua slot kernel, verifikasi tanda tangan digital (library teruji), boot percobaan dengan
+- [x] **P7** (2026-11-04, 860bd00 P7-1, e697569 P7-2, 5a593a3 P7-3, 59fb393 P7-4; VMware lulus) OTA A/B: dua slot kernel, verifikasi tanda tangan digital (library teruji), boot percobaan dengan
   penghitung, rollback otomatis. Syarat: R5 dan D6 selesai.
 
-**Setelah P7 lulus: M-B tercapai.**
+**Setelah P7 lulus: M-B tercapai.** (tercapai 2026-11-04)
 
 ### Fase 6: Perangkat keras asli (ditunda sampai ada mesin)
 
