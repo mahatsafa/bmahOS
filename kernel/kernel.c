@@ -265,6 +265,66 @@ static const uint8_t user_task_r6_test_code[] = {
     0xEB, 0xFD,                                                   // jmp 1b
 };
 
+// Uji frame user (dev): 32 frame diisi 0xA5 lalu dilepas, sehingga spawn()
+// berikutnya mendapat frame kotor. Sesudahnya halaman kode dan stack task itu
+// diperiksa langsung dari tabel halamannya. Frame kotor yang belum terpakai
+// dinolkan lagi supaya sisa boot tidak terpengaruh.
+#define UFZ_N 32
+static uint64_t g_ufz_frames[UFZ_N];
+
+static void ufz_dirty(void)
+{
+    for (int i = 0; i < UFZ_N; i++) {
+        g_ufz_frames[i] = pmm_alloc();
+
+        uint8_t *p = (uint8_t *)(g_ufz_frames[i] + hhdm_offset);
+
+        for (uint64_t j = 0; g_ufz_frames[i] != 0 && j < PMM_PAGE_SIZE; j++) {
+            p[j] = 0xA5;
+        }
+    }
+
+    for (int i = 0; i < UFZ_N; i++) {
+        pmm_free(g_ufz_frames[i]);
+    }
+}
+
+static void ufz_check(const task_t *t, uint64_t image_len)
+{
+    uint64_t code = vmm_phys_of(t->pml4_phys, t->user_entry);
+    uint64_t stack = vmm_phys_of(t->pml4_phys, t->user_stack_top - PMM_PAGE_SIZE);
+    uint32_t dirty = 0, reused = 0;
+
+    for (uint64_t j = image_len; code != 0 && j < PMM_PAGE_SIZE; j++) {
+        dirty += *((const uint8_t *)(code + hhdm_offset) + j) != 0;
+    }
+
+    for (uint64_t j = 0; stack != 0 && j < PMM_PAGE_SIZE; j++) {
+        dirty += *((const uint8_t *)(stack + hhdm_offset) + j) != 0;
+    }
+
+    for (int i = 0; i < UFZ_N; i++) {
+        uint64_t f = g_ufz_frames[i];
+
+        reused += f != 0 && (f == code || f == stack);
+
+        if (f != 0 && !pmm_bitmap_test(f / PMM_PAGE_SIZE)) {
+            uint64_t *p = (uint64_t *)(f + hhdm_offset);
+
+            for (uint64_t j = 0; j < PMM_PAGE_SIZE / 8; j++) {
+                p[j] = 0;
+            }
+        }
+    }
+
+    char b[96];
+
+    ksnprintf(b, sizeof(b), "UFZ: %s frame user: daur ulang %u/2, byte bukan nol %u\r\n",
+              code != 0 && stack != 0 && reused == 2 && dirty == 0 ? "PASS" : "GAGAL",
+              reused, dirty);
+    serial_write(b);
+}
+
 // TSS-1 (uji ring 3): IOPL 0 dan iopb_offset = sizeof(tss) (tanpa peta I/O)
 // -> instruksi I/O dari ring 3 harus #GP (vektor 13, kode 0) -> hanya task
 // ini yang dihentikan. Port 0x60 (data keyboard) dipilih karena baca saja:
@@ -1238,7 +1298,9 @@ void kmain(void)
     spawn(user_task_spawn_test_code, sizeof(user_task_spawn_test_code));
 #ifndef BMAHOS_PROD
     spawn(user_task_r6_test_code, sizeof(user_task_r6_test_code));   // R6-1
-    spawn(user_task_tss1_test_code, sizeof(user_task_tss1_test_code));   // TSS-1
+    ufz_dirty();
+    ufz_check(spawn(user_task_tss1_test_code, sizeof(user_task_tss1_test_code)),   // TSS-1
+              sizeof(user_task_tss1_test_code));
     // P5-1: program C pertama (userspace/udpgema.c) memakai soket UDP, port 5555.
     spawn(user_udpgema_start, (size_t)(user_udpgema_end - user_udpgema_start));
     // P5-2: server gema TCP port 5556.

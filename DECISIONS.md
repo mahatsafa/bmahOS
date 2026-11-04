@@ -554,3 +554,10 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   lewat jaringan. Gagal hapus tidak menghalangi `set`, supaya file sisa yang rusak tidak mengunci konfigurasi.
 - Tujuan ber-LFN tidak lagi ditolak `fat32_replace_name` (entri LFN tetap utuh saat ditimpa); pemanggilnya hanya
   CONFIG.CFG dan FILTER.CFG. Menutup temuan review P7-4 no. 2 (APP.BIN mengambil slot terakhir sektor CONFIG).
+
+## 2026-11-04 (frame user dinolkan; diputuskan Claude, keputusan kecil)
+- **`vmm_alloc_user_frame` menolkan halaman kode dan stack ring 3** (`spawn`, `task_create_user`). `pmm_alloc` sendiri
+  tetap tidak menolkan: jalur lain (DMA, tabel halaman, heap kernel) tidak terlihat dari ring 3, dan tabel halaman sudah
+  menolkan sendiri. Menolkan di PMM dibiarkan sebagai kemungkinan kelak bila ada pemetaan user baru.
+- **Uji di kernel dev, bukan program user baru**: 32 frame dikotori lalu dilepas sebelum `spawn` TSS-1, sehingga nomor
+  slot task tetap. Baris `UFZ:` mensyaratkan kedua frame benar-benar daur ulang (2/2), jadi uji tidak lolos kosong.

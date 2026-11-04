@@ -112,6 +112,42 @@ int vmm_nx_of(uint64_t pml4_phys, uint64_t vaddr)
     return -1;
 }
 
+// Frame untuk halaman ring 3: dinolkan lewat HHDM supaya program user tidak
+// bisa membaca sisa data fisik lama (pmm_alloc tidak menolkan). 0 = habis.
+uint64_t vmm_alloc_user_frame(void)
+{
+    uint64_t phys = pmm_alloc();
+
+    if (phys != 0) {
+        uint64_t *p = (uint64_t *)(phys + hhdm_offset);
+
+        for (uint64_t i = 0; i < PMM_PAGE_SIZE / 8; i++) {
+            p[i] = 0;
+        }
+    }
+
+    return phys;
+}
+
+// Alamat fisik halaman 4 KB vaddr, 0 bila tidak terpetakan atau halaman besar.
+uint64_t vmm_phys_of(uint64_t pml4_phys, uint64_t vaddr)
+{
+    uint64_t table = pml4_phys;
+
+    for (int level = 3; level >= 0; level--) {
+        uint64_t *t = (uint64_t *)(table + hhdm_offset);
+        uint64_t e = t[(vaddr >> (12 + 9 * level)) & 0x1FF];
+
+        if (!(e & VMM_FLAG_PRESENT) || (level > 0 && level < 3 && (e & 0x80))) {
+            return 0;
+        }
+
+        table = e & VMM_ENTRY_ADDR_MASK;
+    }
+
+    return table;
+}
+
 // Butuh cpu_features_init() lebih dulu (F1.8a: NX dibaca dari g_cpu).
 void nx_init(void)
 {

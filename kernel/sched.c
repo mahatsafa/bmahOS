@@ -209,8 +209,8 @@ void task_create_user(
     task->next_free_vaddr = USER_VADDR_ALLOC_BASE;
 
     // --- Halaman user code + stack (ring 3, VMM_FLAG_USER) ---
-    uint64_t user_code_frame = pmm_alloc();
-    uint64_t user_stack_frame = pmm_alloc();
+    uint64_t user_code_frame = vmm_alloc_user_frame();
+    uint64_t user_stack_frame = vmm_alloc_user_frame();
     if (user_code_frame == 0 || user_stack_frame == 0) {
         oom_panic("halaman user task");   // R6-3
     }
@@ -359,8 +359,8 @@ task_t *spawn(const uint8_t *image, size_t image_len)
     task->pml4_phys = pml4_phys;
 
     // --- Halaman code + stack (ring 3, VMM_FLAG_USER) ---
-    uint64_t code_frame = pmm_alloc();
-    uint64_t stack_frame = pmm_alloc();
+    uint64_t code_frame = vmm_alloc_user_frame();
+    uint64_t stack_frame = vmm_alloc_user_frame();
     if (code_frame == 0 || stack_frame == 0) {
         oom_panic("halaman user spawn");   // R6-3
     }

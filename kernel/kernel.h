@@ -244,6 +244,8 @@ uint64_t read_cr3(void);
 void vmm_dump_pml4(uint64_t pml4_phys);
 void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t flags);
 int vmm_nx_of(uint64_t pml4_phys, uint64_t vaddr);
+uint64_t vmm_alloc_user_frame(void);
+uint64_t vmm_phys_of(uint64_t pml4_phys, uint64_t vaddr);
 void nx_init(void);
 uint64_t vmm_clone_kernel_pml4(uint64_t kernel_pml4_phys);
 bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len, bool require_writable);

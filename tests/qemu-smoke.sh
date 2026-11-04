@@ -298,6 +298,8 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         'grep -aq "DITOLAK -- pointer/len tidak valid (syscall=0x0000000000000001, ptr=0xFFFFFFFF80000000, len=0x0000000000000008)" "$LOG" && grep -aq "DITOLAK -- pointer/len tidak valid (syscall=0x0000000000000001, ptr=0x0000000000400000, len=0x0000000000000800)" "$LOG"'
     check "R6-1: stack user menabrak guard -> #PF ring 3 (error 0x6) -> hanya task itu dihentikan" \
         'grep -aq "^R6: task user slot 6 dihentikan (vektor 14 kode=0x6 rip=0x0000000000400027 cr2=0x0000000000401ff8)" "$LOG" && [ "$(mval user_faults)" = 2 ] && [ "$(mval sys_rejected)" -ge 2 ] && [ "$(mval sys_calls)" -ge "$(mval sys_rejected)" ]'
+    check "UFZ: spawn dari frame kotor: sisa halaman kode dan stack user nol" \
+        'grep -aq "^UFZ: PASS frame user: daur ulang 2/2, byte bukan nol 0" "$LOG"'
     check "TSS-1: in dari ring 3 -> #GP (vektor 13 kode 0) -> hanya task slot 7 dihentikan" \
         'grep -aq "^R6: task user slot 7 dihentikan (vektor 13 kode=0x0 rip=0x0000000000400000 " "$LOG"'
 else
