@@ -17,7 +17,7 @@ dengan nomor baru, perilaku nomor lama tidak diubah. Pembungkus C: `userspace/bm
 
 ## Program user
 
-- Biner datar maks 4096 byte (kode + rodata), dimuat di `0x400000` (halaman read-only, bisa dieksekusi).
+- Biner datar maks 4096 byte (kode + rodata; sebagai APP.BIN maks 3968, lihat bawah), dimuat di `0x400000` (halaman read-only, bisa dieksekusi).
   Tanpa `.data`/`.bss`: semua variabel di stack (1 halaman, NX, di bawahnya halaman guard).
 - Titik masuk = byte pertama biner (`_start` di section `.text.start`). Selesai dengan `exit`.
 - Tanpa SSE/x87: state FPU tidak disimpan saat ganti task (`-mno-sse -mno-mmx`).
@@ -26,9 +26,12 @@ dengan nomor baru, perilaku nomor lama tidak diubah. Pembungkus C: `userspace/bm
   Tiga program ditanam di kernel dan hanya dijalankan build dev: `udpgema` (P5-1, gema UDP port 5555),
   `tcpgema` (P5-2, server gema TCP port 5556), dan `tcpklien` (P5-3, klien TCP yang diperintah lewat UDP
   port 5557: `konek <port> [oktet]`, `gema <port> [oktet]`, `batas <port> <oktet> <tick>`, `keluar`).
-- Program dari disk (P5-4): biner yang sama disalin ke root disk sebagai `APP.BIN` dan dijalankan saat boot
-  (PROD dan dev), sekali, tanpa restart. Contoh `build/user/appgema.bin` = `tcpgema.c` dengan `-DPORT=5558
-  -DNAMA='"appgema"'`. Status: perintah `app`, metrics `app_loaded`/`app_size`/`app_exit`.
+- Program dari disk (P5-4, P7-4): biner datar yang sama, maks 3968 byte, dibungkus `.bmo` bertanda tangan
+  (`client/ota-sign.py --jenis app`, kunci OTA build itu) lalu dipasang sebagai `APP.BIN` di root disk lewat
+  `ota terima app` (`bmctl.py --ota`, `bmota`); dijalankan saat boot (PROD dan dev), sekali, tanpa restart.
+  Biner mentah ditolak (`P5-4: APP.BIN ditolak (bukan .bmo bertanda tangan)`). Contoh `build/user/appgema.bin`
+  = `tcpgema.c` dengan `-DPORT=5558 -DNAMA='"appgema"'`. Status: perintah `app`, metrics `app_loaded`/
+  `app_size`/`app_exit`/`app_versi`.
 
 ## Daftar
 

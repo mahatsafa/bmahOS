@@ -14,8 +14,8 @@
 #         bmtls              D9: sama dengan bmtcp lewat TLS 1.2 port 7780; pin
 #                            (sha256 sertifikat, 64 hex) dari $BmPinFile (default
 #                            $env:USERPROFILE\.bmahos\tlspin.txt). Beda -> ditutup.
-#         bmota file.bmo     P7-2: kirim kernel bertanda tangan (sesi admin bmtcp/bmtls):
-#                            "ota terima kernel <ukuran> <sha16>" lalu file ke port 7781,
+#         bmota file.bmo     P7-2: kirim kernel / APP.BIN (P7-4) bertanda tangan (sesi admin):
+#                            "ota terima kernel|app <ukuran> <sha16>" lalu file ke port 7781,
 #                            cetak baris hasil (OK ota / ERR ota).
 # Catatan: nama variabel PowerShell tidak peka huruf besar-kecil.
 

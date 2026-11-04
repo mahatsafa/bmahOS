@@ -17,7 +17,7 @@ import argparse, hashlib, os, struct, subprocess, sys, tempfile
 
 MAGIC = b"BMOTA1\0\0"
 JENIS = {"kernel": 1, "app": 2}
-MAKS = {1: 1024 * 1024, 2: 4096}
+MAKS = {1: 1024 * 1024, 2: 4096 - 128}   # P7-4: file .bmo app = APP.BIN <= 4096 (batas file FAT32)
 
 
 def der_ke_mentah(der):

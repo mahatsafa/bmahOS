@@ -37,8 +37,8 @@ tidak dipakai (sertifikat self-signed); tanda tangan handshake tetap
 diverifikasi OpenSSL dengan kunci di sertifikat itu.
 
 --ota FILE.bmo (P7-2, butuh --tcp/--tls dan kunci admin): kirim kernel baru
-bertanda tangan (client/ota-sign.py). Di sesi itu dijalankan
-"ota terima kernel <ukuran> <sha16>", lalu file dikirim ke port 7781
+atau APP.BIN (P7-4) bertanda tangan (client/ota-sign.py). Di sesi itu dijalankan
+"ota terima kernel|app <ukuran> <sha16>" (jenis dari header), lalu file ke port 7781
 (--ota-port / $BMAHOS_OTA_PORT) dan baris hasil dari bmahOS dicetak (kernel
 memeriksa tanda tangan, menulis slot yang tidak aktif, membaca balik).
 Perintah lain di baris perintah dijalankan sesudahnya. Kode keluar 0 bila
@@ -247,7 +247,7 @@ def ota_send(sess, args, port):
     if len(data) < 128 or data[:8] != b"BMOTA1\0\0":
         sys.stderr.write("bmctl: %s bukan file .bmo\n" % args.ota)
         return 1
-    jenis = OTA_JENIS.get(int.from_bytes(data[8:12], "little"), "?")
+    jenis = args.ota_jenis or OTA_JENIS.get(int.from_bytes(data[8:12], "little"), "?")
     sha16 = args.ota_sha16 or hashlib.sha256(data).hexdigest()[:16]
     out, ok = sess.command("ota terima %s %d %s" % (jenis, len(data), sha16))
     for line in out:
@@ -451,11 +451,13 @@ def main():
     p.add_argument("--timeout", type=float, default=None,
                    help="detik per balasan (default UDP 3, TCP 10)")
     p.add_argument("--ota", default=None, metavar="FILE.bmo",
-                   help="P7-2: kirim kernel bertanda tangan lewat port 7781 (butuh --tcp/--tls)")
+                   help="P7-2/P7-4: kirim kernel atau APP.BIN bertanda tangan (.bmo) lewat port 7781 "
+                        "(butuh --tcp/--tls)")
     p.add_argument("--ota-port", type=int, default=None,
                    help="port penerimaan OTA (default %d atau $BMAHOS_OTA_PORT)" % DEFAULT_OTA_PORT)
     # uji: sha16 lain / hanya N byte pertama yang dikirim
     p.add_argument("--ota-sha16", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--ota-jenis", default=None, help=argparse.SUPPRESS)   # P7-4 uji: paksa jenis
     p.add_argument("--ota-potong", type=int, default=None, help=argparse.SUPPRESS)
     p.add_argument("--ota-tahan", type=float, default=0, help=argparse.SUPPRESS)
     args = p.parse_args()

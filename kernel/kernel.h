@@ -714,7 +714,7 @@ int ct_memeq(const void *a, const void *b, uint32_t n);
 #define OTA_JENIS_KERNEL 1u
 #define OTA_JENIS_APP    2u
 #define OTA_KERNEL_MAX   (FAT32_MAP_MAX * 512u)   // slot KERNA/KERNB 1 MB
-#define OTA_APP_MAX      4096u
+#define OTA_APP_MAX      ((uint32_t)FAT32_WRITE_MAX - OTA_PREFIX)   // P7-4: 3968, file .bmo <= 4096
 enum {
     OTA_OK = 0, OTA_ERR_FORMAT = -1, OTA_ERR_JENIS = -2, OTA_ERR_UKURAN = -3,
     OTA_ERR_TTD = -4, OTA_ERR_HASH = -5, OTA_ERR_ELF = -6,
@@ -1136,9 +1136,16 @@ int wd_test_execute(const volatile uint8_t *cmd, uint32_t len);   // build dev s
 
 // ---- app.c (P5-4: program user APP.BIN dari disk) ----
 #define APP_MAX 4096   // = satu halaman kode spawn()
-extern uint64_t g_app_loaded, g_app_size, g_app_exit;   // metrics app_*
+// P7-4: APP.BIN = file .bmo (header + tanda tangan + isi <= OTA_APP_MAX = 3968);
+// seluruh file <= FAT32_WRITE_MAX (batas baca dan tulis file FAT32).
+#define APP_FILE_MAX (OTA_PREFIX + OTA_APP_MAX)
+_Static_assert(APP_FILE_MAX == FAT32_WRITE_MAX, "APP.BIN .bmo = batas file FAT32");
+_Static_assert(OTA_APP_MAX <= APP_MAX, "isi app muat satu halaman kode spawn()");
+extern uint64_t g_app_loaded, g_app_size, g_app_exit, g_app_versi;   // metrics app_*
 extern int64_t g_app_slot;
 void app_load(void);                 // kmain, sesudah net task + idle dibuat
+int app_disk_versi(uint32_t *versi); // P7-4: 1 = APP.BIN di disk sah (versi diisi)
+void app_disk_set(uint32_t versi);   // P7-4: APP.BIN baru ditulis OTA (berlaku setelah reboot)
 void app_task_exited(size_t slot);   // task_exit()
 void app_status(void (*out)(const char *));   // perintah `app`
 

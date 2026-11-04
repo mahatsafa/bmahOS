@@ -206,7 +206,11 @@ check "P7-3: ota coba slot A versi 11" \
 wait_boot 3
 check "P7-3: boot 3: slot A percobaan sisa 2" \
     '[ "$(boots)" -eq 3 ] && grep -aq "^P7: boot percobaan slot A versi 11 (sisa 2)" "$SLOG"'
-B3="$(cmd "ota batal")"
+# P7-4: selama percobaan, ota terima app ditolak sebelum port 7781 dibuka (rollback /
+# ota batal bisa kembali ke kernel yang menjalankan .bmo sebagai biner mentah).
+B3="$(cmd "ota terima app 300 0123456789abcdef" "ota batal")"
+check "P7-4: boot 3 (percobaan A): ota terima app -> ERR percobaan slot A tertunda" \
+    'echo "$B3" | grep -q "^ERR: percobaan slot A tertunda (ota sah / ota batal dulu)$"'
 check "P7-3: ota batal -> kembali ke slot aktif B; reboot" \
     'echo "$B3" | grep -q "^OK ota: percobaan slot A dibatalkan, slot aktif B; reboot$"'
 wait_boot 4

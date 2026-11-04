@@ -51,3 +51,6 @@ sudah ada.
 - **P7-3** boot percobaan, penghitung, rollback, pengukuhan; `tests/qemu-ota.sh` (boot dari disk): B sehat
   dikukuhkan, B rusak (flag uji panic dini) kembali ke A setelah 3 kali.
 - **P7-4** APP.BIN bertanda tangan; uji VMware penuh; PROTOCOL/THREAT_MODEL/DECISIONS; centang P7 -> M-B.
+  Dikerjakan 2026-11-03: APP.BIN = .bmo utuh diperiksa tiap boot (dev + PROD), `ota terima app` lewat 7781
+  (timpa D6 atomik, baca balik, anti-downgrade terhadap versi di disk, berlaku setelah reboot). Satu commit
+  (bukan dua). Rincian DECISIONS 2026-11-03 dan PROTOCOL.md.

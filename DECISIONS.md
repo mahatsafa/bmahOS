@@ -518,3 +518,29 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   `limine.conf` 512 byte yang ditimpa satu sektor untuk berganti slot (`cmdline: slot=A|B`); slot `KERNA.ELF`/
   `KERNB.ELF` 1 MB tetap + status `OTA.BIN`; kiriman lewat `ota terima` + port TCP 7781 sekali pakai; boot
   percobaan 3 kali lalu rollback, sehat 60 s -> dikukuhkan, anti-downgrade; APP.BIN wajib bertanda tangan.
+
+## 2026-11-03 (P7-4 APP.BIN bertanda tangan; diputuskan Claude, keputusan kecil)
+- **APP.BIN = file .bmo utuh** (header + tanda tangan + isi), diperiksa `ota_check` saat SETIAP boot dengan
+  kunci OTA build itu. Dev dan PROD sama-sama wajib; tidak ada mode "tanpa tanda tangan". APP.BIN mentah lama
+  (P5-4) ditolak `bukan .bmo bertanda tangan`, jadi disk lama perlu `ota terima app` sekali.
+- **sha256 di serial/`app` = sha256 isi** (dari header yang sah), sama dengan `sha256sum` biner di host.
+- **`ota terima app`**: jalur 7781 P7-2 yang sama, tanpa butuh slot/OTA.BIN; APP.BIN ditimpa lewat
+  `fat32_write_name` (jalur timpa D6: rantai baru, satu tulis sektor entri, rantai lama dibebaskan), baca balik
+  + bandingkan. Semula lewat APP.TMP (`fat32_replace_name`), tetapi di disk VMware sektor root APP.BIN penuh
+  (EFI + LFN P7-0) -> DIRFULL; replace butuh .TMP di sektor yang sama, timpa D6 tidak; berlaku setelah reboot (tanpa ganti program saat jalan,
+  supaya tidak ada keadaan setengah). Anti-downgrade terhadap versi APP.BIN sah di disk (dibaca saat boot
+  atau tulisan OTA terakhir); APP.BIN tidak ada / tidak sah -> versi apa pun diterima (pemulihan).
+- **Versi app** = `git rev-list --count` saat menandatangani, sama dengan kernel (bebas dipilih penanda tangan).
+- **Batas**: file .bmo APP.BIN <= 4096 byte (`FAT32_WRITE_MAX`, batas baca dan tulis file FAT32), jadi isi app
+  <= 3968 byte (`OTA_APP_MAX`, juga `ota-sign.py`); P5-4 dulu isi biner <= 4096. Ditemukan saat meninjau diff:
+  isi 3969..4096 lolos `ota_check` lalu gagal ditulis.
+- **Hasil review (code-review max, sebelum commit)**: `ota terima app` ditolak selama percobaan kernel tertunda
+  (rollback / `ota batal` bisa kembali ke kernel pra-P7-4 yang menjalankan .bmo sebagai biner mentah); APP.BIN
+  selalu dibaca balik walau tulis melapor galat (galat sesudah entri direktori ditulis = isi baru sudah di disk
+  -> baseline versi ikut naik); APP.BIN lama yang tidak disentuh lapisan tulis FAT32 (> 4096 byte, beratribut)
+  -> pesan "perlu akses disk"; metrics `app_versi` di akhir tabel (aturan R3); magic .bmo hanya di ota.c. Baseline
+  versi app tetap di RAM (dibaca dari APP.BIN saat boot); menyimpannya di OTA.BIN = keputusan terbuka (TODO).
+- **make test PROD** tidak punya kunci PROD: hanya penolakan (kiriman dan boot) yang diuji; APP.BIN sah di
+  PROD dibuktikan di VMware.
+- **Satu commit** untuk pemuatan + `ota terima app` (rencana semula dua): keduanya berbagi uji qemu-smoke boot 1
+  -> boot 5 (APP.BIN yang ditulis OTA dimuat di boot berikutnya), tanpa refactor terpisah.

@@ -1,7 +1,7 @@
 // P7-2: penerimaan kernel baru lewat jaringan dan penulisan slot A/B.
 //
 // Alur: admin (sesi TCP 7779 / TLS 7780) menjalankan
-//   ota terima kernel <ukuran> <sha16>
+//   ota terima kernel <ukuran> <sha16>   (P7-4: juga `app`, lihat di bawah)
 // (ukuran = panjang file .bmo, sha16 = 16 hex pertama sha256 file itu; sha256
 // penuh tidak muat di batas perintah 64 byte). Port TCP 7781 lalu menerima
 // SATU koneksi selama OTA_LISTEN_TICKS, hanya dari IP sesi itu. Data masuk ke
@@ -33,6 +33,17 @@
 // dalam 300 s atau net task tidak jalan -> panic (reboot, percobaan terpakai).
 // Urutan tulis selalu OTA.BIN dulu, limine.conf kedua: crash di antaranya
 // diselesaikan ota_boot_decide pada boot berikutnya.
+//
+// P7-4 `ota terima app <ukuran> <sha16>`: jalur 7781 + sha16 + ota_check sama,
+// isi harus jenis app, versi > versi APP.BIN sah di disk (app.c; APP.BIN
+// tidak ada / tidak sah -> versi apa pun). File .bmo utuh ditimpa lewat
+// fat32_write_name (jalur timpa D6: data ke rantai baru, SATU tulis sektor
+// entri direktori, rantai lama dibebaskan; crash sebelum tulis entri = APP.BIN
+// lama utuh). Tidak memakai file sementara: sektor root APP.BIN bisa penuh
+// (disk VMware P7-0). Lalu dibaca balik dan dibandingkan, berlaku setelah
+// reboot (app.c memeriksa tanda tangan lagi saat boot).
+// Tidak butuh slot/OTA.BIN. Ditolak selama percobaan kernel tertunda: rollback /
+// ota batal bisa kembali ke kernel pra-P7-4 yang menjalankan .bmo sebagai biner mentah.
 // ota_init dari kmain sebelum net task dibuat; sisanya dari net task (tanpa lock).
 #include "kernel.h"
 
@@ -45,10 +56,11 @@
 #define OTA_SEHAT_TICKS   6000u    // P7-3: sehat 60 s sejak boot -> dikukuhkan
 #define OTA_SAKIT_TICKS   30000u   // P7-3: belum sehat 300 s -> panic
 
-enum { OS_IDLE = 0, OS_LISTEN, OS_RX, OS_CHECK, OS_MARK, OS_WRITE, OS_VERIFY, OS_COMMIT };
+enum { OS_IDLE = 0, OS_LISTEN, OS_RX, OS_CHECK, OS_MARK, OS_WRITE, OS_VERIFY, OS_COMMIT,
+       OS_APP };
 static const char *const g_os_state_name[] = {
     "diam", "menunggu koneksi 7781", "menerima", "memeriksa", "menandai OTA.BIN",
-    "menulis slot", "membaca balik", "mengukuhkan OTA.BIN",
+    "menulis slot", "membaca balik", "mengukuhkan OTA.BIN", "menulis APP.BIN",
 };
 
 static uint8_t g_ota_buf[OTA_PREFIX + OTA_KERNEL_MAX] __attribute__((aligned(16)));
@@ -75,6 +87,9 @@ static uint32_t g_os_len, g_os_got;
 static uint8_t g_os_sha16[8];
 static sha256_ctx_t g_os_ctx;
 static int g_os_target;
+static uint32_t g_os_jenis;         // P7-4: OTA_JENIS_* dari perintah
+// P7-4: baca balik APP.BIN memakai ekor g_ota_buf (kiriman app <= APP_FILE_MAX).
+_Static_assert(sizeof(g_ota_buf) >= 2 * APP_FILE_MAX, "g_ota_buf muat app + baca balik");
 static uint32_t g_os_sec;
 static ota_info_t g_os_inf;
 static char g_os_last[OTA_MSG_MAX] = "-";
@@ -88,6 +103,16 @@ static const char g_slot_name83[2][12] = { "KERNA   ELF", "KERNB   ELF" };
 static char os_slot_ch(int s)
 {
     return s == 0 ? 'A' : 'B';
+}
+
+// P7-4: tujuan kiriman untuk pesan: "slot X" (kernel) / "APP.BIN".
+static const char *os_tujuan(char *buf, uint32_t n)
+{
+    if (g_os_jenis != OTA_JENIS_KERNEL) {
+        return "APP.BIN";
+    }
+    ksnprintf(buf, n, "slot %c", os_slot_ch(g_os_target));
+    return buf;
 }
 
 static int os_st_write(void)
@@ -438,8 +463,19 @@ static void os_check(void)
         os_fail(ota_strerror(rc));
         return;
     }
-    if (g_os_inf.jenis != OTA_JENIS_KERNEL) {
-        os_fail("isi bukan kernel");
+    if (g_os_inf.jenis != g_os_jenis) {
+        os_fail(g_os_jenis == OTA_JENIS_APP ? "isi bukan app" : "isi bukan kernel");
+        return;
+    }
+    if (g_os_jenis == OTA_JENIS_APP) {
+        uint32_t v;
+
+        if (app_disk_versi(&v) && g_os_inf.versi <= v) {
+            ksnprintf(m, sizeof(m), "versi %u <= versi APP.BIN (%u), ditolak", g_os_inf.versi, v);
+            os_fail(m);
+            return;
+        }
+        g_os_state = OS_APP;
         return;
     }
     if (g_os_inf.versi <= g_os_st.s[g_os_st.aktif].versi) {
@@ -602,6 +638,39 @@ void ota_poll(void)
         os_finish(1, m);
         break;
     }
+    case OS_APP: {   // P7-4
+        char m[OTA_MSG_MAX], hx[17];
+        uint8_t *rb = g_ota_buf + APP_FILE_MAX;
+        uint32_t got = 0;
+        int wrc = fat32_write_name("APP     BIN", g_ota_buf, g_os_len, 0, &got);
+        // Baca balik juga bila tulis melapor galat: galat sesudah entri direktori
+        // ditulis (bebaskan rantai lama / FSInfo) berarti isi baru sudah di disk,
+        // jadi baseline anti-downgrade harus ikut naik.
+        int rrc = fat32_read_name("APP     BIN", rb, APP_FILE_MAX, &got);
+        int sama = rrc == FAT32_OK && got == g_os_len && memcmp(rb, g_ota_buf, got) == 0;
+
+        if (sama) {
+            app_disk_set(g_os_inf.versi);
+        }
+        if (wrc == FAT32_ERR_TOOBIG || wrc == FAT32_ERR_NOTFILE) {
+            // APP.BIN lama > 4096 byte / beratribut: lapisan tulis FAT32 tidak menyentuhnya.
+            ksnprintf(m, sizeof(m), "APP.BIN lama tidak bisa ditimpa (%s), perlu akses disk",
+                      fscmd_strerror(wrc));
+            os_fail(m);
+        } else if (wrc != FAT32_OK) {
+            ksnprintf(m, sizeof(m), "tulis APP.BIN gagal (%s)%s", fscmd_strerror(wrc),
+                      sama ? "; isi baru sudah di disk, berlaku setelah reboot" : "");
+            os_fail(m);
+        } else if (!sama) {
+            os_fail("baca balik APP.BIN tidak cocok");
+        } else {
+            os_hex(hx, g_os_inf.sha256, 8);
+            ksnprintf(m, sizeof(m), "OK ota: APP.BIN versi %u ukuran %u sha256 %s ditulis + dibaca"
+                      " balik; berlaku setelah reboot", g_os_inf.versi, g_os_inf.ukuran, hx);
+            os_finish(1, m);
+        }
+        break;
+    }
     default:
         break;
     }
@@ -616,7 +685,7 @@ static void os_status(void)
     if (!g_os_on) {
         ksnprintf(l, sizeof(l), "ota: mati (%s)\n", g_os_why);
         cmd_puts(l);
-        return;
+        goto terima;   // P7-4: `ota terima app` tetap jalan tanpa slot
     }
     ksnprintf(l, sizeof(l), "ota: berjalan=%s aktif=%c (%s) OTA.BIN=%s seq=%u\n",
               g_os_run < 0 ? "ISO" : g_os_run == 0 ? "A" : "B", os_slot_ch(g_os_st.aktif),
@@ -635,12 +704,14 @@ static void os_status(void)
                   s->status <= OTA_SLOT_GAGAL ? st[s->status] : "?", s->versi, s->ukuran, hx);
         cmd_puts(l);
     }
+terima:
     if (g_os_state == OS_LISTEN) {
         uint64_t sisa = g_os_deadline > timer_ticks ? (g_os_deadline - timer_ticks) / 100 : 0;
+        char tj[10];
 
-        ksnprintf(l, sizeof(l), "terima: %s dari %u.%u.%u.%u (sisa %lu s) slot %c\n",
+        ksnprintf(l, sizeof(l), "terima: %s dari %u.%u.%u.%u (sisa %lu s) %s\n",
                   g_os_state_name[g_os_state], g_os_ip[0], g_os_ip[1], g_os_ip[2], g_os_ip[3],
-                  sisa, os_slot_ch(g_os_target));
+                  sisa, os_tujuan(tj, sizeof(tj)));
     } else if (g_os_state == OS_RX) {
         ksnprintf(l, sizeof(l), "terima: menerima %u/%u byte\n", g_os_got, g_os_len);
     } else if (g_os_state == OS_WRITE || g_os_state == OS_VERIFY) {
@@ -673,16 +744,11 @@ static int os_parse_u32(const volatile uint8_t *p, uint32_t n, uint32_t *out)
 
 static void os_terima(const volatile uint8_t *a, uint32_t n)
 {
-    static const char fmt[] = "ERR: format: ota terima kernel <ukuran> <sha16>\n";
-    uint32_t i = 0, j, ukuran;
+    static const char fmt[] = "ERR: format: ota terima kernel|app <ukuran> <sha16>\n";
+    uint32_t i = 0, j, ukuran, jenis;
     uint8_t sha16[8];
     char l[OTA_MSG_MAX];
 
-    if (!g_os_on) {
-        ksnprintf(l, sizeof(l), "ERR: ota mati (%s)\n", g_os_why);
-        cmd_puts(l);
-        return;
-    }
     if (!g_cmd_src_ip) {
         cmd_puts("ERR: ota terima hanya lewat sesi TCP 7779 / TLS 7780\n");
         return;
@@ -690,12 +756,21 @@ static void os_terima(const volatile uint8_t *a, uint32_t n)
     // jenis
     for (j = i; j < n && a[j] != ' '; j++) {
     }
-    if (net_cmd_is(a + i, j - i, "app")) {
-        cmd_puts("ERR: ota terima app belum didukung (P7-4)\n");
+    if (net_cmd_is(a + i, j - i, "kernel")) {
+        jenis = OTA_JENIS_KERNEL;
+    } else if (net_cmd_is(a + i, j - i, "app")) {
+        jenis = OTA_JENIS_APP;   // P7-4
+    } else {
+        cmd_puts(fmt);
         return;
     }
-    if (!net_cmd_is(a + i, j - i, "kernel") || j >= n) {
+    if (j >= n) {
         cmd_puts(fmt);
+        return;
+    }
+    if (jenis == OTA_JENIS_KERNEL && !g_os_on) {
+        ksnprintf(l, sizeof(l), "ERR: ota mati (%s)\n", g_os_why);
+        cmd_puts(l);
         return;
     }
     // ukuran
@@ -721,9 +796,9 @@ static void os_terima(const volatile uint8_t *a, uint32_t n)
         }
         sha16[k] = (uint8_t)(hi << 4 | lo);
     }
-    if (ukuran <= OTA_PREFIX || ukuran > OTA_PREFIX + OTA_KERNEL_MAX) {
+    if (ukuran <= OTA_PREFIX || ukuran > OTA_PREFIX + ota_max_size(jenis)) {
         ksnprintf(l, sizeof(l), "ERR: ukuran harus %u..%u byte\n", OTA_PREFIX + 1,
-                  OTA_PREFIX + OTA_KERNEL_MAX);
+                  OTA_PREFIX + ota_max_size(jenis));
         cmd_puts(l);
         return;
     }
@@ -732,11 +807,19 @@ static void os_terima(const volatile uint8_t *a, uint32_t n)
         cmd_puts(l);
         return;
     }
-    if (g_os_st.coba != OTA_COBA_TIDAK) {
+    // P7-4: juga app (lihat komentar atas). g_os_st hanya berarti bila g_os_on.
+    if (g_os_on && g_os_st.coba != OTA_COBA_TIDAK) {
         ksnprintf(l, sizeof(l), "ERR: percobaan slot %c tertunda (ota sah / ota batal dulu)\n",
                   os_slot_ch(g_os_st.coba));
         cmd_puts(l);
         return;
+    }
+    if (jenis == OTA_JENIS_APP) {
+        if (!fat32_writable()) {
+            cmd_puts("ERR: disk tidak ada / baca saja\n");
+            return;
+        }
+        goto mulai;
     }
     int target = g_os_st.aktif ? 0 : 1;
 
@@ -754,21 +837,27 @@ static void os_terima(const volatile uint8_t *a, uint32_t n)
         cmd_puts("ERR: slot tujuan tidak bisa dipetakan\n");
         return;
     }
+    g_os_target = target;
+mulai:
     for (int k = 0; k < 4; k++) {
         g_os_ip[k] = g_cmd_src_ip[k];
     }
     memcpy(g_os_sha16, sha16, sizeof(sha16));
+    g_os_jenis = jenis;
     g_os_len = ukuran;
     g_os_got = 0;
-    g_os_target = target;
     g_os_deadline = timer_ticks + OTA_LISTEN_TICKS;
     g_os_reply_ready = 0;
     g_os_state = OS_LISTEN;
     g_ota_terima++;
-    ksnprintf(l, sizeof(l), "OK ota: kirim %u byte ke port %u dalam 60 s (slot %c)\n",
-              ukuran, OTA_PORT, os_slot_ch(target));
+
+    char tj[10];
+    const char *tuj = os_tujuan(tj, sizeof(tj));
+
+    ksnprintf(l, sizeof(l), "OK ota: kirim %u byte ke port %u dalam 60 s (%s)\n",
+              ukuran, OTA_PORT, tuj);
     cmd_puts(l);
-    kprintf("P7: ota terima %u byte slot %c dari %u.%u.%u.%u\r\n", ukuran, os_slot_ch(target),
+    kprintf("P7: ota terima %u byte %s dari %u.%u.%u.%u\r\n", ukuran, tuj,
             g_os_ip[0], g_os_ip[1], g_os_ip[2], g_os_ip[3]);
 }
 
@@ -912,7 +1001,7 @@ int ota_execute(const volatile uint8_t *cmd, uint32_t len)
         return 1;
     }
     if (len > 4 && net_cmd_is(cmd, 4, "ota ")) {
-        cmd_puts("ERR: format: ota | ota terima kernel <ukuran> <sha16> | ota coba|sah|batal\n");
+        cmd_puts("ERR: format: ota | ota terima kernel|app <ukuran> <sha16> | ota coba|sah|batal\n");
         return 1;
     }
     return 0;

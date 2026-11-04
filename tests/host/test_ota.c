@@ -51,8 +51,8 @@ static void setup(void)
 {
     CHECK(sh("rm -rf " D " && mkdir -p " D " && "
              "printf 'halo app\\n' > " D "/app.bin && "
-             "head -c 4096 /dev/urandom > " D "/app4k.bin && "
-             "head -c 4097 /dev/urandom > " D "/app4k1.bin && "
+             "head -c 3968 /dev/urandom > " D "/app4k.bin && "    // P7-4: isi maks app
+             "head -c 3969 /dev/urandom > " D "/app4k1.bin && "
              "{ printf '\\177ELF'; head -c 70000 /dev/urandom; } > " D "/k.elf && "
              "head -c 1000 /dev/zero > " D "/bukanelf.bin && "
              "openssl ecparam -name prime256v1 -genkey -noout -out " D "/lain.pem 2>/dev/null") == 0);
@@ -99,6 +99,25 @@ static void test_valid(void)
           inf.versi == 0xFFFFFFFFu && inf.ukuran == 70004);
     free(b);
     CHECK(check_file(D "/app4k.bmo", ota_pub_uji) == OTA_OK);
+    // P7-4: isi app OTA_APP_MAX + 1 ditolak ota_check sendiri (sebelum tanda tangan).
+    b = load(D "/app4k.bmo", &n);
+    CHECK(b != NULL && n == OTA_PREFIX + OTA_APP_MAX);
+    if (b) {
+        uint8_t *x = malloc(n + 1);
+
+        CHECK(x != NULL);
+        if (x) {
+            memcpy(x, b, n);
+            x[n] = 0x90;
+            x[16] = (uint8_t)((OTA_APP_MAX + 1) & 0xFF);
+            x[17] = (uint8_t)((OTA_APP_MAX + 1) >> 8);
+            x[18] = 0;
+            x[19] = 0;
+            CHECK(ota_check(x, n + 1, ota_pub_uji, &inf) == OTA_ERR_UKURAN);
+            free(x);
+        }
+        free(b);
+    }
     CHECK(check_file(D "/lain.bmo", g_pub_lain) == OTA_OK);
 }
 
@@ -162,7 +181,7 @@ static void test_reject(void)
     free(x);
     free(b);
 
-    CHECK(ota_max_size(OTA_JENIS_KERNEL) == 1024 * 1024 && ota_max_size(OTA_JENIS_APP) == 4096 &&
+    CHECK(ota_max_size(OTA_JENIS_KERNEL) == 1024 * 1024 && ota_max_size(OTA_JENIS_APP) == 3968 &&
           ota_max_size(0) == 0 && ota_max_size(3) == 0);
     CHECK_STR(ota_strerror(OTA_ERR_TTD), "tanda tangan tidak sah");
     CHECK_STR(ota_strerror(-99), "galat tidak dikenal");

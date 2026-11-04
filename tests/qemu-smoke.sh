@@ -282,14 +282,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=131   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*
+R3_N=132   # R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir ota_gagal" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^ota_gagal="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir app_versi" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^app_versi="'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -1011,6 +1011,10 @@ $OSIGN --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis kernel --versi 7 "$ROOT/bui
 $OSIGN --kunci "$OD/lain.pem" --jenis kernel --versi 8 "$OD/kecil.elf" "$OD/lain.bmo" >/dev/null
 $OSIGN --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis kernel --versi 0 "$OD/kecil.elf" "$OD/k0.bmo" >/dev/null
 $OSIGN --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis kernel --versi 9 "$OD/kecil.elf" "$OD/k9.bmo" >/dev/null
+# P7-4: APP.BIN bertanda tangan = appgema versi 5 (kunci uji; PROD menolak).
+$OSIGN --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis app --versi 5 "$ROOT/build/user/appgema.bin" "$OD/a5.bmo" >/dev/null
+ASZ5="$(stat -c %s "$ROOT/build/user/appgema.bin")"
+ASHA5="$(sha256sum "$ROOT/build/user/appgema.bin" | cut -c1-16)"
 KSZ="$(stat -c %s "$ROOT/build/kernel.elf")"
 K7SHA="$(sha256sum "$ROOT/build/kernel.elf" | cut -c1-16)"
 check "P7-2: serial boot: OTA.BIN dibuat kernel; ota siap berjalan=ISO aktif=B (limine.conf)" \
@@ -1075,21 +1079,37 @@ fi
 OT_D="$(ota_kirim "$OD/k9.bmo" --ota-sha16 0000000000000000)"
 check "P7-2: sha16 di perintah salah -> ERR sha256 file tidak cocok" \
     'echo "$OT_D" | grep -q "^ERR ota: sha256 file tidak cocok dengan perintah$"'
+# P7-4: ota terima app. Dev: v5 ditulis ke APP.BIN (dicek dari host + dimuat di boot
+# kelima), v5 lagi ditolak (anti-downgrade), kernel dikirim sebagai app ditolak.
+OT_G="$(ota_kirim "$OD/a5.bmo")"
+OT_H="$(ota_kirim "$OD/a5.bmo")"
+OT_I="$(ota_kirim "$OD/k9.bmo" --ota-jenis app)"
+OT_J="$(ota_kirim "$OD/a5.bmo" --ota-jenis kernel)"   # review: app sebagai kernel
+echo "$OT_G" | sed "s/^/info  ota a5: /"
+if [ "$OTA_KUNCI" = uji ]; then
+    check "P7-4: ota terima app v5 -> APP.BIN ditulis + dibaca balik, berlaku setelah reboot" \
+        'echo "$OT_G" | grep -q "^OK ota: kirim $((ASZ5 + 128)) byte ke port 7781 dalam 60 s (APP.BIN)$" && echo "$OT_G" | grep -q "^OK ota: APP.BIN versi 5 ukuran $ASZ5 sha256 $ASHA5 ditulis + dibaca balik; berlaku setelah reboot$" && grep -aq "^P7: ota terima $((ASZ5 + 128)) byte APP.BIN dari " "$LOG"'
+    check "P7-4: app v5 kedua -> versi <= APP.BIN ditolak; kernel sebagai app / app sebagai kernel -> isi bukan app / kernel" \
+        'echo "$OT_H" | grep -q "^ERR ota: versi 5 <= versi APP.BIN (5), ditolak$" && echo "$OT_I" | grep -q "^ERR ota: isi bukan app$" && echo "$OT_J" | grep -q "^ERR ota: isi bukan kernel$"'
+else
+    check "P7-4: PROD: app bertanda tangan kunci uji -> ERR tanda tangan (4x)" \
+        'echo "$OT_G" | grep -q "^ERR ota: tanda tangan tidak sah$" && echo "$OT_H" | grep -q "^ERR ota: tanda tangan tidak sah$" && echo "$OT_I" | grep -q "^ERR ota: tanda tangan tidak sah$" && echo "$OT_J" | grep -q "^ERR ota: tanda tangan tidak sah$"'
+fi
 OT_E="$(ota_kirim "$OD/k9.bmo" --ota-potong 1000)"
 check "P7-2: file terpotong (FIN setelah 1000 byte) -> ERR koneksi ditutup" \
     'echo "$OT_E" | grep -q "^ERR ota: koneksi 7781 ditutup setelah 1000 dari $(stat -c %s "$OD/k9.bmo") byte$"'
 sleep 2.5
-OT_F="$($BMT --key "$KEY" ota "metrics ota_" "ota terima kernel 3256 0123456789abcdef" "ota terima kernel 3256 0123456789abcdef" "ota terima app 300 0123456789abcdef" "ota terima kernel 99 0123456789abcdef" "ota terima kernel 3256 xyz" 2>&1)"
+OT_F="$($BMT --key "$KEY" ota "metrics ota_" "ota terima kernel 3256 0123456789abcdef" "ota terima kernel 3256 0123456789abcdef" "ota terima app 4097 0123456789abcdef" "ota terima kernel 99 0123456789abcdef" "ota terima kernel 3256 xyz" "ota terima apps 300 0123456789abcdef" 2>&1)"
 echo "$OT_F" | sed "s/^/info  ota: /"
 if [ "$OTA_KUNCI" = uji ]; then
-    check "P7-2: ota status: slot A sah versi 7, OTA.BIN seq 2; metrics terima 5 ok 1 gagal 4" \
-        'echo "$OT_F" | head -1 | grep -q "^ota: berjalan=ISO aktif=B (limine.conf) OTA.BIN=OTA.BIN seq=2$" && echo "$OT_F" | grep -q "^slot A: sah versi=7 ukuran=$KSZ sha256=$K7SHA$" && echo "$OT_F" | grep -q "^slot B: tanpa-catatan versi=0" && echo "$OT_F" | grep -q "^terakhir: ERR ota: koneksi 7781 ditutup" && echo "$OT_F" | grep -A3 "^ota_terima=" | tr "\n" " " | grep -q "^ota_terima=5 ota_ok=1 ota_gagal=4 "'
+    check "P7-2: ota status: slot A sah versi 7, OTA.BIN seq 2 (app tidak menyentuh); metrics terima 9 ok 2 gagal 7" \
+        'echo "$OT_F" | head -1 | grep -q "^ota: berjalan=ISO aktif=B (limine.conf) OTA.BIN=OTA.BIN seq=2$" && echo "$OT_F" | grep -q "^slot A: sah versi=7 ukuran=$KSZ sha256=$K7SHA$" && echo "$OT_F" | grep -q "^slot B: tanpa-catatan versi=0" && echo "$OT_F" | grep -q "^terakhir: ERR ota: koneksi 7781 ditutup" && echo "$OT_F" | grep -A3 "^ota_terima=" | tr "\n" " " | grep -q "^ota_terima=9 ota_ok=2 ota_gagal=7 "'
 else
-    check "P7-2: PROD: slot A tetap tanpa-catatan, OTA.BIN tidak ditulis; terima 5 ok 0 gagal 5" \
-        'echo "$OT_F" | head -1 | grep -q "OTA.BIN=kosong seq=0$" && echo "$OT_F" | grep -q "^slot A: tanpa-catatan versi=0 ukuran=0" && echo "$OT_F" | grep -A3 "^ota_terima=" | tr "\n" " " | grep -q "^ota_terima=5 ota_ok=0 ota_gagal=5 "'
+    check "P7-2: PROD: slot A tetap tanpa-catatan, OTA.BIN tidak ditulis; terima 9 ok 0 gagal 9" \
+        'echo "$OT_F" | head -1 | grep -q "OTA.BIN=kosong seq=0$" && echo "$OT_F" | grep -q "^slot A: tanpa-catatan versi=0 ukuran=0" && echo "$OT_F" | grep -A3 "^ota_terima=" | tr "\n" " " | grep -q "^ota_terima=9 ota_ok=0 ota_gagal=9 "'
 fi
-check "P7-2: ota terima kedua -> sibuk; app belum didukung; ukuran/sha16 salah -> ERR" \
-    'echo "$OT_F" | grep -q "^OK ota: kirim 3256 byte ke port 7781 dalam 60 s (slot A)$" && echo "$OT_F" | grep -q "^ERR: ota sibuk (menunggu koneksi 7781)$" && echo "$OT_F" | grep -q "^ERR: ota terima app belum didukung (P7-4)$" && echo "$OT_F" | grep -q "^ERR: ukuran harus 129..1048704 byte$" && echo "$OT_F" | grep -q "^ERR: format: ota terima kernel <ukuran> <sha16>$"'
+check "P7-2: ota terima kedua -> sibuk; ukuran kernel/app (4096) dan sha16/jenis salah -> ERR" \
+    'echo "$OT_F" | grep -q "^OK ota: kirim 3256 byte ke port 7781 dalam 60 s (slot A)$" && echo "$OT_F" | grep -q "^ERR: ota sibuk (menunggu koneksi 7781)$" && echo "$OT_F" | grep -q "^ERR: ukuran harus 129..4096 byte$" && echo "$OT_F" | grep -q "^ERR: ukuran harus 129..1048704 byte$" && [ "$(echo "$OT_F" | grep -c "^ERR: format: ota terima kernel|app <ukuran> <sha16>$")" -eq 2 ]'
 sleep 2.5
 OT_FS="$($BMT --key "$KEY" "tulis KERNA.ELF x" "hapus OTA.BIN" "ganti KERNB.ELF X.ELF" 2>&1)"
 check "P7-2: KERNA/KERNB.ELF dan OTA.BIN dilindungi dari tulis/hapus/ganti" \
@@ -1100,16 +1120,19 @@ OT_P3="$($BMT --key "$KEY" "ota coba" "ota sah" "ota batal" "ota xyz" 2>&1)"
 sleep 2.5
 OT_P3RO="$($BMT --key "$ROKEY" "ota coba" "ota sah" "ota batal" 2>&1)"
 check "P7-3: boot ISO: ota coba -> ERR butuh boot dari disk; sah/batal tanpa percobaan -> ERR" \
-    'echo "$OT_P3" | grep -q "^ERR: ota coba butuh boot dari disk (kini berjalan dari ISO)$" && echo "$OT_P3" | grep -q "^ERR: tidak ada boot percobaan yang berjalan$" && echo "$OT_P3" | grep -q "^ERR: tidak ada percobaan$" && echo "$OT_P3" | grep -q "^ERR: format: ota | ota terima kernel <ukuran> <sha16> | ota coba|sah|batal$"'
+    'echo "$OT_P3" | grep -q "^ERR: ota coba butuh boot dari disk (kini berjalan dari ISO)$" && echo "$OT_P3" | grep -q "^ERR: tidak ada boot percobaan yang berjalan$" && echo "$OT_P3" | grep -q "^ERR: tidak ada percobaan$" && echo "$OT_P3" | grep -q "^ERR: format: ota | ota terima kernel|app <ukuran> <sha16> | ota coba|sah|batal$"'
 check "P7-3: read-only: ota coba/sah/batal -> ERR peran read-only" \
     '[ "$(echo "$OT_P3RO" | grep -c "^ERR: peran read-only$")" -eq 3 ]'
 
 sleep 1.2
-# P5-4: disk boot pertama tanpa APP.BIN (boot kelima memuatnya).
+# P5-4: disk boot pertama tanpa APP.BIN saat boot (P7-4 dev: APP.BIN v5 sudah ditulis
+# OTA, berlaku setelah reboot; boot kelima memuatnya).
 AP_ST="$($BM app 2>&1)"
 AP_M="$($BM "metrics app_" 2>&1)"
-check "P5-4: tanpa APP.BIN: baris serial, app, metrics app_* = 0" \
-    'grep -aq "^P5-4: APP.BIN tidak ada" "$LOG" && ! grep -aq "^P5-4: APP.BIN tidak ada (tanpa disk)" "$LOG" && [ "$AP_ST" = "app: tidak ada" ] && [ "$AP_M" = "$(printf "app_loaded=0\napp_size=0\napp_exit=0")" ]'
+AP_WANT="app: tidak ada"
+[ "$OTA_KUNCI" = uji ] && AP_WANT="$(printf "app: tidak ada\nbaru: APP.BIN versi 5 ditulis OTA, berlaku setelah reboot")"
+check "P5-4: tanpa APP.BIN: baris serial, app (+ baris baru P7-4 dev), metrics app_* = 0" \
+    'grep -aq "^P5-4: APP.BIN tidak ada" "$LOG" && ! grep -aq "^P5-4: APP.BIN tidak ada (tanpa disk)" "$LOG" && [ "$AP_ST" = "$AP_WANT" ] && [ "$AP_M" = "$(printf "app_loaded=0\napp_size=0\napp_exit=0\napp_versi=0")" ]'
 
 sleep 1.2   # jendela batas laju baru (lihat di atas)
 # P3-4: dhcp=1 untuk boot kedua (qemu-rawnet.py berperan sebagai server DHCP, lalu
@@ -1166,6 +1189,19 @@ else
     check "P7-2: PROD: KERNA.ELF dan OTA.BIN tidak berubah (nol)" \
         'cmp -s "$WORK/kerna.out" "$WORK/KSLOT.ELF" && cmp -s "$WORK/ota.out" "$WORK/OTA.BIN"'
 fi
+# P7-4: APP.BIN hasil OTA (dev) = a5.bmo; diganti file acak 4097 byte (> batas file
+# 4096) supaya boot 2-4 tidak menjalankan appgema (tabel soket dev penuh) dan boot
+# kedua menguji penolakan ukuran; boot kelima memakai salinan a5.bmo.
+rm -f "$WORK/app-ota.bmo"
+mcopy -n -i "$DISK" ::APP.BIN "$WORK/app-ota.bmo" 2>/dev/null
+if [ "$OTA_KUNCI" = uji ]; then
+    check "P7-4: APP.BIN dari host = a5.bmo utuh" 'cmp -s "$WORK/app-ota.bmo" "$OD/a5.bmo"'
+else
+    check "P7-4: PROD: APP.BIN tidak dibuat (mdir root berhasil, tanpa APP.BIN)" \
+        'mdir -b -i "$DISK" :: >"$WORK/mdir1.out" 2>&1 && grep -q "KEY.TXT" "$WORK/mdir1.out" && ! grep -qi "APP.BIN" "$WORK/mdir1.out"'
+fi
+head -c 4097 /dev/urandom > "$WORK/app-besar.bin"
+mcopy -o -i "$DISK" "$WORK/app-besar.bin" ::APP.BIN
 check "D7: mtype CONFIG.CFG kanonik; CONFIG.TMP/HAPUS.TXT/GANTI.TXT tidak ada; GANTI2.TXT ada" \
     'mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1 && ! mtype -i "$DISK" ::HAPUS.TXT >/dev/null 2>&1 && ! mtype -i "$DISK" ::GANTI.TXT >/dev/null 2>&1 && [ "$(mtype -i "$DISK" ::GANTI2.TXT)" = "isi ganti" ]'
 
@@ -1186,6 +1222,8 @@ if [ "$OTA_KUNCI" = uji ]; then
     check "P7-2: boot kedua membaca OTA.BIN: aktif B (OTA.BIN), slot A v7" \
         'grep -aq "^P7: ota siap berjalan=ISO aktif=B (OTA.BIN) OTA.BIN=OTA.BIN slot A v7 slot B v0" "$WORK/serial-rawnet.log"'
 fi
+check "P5-4/P7-4: boot kedua: APP.BIN 4097 byte ditolak (lebih dari 4096 byte), tidak dijalankan" \
+    'grep -aq "^P5-4: APP.BIN ditolak (lebih dari 4096 byte)" "$WORK/serial-rawnet.log" && ! grep -aq "^P5-4: APP.BIN dimuat" "$WORK/serial-rawnet.log"'
 # D7: boot kedua menulis CONFIG.CFG lewat UDP (set echo/udp_rate, dikembalikan).
 check "D7: setelah boot kedua: fsck.fat -n bersih, CONFIG.CFG kanonik" \
     'fsck.fat -n "$DISK" >"$WORK/fsck2.out" 2>&1 && mtype -i "$DISK" ::CONFIG.CFG | cmp -s - "$WORK/config2.want" && ! mtype -i "$DISK" ::CONFIG.TMP >/dev/null 2>&1'
@@ -1240,7 +1278,36 @@ APPBIN="$ROOT/build/user/appgema.bin"
 ADISK="$WORK/disk-app.img"
 ALOG="$WORK/serial-app.log"
 cp "$DISK" "$ADISK"
-mcopy -o -i "$ADISK" "$APPBIN" ::APP.BIN
+# P7-4: dev = APP.BIN yang ditulis OTA di boot 1 (a5.bmo bila tidak ada; cek P7-4 di
+# atas sudah gagal); PROD = a5.bmo (kunci uji) -> harus ditolak saat boot.
+A_FILE="$WORK/app-ota.bmo"
+[ -s "$A_FILE" ] || A_FILE="$OD/a5.bmo"
+mcopy -o -i "$ADISK" "$A_FILE" ::APP.BIN
+# P7-4 (review): tanpa KERNA.ELF -> OTA mati; `ota terima app` harus tetap jalan.
+mdel -i "$ADISK" ::KERNA.ELF
+# P7-4 (temuan VMware): sektor root (16 entri) tempat APP.BIN dipenuhi supaya penggantian
+# lewat OTA tidak bisa memakai slot baru di sektor itu. mcopy mengisi slot kosong terendah
+# (bisa di sektor lain dulu), jadi diulang sampai sektor APP.BIN tanpa slot kosong.
+a_free() {
+python3 - "$ADISK" <<'AEOF'
+import struct, sys
+f = open(sys.argv[1], "rb"); b = f.read(512)
+bps, spc, rsv, nf = struct.unpack_from("<HBHB", b, 11)
+fsz, rc = struct.unpack_from("<I", b, 36)[0], struct.unpack_from("<I", b, 44)[0]
+f.seek((rsv + nf * fsz + (rc - 2) * spc) * bps); r = f.read(spc * bps)
+n = [r[i*32:i*32+11] for i in range(len(r) // 32)]
+s = n.index(b"APP     BIN") // 16 * 16
+print(sum(1 for i in range(s, s + 16) if n[i][0] in (0, 0xE5)))
+AEOF
+}
+: > "$WORK/kosong.txt"
+A_FILL=0
+while [ "$(a_free)" -gt 0 ] && [ "$A_FILL" -lt 40 ]; do
+    A_FILL=$((A_FILL + 1))
+    mcopy -i "$ADISK" "$WORK/kosong.txt" "::PENUH$A_FILL.TXT"
+done
+A_FREE="$(a_free)"
+echo "info  P7-4: sektor root APP.BIN dipenuhi ($A_FILL file kosong, sisa slot kosong $A_FREE)"
 A_SZ="$(stat -c %s "$APPBIN")"
 A_SHA="$(sha256sum "$APPBIN" | cut -c1-64)"
 A_SLOT=13
@@ -1251,7 +1318,7 @@ cp "$OVMF_VARS" "$WORK/vars-app.fd"
     -drive if=pflash,format=raw,file="$WORK/vars-app.fd" \
     -cdrom "$ISO" \
     -drive id=d0,file="$ADISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
-    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=udp:127.0.0.1:$UPORT-192.168.50.200:5555,hostfwd=tcp:127.0.0.1:$APORT-192.168.50.200:5558 \
+    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=udp:127.0.0.1:$UPORT-192.168.50.200:5555,hostfwd=tcp:127.0.0.1:$APORT-192.168.50.200:5558,hostfwd=tcp:127.0.0.1:$CPORT-192.168.50.200:7779,hostfwd=tcp:127.0.0.1:$OPORT-192.168.50.200:7781 \
     -device e1000,netdev=n0 \
     -vga none -display none -serial file:"$ALOG" -no-reboot \
     >"$WORK/qemu-app.out" 2>&1 &
@@ -1261,6 +1328,10 @@ QPID=$!
 A_WAIT_U=1
 grep -q "PROD: task uji dilewati" "$LOG" && A_WAIT_U=0
 for _ in $(seq 1 "$BOOT_TIMEOUT"); do
+    if [ "$OTA_KUNCI" != uji ]; then   # P7-4 PROD: APP.BIN ditolak, tunggu net task saja
+        grep -aq "^P5-4: APP.BIN ditolak" "$ALOG" 2>/dev/null && grep -aq "R5: watchdog aktif" "$ALOG" &&
+            grep -aq "Entropi: siap" "$ALOG" && break
+    fi
     grep -aq "^P5: appgema siap port 5558" "$ALOG" 2>/dev/null && grep -aq "Entropi: siap" "$ALOG" &&
         { [ "$A_WAIT_U" = 0 ] || grep -aq "^P5: udpgema siap port 5555" "$ALOG"; } && break
     kill -0 "$QPID" 2>/dev/null || break
@@ -1280,25 +1351,49 @@ A_K="$(TCPORT=$APORT tgema keluar lagi 2>&1)"
 sleep 0.5
 A_ST2="$($BM app 2>&1)"
 A_M2="$($BM "metrics app_" 2>&1)"
+# P7-4: tanpa slot (KERNA.ELF dihapus). Dev: v5 lagi ditolak (baseline = versi APP.BIN
+# yang dibaca saat boot), lalu v5 -> v6 saat sektor root APP.BIN penuh. PROD: kiriman
+# kunci uji ditolak (perintahnya tetap diterima tanpa slot).
+$OSIGN --kunci "$ROOT/tests/ota/ota-uji.pem" --jenis app --versi 6 "$APPBIN" "$OD/a6.bmo" >/dev/null
+if [ "$OTA_KUNCI" = uji ]; then
+    A_O0="$(ota_kirim "$OD/a5.bmo")"
+fi
+A_O="$(ota_kirim "$OD/a6.bmo")"
+sleep 1.2
+A_OS="$($BM ota 2>&1)"
+A_ST3="$($BM app 2>&1)"
 kill "$QPID" 2>/dev/null
 wait "$QPID" 2>/dev/null
 echo "info  P5-4: $(echo "$A_ST" | head -1) | $(echo "$A_T $A_K $A_ST2" | tr '\n' '|')"
-check "P5-4: serial: APP.BIN dimuat (ukuran, sha256 = host, slot $A_SLOT), tanpa FATAL" \
-    'grep -aq "^P5-4: APP.BIN dimuat $A_SZ byte sha256=$A_SHA slot $A_SLOT" "$ALOG" && ! grep -aq "FATAL" "$ALOG"'
-check "P5-4: app jalan + sha256; metrics app_loaded=1 app_size app_exit=0" \
-    '[ "$A_ST" = "$(printf "app: dimuat %s byte slot %s jalan\nsha256=%s" "$A_SZ" "$A_SLOT" "$A_SHA")" ] && [ "$A_M" = "$(printf "app_loaded=1\napp_size=%s\napp_exit=0" "$A_SZ")" ]'
 check "P5-4: APP.BIN dilindungi dari perintah fs" '[ "$A_FS" = "ERR: fs: nama dilindungi" ]'
+if [ "$OTA_KUNCI" = uji ]; then
+check "P5-4/P7-4: serial: APP.BIN .bmo dimuat (ukuran isi, versi 5, sha256 isi = host, slot $A_SLOT), tanpa FATAL" \
+    'grep -aq "^P5-4: APP.BIN dimuat $A_SZ byte versi 5 sha256=$A_SHA slot $A_SLOT" "$ALOG" && ! grep -aq "FATAL" "$ALOG"'
+check "P5-4: app jalan + versi + sha256; metrics app_loaded=1 app_size app_exit=0 app_versi=5" \
+    '[ "$A_ST" = "$(printf "app: dimuat %s byte versi 5 slot %s jalan\nsha256=%s" "$A_SZ" "$A_SLOT" "$A_SHA")" ] && [ "$A_M" = "$(printf "app_loaded=1\napp_size=%s\napp_exit=0\napp_versi=5" "$A_SZ")" ]'
 check "P5-4: gema TCP 5558 dari program disk: teks, 3000 byte utuh, FIN -> recv 0" \
     '[ "$A_T" = "$(printf "halo P5-2\nlen=3000 cocok\neof")" ] && grep -aq "^P5: appgema recv 0 (FIN), total 3010$" "$ALOG"'
 check "P5-4: keluar -> program berhenti, 5558 ditolak, app berhenti, app_exit=1, tanpa restart" \
-    '[ "$A_K" = "$(printf "keluar=tutup\nlagi=ditolak")" ] && grep -aq "^P5: appgema selesai$" "$ALOG" && [ "$A_ST2" = "$(printf "app: dimuat %s byte slot %s berhenti\nsha256=%s" "$A_SZ" "$A_SLOT" "$A_SHA")" ] && [ "$A_M2" = "$(printf "app_loaded=1\napp_size=%s\napp_exit=1" "$A_SZ")" ] && [ "$(grep -ac "^P5-4: APP.BIN dimuat" "$ALOG")" -eq 1 ]'
+    '[ "$A_K" = "$(printf "keluar=tutup\nlagi=ditolak")" ] && grep -aq "^P5: appgema selesai$" "$ALOG" && [ "$A_ST2" = "$(printf "app: dimuat %s byte versi 5 slot %s berhenti\nsha256=%s" "$A_SZ" "$A_SLOT" "$A_SHA")" ] && [ "$A_M2" = "$(printf "app_loaded=1\napp_size=%s\napp_exit=1\napp_versi=5" "$A_SZ")" ] && [ "$(grep -ac "^P5-4: APP.BIN dimuat" "$ALOG")" -eq 1 ]'
+check "P7-4: tanpa slot: ota mati; v5 lagi -> ditolak (baseline dari APP.BIN saat boot); ota/app setelah v6" \
+    'grep -aq "^P7: ota mati (KERNA.ELF tidak ada / bukan 1 MB)" "$ALOG" && echo "$A_O0" | grep -q "^ERR ota: versi 5 <= versi APP.BIN (5), ditolak$" && echo "$A_OS" | head -1 | grep -q "^ota: mati (KERNA.ELF tidak ada / bukan 1 MB)$" && echo "$A_OS" | grep -q "^terima: diam$" && echo "$A_OS" | grep -q "^terakhir: OK ota: APP.BIN versi 6 " && echo "$A_ST3" | grep -q "^baru: APP.BIN versi 6 ditulis OTA, berlaku setelah reboot$"'
+check "P7-4: sektor root APP.BIN penuh ($A_FILL file): ota terima app v6 OK; dari host APP.BIN = a6.bmo, fsck bersih" \
+    '[ "$A_FREE" = 0 ] && echo "$A_O" | grep -q "^OK ota: APP.BIN versi 6 ukuran $A_SZ " && mcopy -n -i "$ADISK" ::APP.BIN "$WORK/app-a6.out" && cmp -s "$WORK/app-a6.out" "$OD/a6.bmo" && fsck.fat -n "$ADISK" >/dev/null 2>&1'
+else
+check "P7-4: PROD: APP.BIN kunci uji ditolak saat boot (satu baris), app ditolak, metrics app_* = 0" \
+    '[ "$(grep -ac "^P5-4: APP.BIN ditolak (tanda tangan tidak sah)" "$ALOG")" -eq 1 ] && ! grep -aq "^P5-4: APP.BIN dimuat" "$ALOG" && ! grep -aq "^P5: appgema" "$ALOG" && [ "$A_ST" = "app: ditolak (tanda tangan tidak sah)" ] && [ "$A_M" = "$(printf "app_loaded=0\napp_size=0\napp_exit=0\napp_versi=0")" ] && ! grep -aq "FATAL" "$ALOG"'
+check "P7-4: PROD: program yang ditolak tidak melayani TCP 5558 (gema gagal)" \
+    '! echo "$A_T" | grep -q "len=3000 cocok" && ! grep -aq "appgema recv" "$ALOG"'
+check "P7-4: PROD: tanpa slot: ota mati, ota terima app diterima, kiriman kunci uji -> ERR tanda tangan" \
+    'echo "$A_OS" | head -1 | grep -q "^ota: mati (KERNA.ELF tidak ada / bukan 1 MB)$" && echo "$A_O" | grep -q "^OK ota: kirim $(stat -c %s "$OD/a6.bmo") byte ke port 7781 dalam 60 s (APP.BIN)$" && echo "$A_O" | grep -q "^ERR ota: tanda tangan tidak sah$"'
+fi
 check "P5-4: boot APP.BIN tanpa exception" '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$ALOG"'
 
-# P5-4: boot keenam: APP.BIN 5000 byte (> 1 halaman) ditolak, boot berlanjut.
+# P5-4/P7-4: boot keenam: APP.BIN mentah (appgema.bin tanpa tanda tangan, format P5-4
+# lama) ditolak, boot berlanjut. Batas ukuran file (4096) diuji di boot kedua.
 echo
-echo "boot keenam: APP.BIN terlalu besar..."
-head -c 5000 /dev/urandom > "$WORK/app-besar.bin"
-mcopy -o -i "$ADISK" "$WORK/app-besar.bin" ::APP.BIN
+echo "boot keenam: APP.BIN tanpa tanda tangan..."
+mcopy -o -i "$ADISK" "$APPBIN" ::APP.BIN
 OLOG="$WORK/serial-app2.log"
 cp "$OVMF_VARS" "$WORK/vars-app2.fd"
 "$QEMU" -machine q35 -m 512M -cpu max \
@@ -1316,8 +1411,8 @@ for _ in $(seq 1 "$BOOT_TIMEOUT"); do
 done
 kill "$QPID" 2>/dev/null
 wait "$QPID" 2>/dev/null
-check "P5-4: APP.BIN 5000 byte ditolak, tidak dijalankan, scheduler tetap jalan" \
-    'grep -aq "^P5-4: APP.BIN ditolak (lebih dari 4096 byte)" "$OLOG" && ! grep -aq "^P5-4: APP.BIN dimuat" "$OLOG" && ! grep -aq "FATAL" "$OLOG" && grep -aq "RX belum di-init, net task berhenti" "$OLOG"'
+check "P7-4: APP.BIN mentah ditolak (satu baris), tidak dijalankan, scheduler tetap jalan" \
+    '[ "$(grep -ac "^P5-4: APP.BIN ditolak (bukan .bmo bertanda tangan)" "$OLOG")" -eq 1 ] && ! grep -aq "^P5-4: APP.BIN dimuat" "$OLOG" && ! grep -aq "FATAL" "$OLOG" && grep -aq "RX belum di-init, net task berhenti" "$OLOG"'
 
 # R1: panic handler (build dev saja). Satu QEMU TANPA -no-reboot: panic pf ->
 # reboot otomatis -> panic df (RSP rusak, harus lewat IST1) -> reboot -> panic
@@ -1326,6 +1421,8 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     echo
     echo "boot keempat: uji panic pf/df/assert (~2 menit)..."
     PLOG="$WORK/serial-panic.log"
+    # P7-4 (review): APP.BIN = kernel bertanda tangan kunci uji -> "isi bukan app" tiap boot.
+    mcopy -o -i "$DISK" "$OD/k9.bmo" ::APP.BIN
     cp "$OVMF_VARS" "$WORK/vars-panic.fd"
     "$QEMU" -machine q35 -m 512M -cpu max \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
@@ -1505,6 +1602,8 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         '[ "$(grep -ac "^PANIC: watchdog: net task tanpa tepukan" "$WORK/netcon-wd.bin")" -eq 2 ] && [ "$(grep -c "^PANIC: watchdog: net task tanpa tepukan" "$WORK/log4.txt")" -eq 2 ]'
     check "R1: tanpa panic bersarang / PIT macet" \
         '! grep -qE "fault di dalam panic handler|PIT tidak berjalan|PANIC-UJI|WD-UJI" "$WORK/serial-panic-all.txt"'
+    check "P7-4: boot keempat: APP.BIN jenis kernel ditolak (isi bukan app) di ketujuh boot, tidak dijalankan" \
+        '[ "$(grep -c "^P5-4: APP.BIN ditolak (isi bukan app)$" "$WORK/serial-panic-all.txt")" -eq 7 ] && ! grep -q "^P5-4: APP.BIN dimuat" "$WORK/serial-panic-all.txt"'
 fi
 
 echo

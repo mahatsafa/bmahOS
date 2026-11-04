@@ -277,6 +277,7 @@ static const metric_t g_metrics[] = {
     M64("ota_terima", g_ota_terima),   // P7-2
     M64("ota_ok", g_ota_ok),
     M64("ota_gagal", g_ota_gagal),
+    M64("app_versi", g_app_versi),   // P7-4 (kunci baru selalu di akhir tabel)
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

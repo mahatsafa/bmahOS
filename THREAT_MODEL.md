@@ -65,7 +65,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Packet filter (P4) | Aturan salah mengunci admin, FILTER.CFG dimanipulasi lewat disk, aturan dilewati dengan IP palsu | Parser ketat (satu baris salah -> tanpa aturan + catatan serial), maks 16 aturan statis, hanya admin yang mengubah (tercatat di audit), tulis atomik lewat FILTER.TMP, FILTER.CFG dilindungi dari `tulis`/`hapus`; TCP 7780 selalu lolos; hanya koneksi baru yang diperiksa |
 | Netconsole UDP (R2) | Log polos di LAN, tujuan dibelokkan lewat ARP palsu, banjir log | Bawaan mati; hanya baris ring log (tanpa AUDIT, tanpa register umum panic, tanpa teks perintah/kunci); tujuan hanya di /24 sendiri; antrean statis 4 KB, maks 20 datagram/s, penuh -> baris dibuang + penanda; tidak ada data masuk yang diproses selain ARP dari IP tujuan |
 | Loader program | Biner jahat | NX, isolasi per task, validasi header sebelum dimuat |
-| Program dari disk APP.BIN (P5-4) | Biner diganti di disk, ukuran/isi rusak menghentikan boot | Hanya dibaca saat boot lewat jalur baca FAT32 tervalidasi; 1..4096 byte dan slot task dicek sebelum `spawn()`, gagal -> tidak dijalankan, boot lanjut; berjalan di ring 3 dengan isolasi + NX + batas soket yang sama dengan program lain; APP.BIN ditolak semua perintah fs (tidak bisa ditulis lewat jaringan); sha256 dicatat di serial dan `app`; tanpa restart otomatis |
+| Program dari disk APP.BIN (P5-4, P7-4) | Biner diganti di disk, ukuran/isi rusak menghentikan boot | Hanya dibaca saat boot lewat jalur baca FAT32 tervalidasi; P7-4: wajib file .bmo bertanda tangan ECDSA P-256 kunci OTA build itu (dev: kunci uji, PROD: kunci asli), sha256 isi + jenis app dicek, file <= 4096 byte (isi <= 3968) dan slot task dicek sebelum `spawn()`, gagal -> tidak dijalankan, boot lanjut; berjalan di ring 3 dengan isolasi + NX + batas soket yang sama dengan program lain; APP.BIN ditolak semua perintah fs, diganti hanya lewat `ota terima app` (admin, tanda tangan, anti-downgrade); sha256 + versi dicatat di serial dan `app`; tanpa restart otomatis |
 | Syscall | Pointer jahat dari user mode | Validasi pointer (R6) |
 | Soket UDP user (P5-1) | Program user menghabiskan soket/antrean, mengirim ke mana saja, membaca port sistem; datagram jaringan ke program | Maks 4 soket statis, antrean 4 x 1472 per soket (penuh -> buang), fd hanya milik task pembuat dan ditutup saat task mati; bind hanya 1024..49151 selain port sistem; kirim hanya ke /24 sendiri (bukan .0/.255/diri sendiri), maks 1472 byte, lewat net task; semua pointer user dicek (buf, cap, alamat 8 byte writable); datagram masuk lewat filter P4, batas laju UDP per IP + global, dan checksum seperti port sistem |
 | Klien TCP user (P5-3) | Program membuka koneksi ke host LAN mana pun, menghabiskan slot/port, memalsukan keadaan TCB lewat syscall | `connect` hanya ke /24 sendiri (bukan .0/.255/diri sendiri), memakai 2 slot TCB user yang sama (penuh -> `-24`, tanpa menggusur), port lokal acak dari kernel (tidak bisa dipilih program); slot, port, ISN, dan SYN hanya diurus net task; SYN-ACK dicek ACK = ISN + 1 (selain itu RST), RST hanya diterima bila ACK sah; percobaan berakhir paling lama ~31 s |
@@ -85,7 +85,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Entropi nonce | Ada (F1.8): kolam SHA-256 + HMAC-DRBG, tolak sebelum 256 bit; rdseed/rdrand dipercaya | Nilai ulang jitter di perangkat keras asli (H0) |
 | Otorisasi berbasis peran | Ada (D4): admin/read-only per kunci, TCP 7779 dan TLS 7780 | Kunci per pengguna |
 | Audit | Ada (D5): ring RAM (ok 16, gagal 8; banjir gagal tidak menimpa ring ok), IP:port + peran + perintah + tick, juga ke serial; baca `audit` hanya admin. Log persisten R4 sengaja TIDAK memuat baris AUDIT (bisa dibaca read-only) | Waktu nyata (P3); audit persisten terpisah (khusus admin) bila dibutuhkan |
-| Integritas update | Belum ada OTA | P7 |
+| Integritas update | Ada (P7): kernel A/B dan APP.BIN wajib tanda tangan ECDSA P-256 (BearSSL; kunci privat PROD hanya di mesin dev), anti-downgrade (kernel: OTA.BIN; app: versi APP.BIN saat boot, RAM), boot percobaan 3x + rollback, sehat 60 s | Baseline versi app persisten (6. no. 23 d) |
 
 ## 6. Keterbatasan yang diketahui (diterima sementara)
 
@@ -170,14 +170,24 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    RST palsu; ISN 32 bit acak dan port 14 bit acak membuatnya sulit dari luar jalur, tetapi tidak dari dalam
    jalur (sama seperti TCP tanpa TLS di mana pun). Program yang mengulang `connect` ke host mati memegang satu
    slot sampai ~31 s per percobaan.
-23. APP.BIN (P5-4) tidak ditandatangani: siapa pun yang bisa menulis disk (akses fisik, atau OS lain di mesin
-   yang sama) bisa mengganti program yang dijalankan saat boot. Program itu tetap di ring 3 dan memakai socket
-   API (UDP/TCP ke /24 sendiri, port 1024..49151). Verifikasi tanda tangan direncanakan bersama P7 (OTA).
+23. APP.BIN (P5-4): sejak P7-4 wajib bertanda tangan (dev dan PROD), jadi penulis disk tanpa kunci privat
+   tidak bisa menjalankan program lain. Sisa: (a) program bertanda tangan versi LAMA bisa dipasang kembali
+   dengan menulis disk langsung (anti-downgrade hanya di `ota terima app`, bukan saat boot; tidak ada
+   penghitung versi di luar disk); (b) penulis disk bisa menghapus/merusak APP.BIN (program tidak jalan, sistem
+   tetap jalan); (c) image dev bertanda tangan kunci uji (publik di repo) hanya diterima build dev;
+   (d) baseline anti-downgrade `ota terima app` = versi APP.BIN sah yang dibaca saat boot (RAM): APP.BIN
+   hilang/rusak -> versi bertanda tangan mana pun diterima (sengaja, untuk pemulihan; bisa dipindah ke OTA.BIN);
+   (e) APP.BIN lama > 4096 byte / beratribut / rantai rusak tidak bisa ditimpa lewat OTA (lapisan tulis FAT32),
+   perlu akses disk; (f) kernel pra-P7-4 (slot lain, ISO lama, menu Limine) menjalankan .bmo sebagai biner
+   mentah -> crash ring 3 yang dihentikan R6; karena itu `ota terima app` ditolak selama percobaan kernel.
+   Program yang sah tetap di ring 3 dan memakai socket API (UDP/TCP ke /24 sendiri, port 1024..49151).
 24. Penerimaan OTA (P7-2): port 7781 hanya terbuka setelah `ota terima` admin, 60 s, satu koneksi, hanya IP sesi
    itu; data mentah tanpa TLS (isi kernel tidak rahasia, keaslian dari tanda tangan ECDSA, bukan dari kanal).
    Penyerang di LAN yang memalsukan IP admin bisa menyerobot koneksi 7781 dan mengirim sampah: hasilnya hanya
    penolakan (tanda tangan/sha16) dan admin mengulang. Satu penerimaan sekaligus (buffer statis 1 MB + 128);
    selama slot ditulis (beberapa detik) net task tetap jalan karena tulis/baca balik 32 sektor per putaran.
+   `ota terima app` (P7-4) memakai jalur yang sama; APP.BIN (<= 4096 byte) ditimpa dalam satu putaran net task
+   lewat jalur timpa D6 (crash sebelum tulis sektor entri: APP.BIN lama utuh, paling buruk cluster hilang).
    Anti-downgrade membandingkan versi dengan slot aktif di OTA.BIN; slot yang ditulis dari host = versi 0, jadi
    kernel bertanda tangan lama mana pun bisa dipasang sekali ke slot tidak aktif selama slot aktif belum
    dipasang lewat OTA. OTA.BIN tidak bertanda tangan (siapa pun yang bisa menulis disk bisa mengubahnya, sama

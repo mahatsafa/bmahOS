@@ -398,14 +398,29 @@ register umum dump panic), maks 160 karakter.
 - File kiriman `.bmo` (P7-1, `client/ota-sign.py`): header 64 byte + tanda tangan ECDSA P-256 64 byte + isi.
 - `ota` (admin dan read-only, juga UDP): `ota: berjalan=<A|B|ISO> aktif=<A|B> (<sumber>) OTA.BIN=<OTA.BIN|kosong|rusak>
   seq=<n>`, `slot A|B: <tanpa-catatan|sah|DITULIS(tidak lengkap)> versi= ukuran= sha256=<16 hex>`,
-  `terima: <diam|menunggu koneksi 7781 dari a.b.c.d (sisa N s) slot X|menerima n/N byte|menulis slot n/2048
-  sektor|...>`, `terakhir: <baris hasil terakhir>`. Tanpa slot di disk: `ota: mati (<alasan>)`.
+  `terima: <diam|menunggu koneksi 7781 dari a.b.c.d (sisa N s) <slot X|APP.BIN>|menerima n/N byte|menulis slot
+  n/2048 sektor|menulis APP.BIN|...>`, `terakhir: <baris hasil terakhir>`. Tanpa slot di disk: `ota: mati
+  (<alasan>)`, lalu tetap baris `terima:` dan `terakhir:` (P7-4: `ota terima app` jalan tanpa slot).
   Sumber aktif: OTA.BIN; bila kosong/rusak `default_entry` limine.conf, lalu cmdline, lalu A.
 - `ota terima kernel <ukuran> <sha16>` (admin, HANYA sesi TCP 7779 / TLS 7780; UDP -> `ERR: ota terima hanya
   lewat sesi TCP 7779 / TLS 7780`): ukuran = panjang file .bmo (129..1048704), sha16 = 16 hex pertama sha256
   seluruh file. Slot tujuan = bukan aktif dan bukan yang sedang berjalan. Balasan `OK ota: kirim N byte ke
-  port 7781 dalam 60 s (slot X)`; galat: `ERR: ota sibuk (...)`, `ERR: ota terima app belum didukung (P7-4)`,
-  `ERR: ukuran harus 129..1048704 byte`, `ERR: slot tujuan sedang berjalan`, `ERR: disk baca saja`, format.
+  port 7781 dalam 60 s (slot X)`; galat: `ERR: ota sibuk (...)`, `ERR: ukuran harus 129..1048704 byte`,
+  `ERR: slot tujuan sedang berjalan`, `ERR: disk baca saja`, `ERR: format: ota terima kernel|app <ukuran> <sha16>`.
+- `ota terima app <ukuran> <sha16>` (P7-4, admin, jalur sama): file .bmo jenis app, ukuran 129..4096 (isi maks 3968). Tidak butuh
+  slot/OTA.BIN; ditolak selama percobaan kernel tertunda (`ERR: percobaan slot X tertunda (ota sah / ota batal
+  dulu)`: rollback / `ota batal` bisa kembali ke kernel pra-P7-4 yang menjalankan .bmo sebagai biner mentah).
+  Balasan `OK ota: kirim N byte ke port 7781 dalam 60 s (APP.BIN)`; galat tambahan `ERR: disk tidak ada / baca
+  saja`. Setelah data lengkap: sha16 -> tanda tangan ->
+  jenis harus app (`ERR ota: isi bukan app`) -> versi harus > versi APP.BIN sah di disk (`ERR ota: versi V <=
+  versi APP.BIN (W), ditolak`; APP.BIN tidak ada / tidak sah -> versi apa pun) -> file utuh ditimpa (jalur timpa
+  D6: rantai baru + satu tulis sektor entri) -> dibaca balik dan dibandingkan -> `OK ota: APP.BIN versi V ukuran U sha256 <16 hex isi> ditulis +
+  dibaca balik; berlaku setelah reboot`. Galat tulis: `ERR ota: APP.BIN lama tidak bisa ditimpa (<alasan>), perlu
+  akses disk` (APP.BIN lama > 4096 byte / beratribut: lapisan tulis FAT32 hanya menyentuh file biasa <= 4096
+  byte), `ERR ota: tulis APP.BIN gagal (<alasan>)[; isi baru sudah di disk, berlaku setelah reboot]` (isi selalu
+  dibaca balik; bila isi baru sudah di disk, baseline versi ikut naik), `ERR ota: baca balik APP.BIN tidak
+  cocok`. Program yang sedang jalan tidak diganti; `app` menambah baris
+  `baru: APP.BIN versi V ditulis OTA, berlaku setelah reboot`.
 - TCP 7781: satu koneksi, hanya dari IP sesi itu, selama 60 s; selain itu RST. Koneksi 7781 sebelumnya
   yang masih menutup (mis. FIN_WAIT_2 karena klien belum menutup soket) di-RST saat SYN baru diterima,
   jadi tidak menghalangi kiriman berikutnya dan tidak dihitung batas 2 TCB per IP. Klien mengirim file mentah
@@ -420,7 +435,13 @@ register umum dump panic), maks 160 karakter.
   (512 byte) dibuat kernel saat boot bila belum ada (`P7: OTA.BIN dibuat (512 byte kosong)`). Keempatnya dilindungi
   dari `tulis`/`hapus`/`ganti`. OTA.BIN: magic `BMOTAST1`, seq, aktif, coba/sisa (P7-3), 2 x {status, versi,
   ukuran, sha256}, SHA-256 8 byte di akhir (lihat kernel/ota.c).
-- Metrics `ota_terima`, `ota_ok`, `ota_gagal`.
+- Metrics `ota_terima`, `ota_ok`, `ota_gagal` (kernel dan app).
+- APP.BIN (P7-4) = file .bmo utuh di root disk. Saat boot: tidak ada -> `P5-4: APP.BIN tidak ada`; > 4096 byte /
+  bukan .bmo / tanda tangan (kunci OTA build itu) / sha256 isi / jenis bukan app -> `P5-4: APP.BIN ditolak
+  (<alasan>)`, tidak dijalankan;
+  sah -> `P5-4: APP.BIN dimuat <isi> byte versi V sha256=<sha256 isi> slot S`, yang dijalankan hanya isinya.
+  `app`: `app: dimuat N byte versi V slot S jalan|berhenti` + `sha256=`. Metrics `app_versi` (0 bila tidak
+  dimuat; kunci terakhir tabel). APP.BIN dilindungi dari semua perintah fs.
 - Klien: `bmctl.py --tcp|--tls ... --ota FILE.bmo [--ota-port P]` (rc 0 hanya bila `OK ota`), PowerShell
   `bmota FILE.bmo` setelah `bmtcp`/`bmtls`.
 
@@ -449,6 +470,6 @@ register umum dump panic), maks 160 karakter.
   `OK ota: percobaan slot X dibatalkan, slot aktif Y; reboot` (reboot hanya bila slot coba sedang berjalan).
   Tanpa percobaan -> `ERR: tidak ada percobaan`.
 - `ota` menampilkan `coba: slot X sisa N[ (berjalan; dikukuhkan setelah sehat 60 s)]` selama ada percobaan;
-  status slot bisa `gagal`. `ota terima` ditolak selama percobaan tertunda.
+  status slot bisa `gagal`. `ota terima` (kernel dan, sejak P7-4, app) ditolak selama percobaan tertunda.
 - Uji: kernel bertanda tangan berisi penanda `P7UJI:panik` (skrip uji menambal string `P7UJI:sehat` di ELF
   sebelum ditandatangani) panic tepat setelah keputusan boot percobaan (`PANIC: P7: uji kernel rusak ...`).
