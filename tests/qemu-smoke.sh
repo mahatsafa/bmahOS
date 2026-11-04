@@ -99,10 +99,9 @@ assert len(t) == 512
 open(sys.argv[1], "w").write(t)
 LCEOF
 mcopy -i "$DISK" "$WORK/limine.conf" ::limine.conf
-# Penggantian atomik (CONFIG.CFG, FILTER.CFG: D7) butuh .TMP di SEKTOR root yang
-# sama (16 entri). Sektor pertama diisi penuh di sini (9 entri di atas + 7 pengisi),
+# Sektor root pertama (16 entri) diisi penuh di sini (9 entri di atas + 7 pengisi),
 # jadi file buatan kernel (OTA.BIN, CONFIG.CFG, ...) mulai di sektor kedua yang
-# kosong, seperti disk sebelum P7-2.
+# kosong, seperti disk sebelum P7-2. Sektor penuh diuji di boot kelima.
 for i in 1 2 3 4 5 6 7; do
     printf 'pengisi root %s\n' "$i" > "$WORK/ISI$i.TXT"
     mcopy -i "$DISK" "$WORK/ISI$i.TXT" "::ISI$i.TXT"
@@ -1285,9 +1284,10 @@ A_FILE="$WORK/app-ota.bmo"
 mcopy -o -i "$ADISK" "$A_FILE" ::APP.BIN
 # P7-4 (review): tanpa KERNA.ELF -> OTA mati; `ota terima app` harus tetap jalan.
 mdel -i "$ADISK" ::KERNA.ELF
-# P7-4 (temuan VMware): sektor root (16 entri) tempat APP.BIN dipenuhi supaya penggantian
-# lewat OTA tidak bisa memakai slot baru di sektor itu. mcopy mengisi slot kosong terendah
-# (bisa di sektor lain dulu), jadi diulang sampai sektor APP.BIN tanpa slot kosong.
+# P7-4 (temuan VMware): sektor root (16 entri) tempat APP.BIN, CONFIG.CFG dan FILTER.CFG
+# dipenuhi supaya penggantian (OTA, set, filter) tidak bisa memakai slot baru di sektor itu.
+# mcopy mengisi slot kosong terendah (bisa di sektor lain dulu), jadi diulang sampai
+# ketiga sektor tanpa slot kosong.
 a_free() {
 python3 - "$ADISK" <<'AEOF'
 import struct, sys
@@ -1296,8 +1296,11 @@ bps, spc, rsv, nf = struct.unpack_from("<HBHB", b, 11)
 fsz, rc = struct.unpack_from("<I", b, 36)[0], struct.unpack_from("<I", b, 44)[0]
 f.seek((rsv + nf * fsz + (rc - 2) * spc) * bps); r = f.read(spc * bps)
 n = [r[i*32:i*32+11] for i in range(len(r) // 32)]
-s = n.index(b"APP     BIN") // 16 * 16
-print(sum(1 for i in range(s, s + 16) if n[i][0] in (0, 0xE5)))
+t = 0
+for nama in (b"APP     BIN", b"CONFIG  CFG", b"FILTER  CFG"):
+    s = n.index(nama) // 16 * 16
+    t += sum(1 for i in range(s, s + 16) if n[i][0] in (0, 0xE5))
+print(t)
 AEOF
 }
 : > "$WORK/kosong.txt"
@@ -1362,6 +1365,8 @@ A_O="$(ota_kirim "$OD/a6.bmo")"
 sleep 1.2
 A_OS="$($BM ota 2>&1)"
 A_ST3="$($BM app 2>&1)"
+A_SET="$($BM "set cli_idle 601" 2>&1)"
+A_FLT="$($BM "filter tambah tolak udp 192.168.50.98 port 7777" 2>&1)"
 kill "$QPID" 2>/dev/null
 wait "$QPID" 2>/dev/null
 echo "info  P5-4: $(echo "$A_ST" | head -1) | $(echo "$A_T $A_K $A_ST2" | tr '\n' '|')"
@@ -1387,6 +1392,8 @@ check "P7-4: PROD: program yang ditolak tidak melayani TCP 5558 (gema gagal)" \
 check "P7-4: PROD: tanpa slot: ota mati, ota terima app diterima, kiriman kunci uji -> ERR tanda tangan" \
     'echo "$A_OS" | head -1 | grep -q "^ota: mati (KERNA.ELF tidak ada / bukan 1 MB)$" && echo "$A_O" | grep -q "^OK ota: kirim $(stat -c %s "$OD/a6.bmo") byte ke port 7781 dalam 60 s (APP.BIN)$" && echo "$A_O" | grep -q "^ERR ota: tanda tangan tidak sah$"'
 fi
+check "P7-4: sektor root penuh: set dan filter tersimpan tanpa file sementara, fsck bersih" \
+    '[ "$A_FREE" = 0 ] && [ "$A_SET" = "OK cli_idle=601 (tersimpan)" ] && echo "$A_FLT" | grep -q "^OK" && mtype -i "$ADISK" ::CONFIG.CFG | grep -q "^cli_idle=601" && mtype -i "$ADISK" ::FILTER.CFG | grep -q "192.168.50.98" && ! mtype -i "$ADISK" ::CONFIG.TMP >/dev/null 2>&1 && ! mtype -i "$ADISK" ::FILTER.TMP >/dev/null 2>&1 && fsck.fat -n "$ADISK" >/dev/null 2>&1'
 check "P5-4: boot APP.BIN tanpa exception" '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$ALOG"'
 
 # P5-4/P7-4: boot keenam: APP.BIN mentah (appgema.bin tanpa tanda tangan, format P5-4

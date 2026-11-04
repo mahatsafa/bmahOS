@@ -2,7 +2,7 @@
 
 // D7: konfigurasi persisten di CONFIG.CFG (root FAT32), dibaca sekali saat
 // boot (config_load, setelah auth_load_key) dan ditulis ulang utuh oleh
-// perintah admin `set` lewat fat32_replace_name (CONFIG.TMP lalu satu tulis
+// perintah admin `set` lewat fat32_replace_name (rantai baru lalu satu tulis
 // sektor). Format: teks ASCII, satu "kunci=nilai" per baris, LF (CR di
 // akhir baris dibuang), baris kosong dan "#..." diabaikan, maks
 // CFG_FILE_MAX byte. Satu baris salah -> SELURUH file ditolak, semua nilai

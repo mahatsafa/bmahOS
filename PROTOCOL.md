@@ -169,12 +169,11 @@ Hanya root directory (cluster root pertama), nama 8.3 `A-Z 0-9 _ -` (huruf kecil
   sampai reboot.
 - `hapus`: entri ditandai 0xE5 + flush -> rantai dibebaskan (FAT1, FAT2) -> FSInfo. `ganti`: satu tulis
   sektor (11 byte nama). Crash di tengah `hapus` = lost cluster saja.
-- Ganti isi atomik (dipakai `set`, D7; `fat32_replace_name`): file sementara sisa crash dihapus -> isi baru
-  ditulis ke file sementara (urutan di atas) di sektor direktori yang sama dengan file tujuan -> SATU tulis
-  sektor: entri tujuan menunjuk rantai baru dan entri sementara 0xE5 -> rantai lama dibebaskan -> FSInfo.
-  Crash: tujuan berisi isi lama utuh (file sementara mungkin tertinggal, dibersihkan `set` berikutnya) atau
-  isi baru utuh. Anggapan: satu tulis sektor 512 byte atomik. Sektor tujuan tanpa slot kosong ->
-  `direktori root penuh`.
+- Ganti isi atomik (dipakai `set` dan `filter`; `fat32_replace_name`): file sementara sisa kernel lama dihapus bila
+  bisa -> isi baru ke rantai baru (urutan di atas) -> SATU tulis sektor: entri tujuan menunjuk rantai baru ->
+  rantai lama dibebaskan -> FSInfo. Crash: tujuan berisi isi lama utuh atau isi baru utuh, paling buruk ada lost
+  cluster. Anggapan: satu tulis sektor 512 byte atomik. Tujuan yang sudah ada tidak butuh slot baru, jadi sektor
+  root penuh tidak menghalangi; tujuan baru pada root tanpa slot kosong -> `direktori root penuh`.
 - Volume baca saja sejak boot bila mirroring FAT mati (ExtFlags bit 7) atau FSInfo tidak sah. BPB yang
   tidak lolos validasi -> volume tidak dipakai sama sekali.
 - Tanggal file tetap 2026-01-01 (belum ada RTC tepercaya).

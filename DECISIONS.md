@@ -544,3 +544,13 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   PROD dibuktikan di VMware.
 - **Satu commit** untuk pemuatan + `ota terima app` (rencana semula dua): keduanya berbagi uji qemu-smoke boot 1
   -> boot 5 (APP.BIN yang ditulis OTA dimuat di boot berikutnya), tanpa refactor terpisah.
+
+## 2026-11-04 (`set`/`filter` tanpa file sementara; diputuskan Claude, keputusan kecil)
+- **`fat32_replace_name` = jalur timpa `fat32_write_name`**, tanpa `.TMP` lagi. Uji VMware P7-4: `set` gagal
+  `direktori root penuh` karena sektor root CONFIG.CFG penuh (EFI + LFN P7-0). Jaminan crash tidak berkurang: jalur
+  timpa juga menulis rantai baru dulu, lalu satu tulis sektor entri. Mengganti keputusan D7 "file sementara di sektor
+  yang sama"; alternatif dua tulis sektor D7 tetap ditolak.
+- **Sisa `.TMP` kernel lama tetap dihapus bila bisa** dan namanya tetap dilindungi fscmd: file itu tidak bisa dihapus
+  lewat jaringan. Gagal hapus tidak menghalangi `set`, supaya file sisa yang rusak tidak mengunci konfigurasi.
+- Tujuan ber-LFN tidak lagi ditolak `fat32_replace_name` (entri LFN tetap utuh saat ditimpa); pemanggilnya hanya
+  CONFIG.CFG dan FILTER.CFG. Menutup temuan review P7-4 no. 2 (APP.BIN mengambil slot terakhir sektor CONFIG).

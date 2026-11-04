@@ -399,7 +399,7 @@ static void flt_list(void)
     }
 }
 
-// Tulis aturan rules[0..n) ke FILTER.CFG (atomik lewat FILTER.TMP). 1 = OK.
+// Tulis aturan rules[0..n) ke FILTER.CFG (atomik, fat32_replace_name). 1 = OK.
 static int flt_save(const filter_rule_t *rules, uint32_t n)
 {
     uint32_t len = (uint32_t)ksnprintf((char *)g_filter_buf, sizeof(g_filter_buf),

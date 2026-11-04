@@ -627,12 +627,18 @@ static void test_replace(void)
           FAT32_ERR_NOTFILE);
     CHECK(fat32_replace_name("BIG     TXT", "BIG     TMP", (const uint8_t *)"x", 1) ==
           FAT32_ERR_TOOBIG);
-    CHECK(read_rc("BIG     TMP") == FAT32_OK);   // TMP tertinggal; BIG utuh
-    CHECK(fat32_delete_name("BIG     TMP") == FAT32_OK);
+    CHECK(read_rc("BIG     TMP") == FAT32_ERR_NOENT);   // tanpa file sementara; BIG utuh
     CHECK(img_consistent() && img_fsck() == 0);
+
+    // TMP sisa yang tidak bisa dihapus (> 4096 byte) tidak menghalangi penulisan
+    CHECK(fat32_rename_name("BIG     TXT", "CFG     TMP") == FAT32_OK);
+    CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)"v5\n", 3) == FAT32_OK);
+    CHECK(read_eq("CFG     TXT", "v5\n") && read_rc("CFG     TMP") == FAT32_ERR_TOOBIG);
+    CHECK(fat32_writable() && img_consistent() && img_fsck() == 0);
     img_close();
 
-    // sektor entri tujuan penuh -> DIRFULL, tujuan utuh
+    // sektor root penuh: tujuan yang ada tetap bisa diganti (temuan VMware P7-4);
+    // tujuan baru -> DIRFULL
     img_open("fat32_repl2", 65536, 1);
     probe();
     char line[64];
@@ -645,10 +651,12 @@ static void test_replace(void)
         }
     }
     CHECK(i == 11);   // 16 - HELLO, KEY, BIG, TEST, CFG
-    CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)"baru\n", 5) ==
+    CHECK(fat32_replace_name("CFG     TXT", "CFG     TMP", (const uint8_t *)"baru\n", 5) == FAT32_OK);
+    CHECK(read_eq("CFG     TXT", "baru\n") && read_rc("CFG     TMP") == FAT32_ERR_NOENT);
+    CHECK(fat32_replace_name("BARU    TXT", "BARU    TMP", (const uint8_t *)"x\n", 2) ==
           FAT32_ERR_DIRFULL);
-    CHECK(read_eq("CFG     TXT", "lama\n") && read_rc("CFG     TMP") == FAT32_ERR_NOENT);
-    CHECK(fat32_writable() && img_fsck() == 0);
+    CHECK(read_rc("BARU    TXT") == FAT32_ERR_NOENT && read_eq("CFG     TXT", "baru\n"));
+    CHECK(fat32_writable() && img_consistent() && img_fsck() == 0);
     img_close();
 }
 
