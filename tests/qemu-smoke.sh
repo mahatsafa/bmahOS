@@ -651,6 +651,11 @@ sleep 2.5
 python3 "$ROOT/tests/sntp-server.py" 127.0.0.1 "$NTPPORT" 1000 30 > "$WORK/sntp-server.out" 2>&1 &
 NTPPID=$!
 sleep 1.2
+# Geser jam tamu terhadap host sebelum sinkron: QEMU lambat membuat jam tamu tertinggal,
+# dan koreksi = baru - lama memuatnya. Koreksi diharapkan 1000 + geser, bukan 1000.
+SNTP_P="$($BM waktu 2>&1 | sed -n "s/^waktu: .* epoch=\([0-9]*\) .*$/\1/p")"
+SNTP_G=$(( $(date +%s) - ${SNTP_P:-0} ))
+sleep 1.2
 SNTP_GO="$($BM "waktu sinkron 1 $NTPPORT" 2>&1)"
 sleep 4
 SNTP_L="$($BM waktu 2>&1)"
@@ -659,9 +664,10 @@ wait "$NTPPID" 2>/dev/null
 SNTP_E="$(echo "$SNTP_L" | sed -n "s/^waktu: .* epoch=\([0-9]*\) sumber=sntp oktet=1 stratum=2 (UTC) koreksi=[-0-9]* s$/\1/p")"
 SNTP_K="$(echo "$SNTP_L" | sed -n "s/^waktu: .* koreksi=\([-0-9]*\) s$/\1/p")"
 SNTP_D=$(( ${SNTP_E:-0} - $(date +%s) - 1000 ))
-echo "info  P3-2: $SNTP_GO | $(echo "$SNTP_L" | tr '\n' '|') selisih ${SNTP_D} s"
-check "P3-2: waktu sinkron ke server uji (+1000 s): jam = server, koreksi ~1000 s, sumber=sntp" \
-    'echo "$SNTP_GO" | grep -q "^OK: SNTP ke 192.168.50.1:$NTPPORT dimulai" && [ -n "$SNTP_E" ] && [ "${SNTP_D#-}" -le 5 ] && [ "${SNTP_K:-0}" -ge 990 ] && [ "${SNTP_K:-0}" -le 1010 ] && echo "$SNTP_L" | grep -q "^sntp: diam terakhir=ok ok=1 gagal=0 diabaikan=0$" && grep -aq "P3: SNTP ok dari 192.168.50.1 stratum 2 koreksi " "$LOG"'
+SNTP_KD=$(( ${SNTP_K:-0} - 1000 - SNTP_G ))
+echo "info  P3-2: $SNTP_GO | $(echo "$SNTP_L" | tr '\n' '|') selisih ${SNTP_D} s, geser jam tamu ${SNTP_G} s, koreksi - (1000 + geser) = ${SNTP_KD} s"
+check "P3-2: waktu sinkron ke server uji (+1000 s): jam = server, koreksi ~1000 s + geser jam tamu, sumber=sntp" \
+    'echo "$SNTP_GO" | grep -q "^OK: SNTP ke 192.168.50.1:$NTPPORT dimulai" && [ -n "$SNTP_E" ] && [ -n "$SNTP_P" ] && [ "${SNTP_D#-}" -le 5 ] && [ "${SNTP_KD#-}" -le 5 ] && echo "$SNTP_L" | grep -q "^sntp: diam terakhir=ok ok=1 gagal=0 diabaikan=0$" && grep -aq "P3: SNTP ok dari 192.168.50.1 stratum 2 koreksi " "$LOG"'
 sleep 1.2
 
 # P3-3: DNS ke server uji di 127.0.0.1:$DNSPORT (= 192.168.50.1 lewat slirp):
