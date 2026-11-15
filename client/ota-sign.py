@@ -72,6 +72,29 @@ def pub_mentah(kunci):
     return q
 
 
+def cek_format(d):
+    # Pemeriksaan isi file sama dengan ota_check di kernel/ota.c. None = sah.
+    if len(d) < 128:
+        return "terlalu pendek (%d byte)" % len(d)
+    h, isi = d[:64], d[128:]
+    jenis, _, ukuran, cad = struct.unpack("<IIII", h[8:24])
+    if h[:8] != MAGIC:
+        return "magic salah"
+    if cad != 0 or h[56:64] != b"\0" * 8:
+        return "cadangan bukan nol"
+    if jenis not in MAKS:
+        return "jenis tidak dikenal (%d)" % jenis
+    if not 0 < ukuran <= MAKS[jenis]:
+        return "ukuran %d di luar batas jenis (1..%d)" % (ukuran, MAKS[jenis])
+    if ukuran != len(isi):
+        return "ukuran header %d, isi %d byte" % (ukuran, len(isi))
+    if hashlib.sha256(isi).digest() != h[24:56]:
+        return "sha256 isi salah"
+    if jenis == 1 and isi[:4] != b"\x7fELF":
+        return "isi kernel bukan ELF"
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -93,12 +116,17 @@ def main():
         return 0
 
     if a.cek:
-        d = open(a.file[0], "rb").read()
-        h, sig, isi = d[:64], d[64:128], d[128:]
-        if h[:8] != MAGIC or struct.unpack("<I", h[16:20])[0] != len(isi) or \
-                hashlib.sha256(isi).digest() != h[24:56]:
-            print("format/ukuran/sha256 salah")
+        if len(a.file) != 1:
+            ap.error("butuh --cek KUNCI FILE.bmo")
+        try:
+            d = open(a.file[0], "rb").read()
+        except OSError as e:
+            sys.exit("tidak bisa membaca %s: %s" % (a.file[0], e.strerror))
+        salah = cek_format(d)
+        if salah:
+            print(salah)
             return 1
+        h, sig = d[:64], d[64:128]
         with tempfile.TemporaryDirectory() as t:
             pem = os.path.join(t, "pub.pem")
             open(pem, "wb").write(openssl(["ec", "-in", a.cek, "-pubout"]))

@@ -69,6 +69,30 @@ static void setup(void)
     snprintf(c, sizeof(c), "%s --jenis app --versi 1 " D "/app4k1.bin " D "/x.bmo 2>/dev/null", s);
     CHECK(sh(c) != 0);
     CHECK(sh("python3 client/ota-sign.py --cek tests/ota/ota-uji.pem " D "/app.bmo >/dev/null") == 0);
+    // --cek: format diperiksa dulu seperti ota_check; pemakaian salah tanpa traceback.
+    // Tiap penyunting mengubah salinan app.bmo: offset + nilai -> pesan.
+    static const struct { const char *ubah, *pesan; } cek[] = {
+        { "d=d[:100]", "terlalu pendek" },
+        { "d[0]^=1", "magic salah" },
+        { "d[20]=1", "cadangan bukan nol" },
+        { "d[63]=1", "cadangan bukan nol" },
+        { "d[8]=3", "jenis tidak dikenal" },
+        { "d[16:20]=(0).to_bytes(4,'little')", "di luar batas" },
+        { "d[16:20]=(3969).to_bytes(4,'little')", "di luar batas" },
+        { "d[16]^=1", "ukuran header" },
+        { "d[128]^=1", "sha256 isi salah" },
+        { "d[8]=1", "bukan ELF" },
+    };
+    for (size_t k = 0; k < sizeof(cek) / sizeof(cek[0]); k++) {
+        snprintf(c, sizeof(c), "python3 -c \"d=bytearray(open('" D "/app.bmo','rb').read());%s;"
+                 "open('" D "/cek.bmo','wb').write(d)\" && "
+                 "python3 client/ota-sign.py --cek tests/ota/ota-uji.pem " D "/cek.bmo > " D "/cek.out"
+                 "; [ $? -eq 1 ] && grep -q '%s' " D "/cek.out", cek[k].ubah, cek[k].pesan);
+        CHECK(sh(c) == 0);
+    }
+    CHECK(sh("python3 client/ota-sign.py --cek tests/ota/ota-uji.pem 2>&1 | grep -q 'butuh --cek'") == 0);
+    CHECK(sh("python3 client/ota-sign.py --cek tests/ota/ota-uji.pem " D "/tidakada.bmo 2>&1 | "
+             "grep -q 'tidak bisa membaca'") == 0);
     CHECK(sh("python3 client/ota-sign.py --pub " D "/lain.pem --nama x | "
              "grep -o '0x[0-9a-f][0-9a-f]' | head -65 > " D "/lain.hex") == 0);
     FILE *f = fopen(D "/lain.hex", "r");
