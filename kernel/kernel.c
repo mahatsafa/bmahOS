@@ -352,37 +352,6 @@ static const uint8_t user_task_tss1_test_code[] = {
 };
 #endif
 
-static void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
-{
-    uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
-    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
-    uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
-    uint64_t pt_idx   = (vaddr >> 12) & 0x1FF;
-
-    uint64_t *pml4_virt = (uint64_t *)(pml4_phys + hhdm_offset);
-    uint64_t pml4_entry = pml4_virt[pml4_idx];
-    if ((pml4_entry & VMM_FLAG_PRESENT) == 0) return;
-
-    uint64_t pdpt_phys = pml4_entry & VMM_ENTRY_ADDR_MASK;
-    uint64_t *pdpt_virt = (uint64_t *)(pdpt_phys + hhdm_offset);
-    uint64_t pdpt_entry = pdpt_virt[pdpt_idx];
-    if ((pdpt_entry & VMM_FLAG_PRESENT) == 0) return;
-
-    uint64_t pd_phys = pdpt_entry & VMM_ENTRY_ADDR_MASK;
-    uint64_t *pd_virt = (uint64_t *)(pd_phys + hhdm_offset);
-    uint64_t pd_entry = pd_virt[pd_idx];
-    if ((pd_entry & VMM_FLAG_PRESENT) == 0) return;
-
-    uint64_t pt_phys = pd_entry & VMM_ENTRY_ADDR_MASK;
-    uint64_t *pt_virt = (uint64_t *)(pt_phys + hhdm_offset);
-
-    pt_virt[pt_idx] = 0;
-
-    __asm__ volatile ("invlpg (%0)" : : "r"(vaddr) : "memory");
-}
-
-
-
 volatile uint64_t g_net_loops = 0;
 static semaphore_t g_net_rx_sem = { .count = 0 };
 

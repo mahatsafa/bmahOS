@@ -244,6 +244,7 @@ int kstack_guard_find(uint64_t addr, uint64_t *lo, uint64_t *top);
 uint64_t read_cr3(void);
 void vmm_dump_pml4(uint64_t pml4_phys);
 void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t flags);
+void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr);
 int vmm_nx_of(uint64_t pml4_phys, uint64_t vaddr);
 uint64_t vmm_alloc_user_frame(void);
 uint64_t vmm_phys_of(uint64_t pml4_phys, uint64_t vaddr);

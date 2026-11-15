@@ -85,6 +85,36 @@ void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t flags)
     pt_virt[pt_idx] = (paddr & VMM_ENTRY_ADDR_MASK) | flags;
 }
 
+// Hapus pemetaan satu halaman (PTE = 0) + invlpg; tabel perantara tidak dibebaskan.
+void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
+{
+    uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
+    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
+    uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
+    uint64_t pt_idx   = (vaddr >> 12) & 0x1FF;
+
+    uint64_t *pml4_virt = (uint64_t *)(pml4_phys + hhdm_offset);
+    uint64_t pml4_entry = pml4_virt[pml4_idx];
+    if ((pml4_entry & VMM_FLAG_PRESENT) == 0) return;
+
+    uint64_t pdpt_phys = pml4_entry & VMM_ENTRY_ADDR_MASK;
+    uint64_t *pdpt_virt = (uint64_t *)(pdpt_phys + hhdm_offset);
+    uint64_t pdpt_entry = pdpt_virt[pdpt_idx];
+    if ((pdpt_entry & VMM_FLAG_PRESENT) == 0) return;
+
+    uint64_t pd_phys = pdpt_entry & VMM_ENTRY_ADDR_MASK;
+    uint64_t *pd_virt = (uint64_t *)(pd_phys + hhdm_offset);
+    uint64_t pd_entry = pd_virt[pd_idx];
+    if ((pd_entry & VMM_FLAG_PRESENT) == 0) return;
+
+    uint64_t pt_phys = pd_entry & VMM_ENTRY_ADDR_MASK;
+    uint64_t *pt_virt = (uint64_t *)(pt_phys + hhdm_offset);
+
+    pt_virt[pt_idx] = 0;
+
+    __asm__ volatile ("invlpg (%0)" : : "r"(vaddr) : "memory");
+}
+
 // B3: NX efektif untuk vaddr = OR bit 63 di semua level sampai entri daun
 // (halaman 1 GB/2 MB berhenti di PDPT/PD). Return -1 jika tidak terpetakan.
 int vmm_nx_of(uint64_t pml4_phys, uint64_t vaddr)
