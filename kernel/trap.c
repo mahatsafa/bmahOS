@@ -57,12 +57,25 @@ static uint64_t sys_write(uint64_t buf_ptr, uint64_t len, uint64_t arg2, uint64_
 {
     (void)arg2; (void)arg3; (void)arg4;
 
+    // F7: salin per blok ke buffer kernel di dalam jendela stac/clac, lalu cetak di luar
+    // jendela (serial_putc tidak ikut berjalan dengan AC=1).
     const char *buf = (const char *)buf_ptr;
-    user_access_begin();   // F7: SMAP
-    for (uint64_t i = 0; i < len; i++) {
-        serial_putc(buf[i]);
+    char blk[128];
+    uint64_t done = 0;
+
+    while (done < len) {
+        uint64_t n = len - done > sizeof(blk) ? sizeof(blk) : len - done;
+
+        user_access_begin();
+        for (uint64_t i = 0; i < n; i++) {
+            blk[i] = buf[done + i];
+        }
+        user_access_end();
+        for (uint64_t i = 0; i < n; i++) {
+            serial_putc(blk[i]);
+        }
+        done += n;
     }
-    user_access_end();
 
     return len;
 }
@@ -132,6 +145,17 @@ static void syscall_handler(struct exception_context *context)
     uint64_t syscall_num = context->rax;
 
     g_sys_calls++;
+#ifndef BMAHOS_PROD
+    // F7 (dev): task uji menyalakan EFLAGS.AC lalu SYS_TEST dengan rdi=0xAC; AC di kernel
+    // harus 0 (clac di entry) bila SMAP aktif.
+    if (syscall_num == SYS_TEST && context->rdi == 0xAC) {
+        uint64_t fl;
+
+        __asm__ volatile("pushfq\n\tpopq %0" : "=r"(fl));
+        kprintf("F7: syscall AC user=%lu kernel=%lu smap=%lu\r\n",
+                (context->rflags >> 18) & 1, (fl >> 18) & 1, (uint64_t)g_smap_on);
+    }
+#endif
     if (syscall_num >= SYSCALL_COUNT || syscall_table[syscall_num].fn == 0)
     {
         g_sys_rejected++;

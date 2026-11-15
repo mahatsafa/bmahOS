@@ -50,15 +50,19 @@ void panic_pf_decode(uint64_t err, char *buf, size_t size)
 // F7: diagnosis #PF karena SMEP/SMAP. Cirinya: #PF dari mode kernel (U=0) ke halaman yang ADA
 // (P=1) di alamat user yang dipetakan sebagai halaman user. Fetch (I/D=1) dengan CR4.SMEP =
 // SMEP; akses data dengan CR4.SMAP = SMAP. Mengembalikan "SMEP"/"SMAP", atau NULL.
-const char *panic_smx_diag(uint64_t vector, uint64_t err, uint64_t cr2, uint64_t cr4, int user_mapped)
+// Bit RSVD (8) berarti entri tabel rusak, bukan SMEP/SMAP. SMAP hanya bila EFLAGS.AC = 0
+// (AC=1 melewati SMAP, jadi #PF itu sebab lain).
+const char *panic_smx_diag(uint64_t vector, uint64_t err, uint64_t cr2, uint64_t cr4,
+                           uint64_t rflags, int user_mapped)
 {
-    if (vector != 14 || !(err & 1) || (err & 4) || cr2 >= 0x0000800000000000ULL || !user_mapped) {
+    if (vector != 14 || !(err & 1) || (err & 4) || (err & 8) ||
+        cr2 >= 0x0000800000000000ULL || !user_mapped) {
         return NULL;
     }
     if ((err & 16) && (cr4 & (1ULL << 20))) {
         return "SMEP";
     }
-    if (!(err & 16) && (cr4 & (1ULL << 21))) {
+    if (!(err & 16) && (cr4 & (1ULL << 21)) && !(rflags & (1ULL << 18))) {
         return "SMAP";
     }
     return NULL;
@@ -251,7 +255,7 @@ void panic_exception(struct exception_context *c)
     kprintf("PANIC: CR0=0x%lx CR2=%p CR3=0x%lx CR4=0x%lx\r\n",
             cr0, (void *)(uintptr_t)cr2, cr3, cr4);
     // F7: SMEP/SMAP. Dicek lewat page walk CR3 supaya tidak keliru dengan #PF proteksi biasa.
-    const char *smx = panic_smx_diag(c->vector, c->error_code, cr2, cr4,
+    const char *smx = panic_smx_diag(c->vector, c->error_code, cr2, cr4, c->rflags,
                                      c->vector == 14 && cr2 < 0x0000800000000000ULL &&
                                      vmm_user_mapped(cr3, cr2));
     if (smx != NULL) {
@@ -343,7 +347,7 @@ static void panic_test_user_page(int exec)
         return;
     }
     *(volatile uint8_t *)(uintptr_t)(frame + hhdm_offset) = 0xC3;   // ret
-    vmm_map(read_cr3(), PANIC_TEST_UADDR, frame,
+    vmm_map(read_cr3() & VMM_ENTRY_ADDR_MASK, PANIC_TEST_UADDR, frame,
             VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER | (exec ? 0 : VMM_FLAG_NX));
 }
 

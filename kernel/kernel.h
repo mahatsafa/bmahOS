@@ -1150,7 +1150,8 @@ int panic_walk(uint64_t rbp, const panic_bounds_t *b, uint64_t *out, int max, in
 void panic_begin(void);
 __attribute__((noreturn)) void panic_finish(uint64_t rip, uint64_t rbp);
 __attribute__((noreturn)) void panic_exception(struct exception_context *c);
-const char *panic_smx_diag(uint64_t vector, uint64_t err, uint64_t cr2, uint64_t cr4, int user_mapped);   // F7
+const char *panic_smx_diag(uint64_t vector, uint64_t err, uint64_t cr2, uint64_t cr4,
+                           uint64_t rflags, int user_mapped);   // F7
 int panic_test_execute(const volatile uint8_t *cmd, uint32_t len);   // build dev saja
 
 // ---- watchdog.c (R5: watchdog perangkat lunak) ----

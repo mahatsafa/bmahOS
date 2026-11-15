@@ -206,18 +206,27 @@ static void test_smx(void)
 {
     const uint64_t cr4 = (1ULL << 20) | (1ULL << 21);
     const uint64_t u = 0x00007F0000000000ULL;
+    const uint64_t ac = 1ULL << 18;
 
-    CHECK_STR(panic_smx_diag(14, 0x11, u, cr4, 1), "SMEP");      // fetch kernel di halaman user
-    CHECK_STR(panic_smx_diag(14, 0x01, u, cr4, 1), "SMAP");      // baca kernel
-    CHECK_STR(panic_smx_diag(14, 0x03, u, cr4, 1), "SMAP");      // tulis kernel
-    CHECK(panic_smx_diag(14, 0x11, u, 1ULL << 21, 1) == NULL);   // SMEP mati di CR4
-    CHECK(panic_smx_diag(14, 0x01, u, 1ULL << 20, 1) == NULL);   // SMAP mati di CR4
-    CHECK(panic_smx_diag(14, 0x11, u, 1ULL << 20, 1) != NULL);
-    CHECK(panic_smx_diag(14, 0x10, u, cr4, 1) == NULL);          // tidak-ada (P=0)
-    CHECK(panic_smx_diag(14, 0x05, u, cr4, 1) == NULL);          // dari user (U=1)
-    CHECK(panic_smx_diag(14, 0x03, u, cr4, 0) == NULL);          // bukan halaman user
-    CHECK(panic_smx_diag(14, 0x03, 0xffffffff80000000ULL, cr4, 1) == NULL);   // alamat kernel
-    CHECK(panic_smx_diag(13, 0x11, u, cr4, 1) == NULL);          // bukan #PF
+    CHECK_STR(panic_smx_diag(14, 0x11, u, cr4, 0x2, 1), "SMEP");   // fetch kernel di halaman user
+    CHECK_STR(panic_smx_diag(14, 0x01, u, cr4, 0x2, 1), "SMAP");   // baca kernel
+    CHECK_STR(panic_smx_diag(14, 0x03, u, cr4, 0x2, 1), "SMAP");   // tulis kernel
+    CHECK(panic_smx_diag(14, 0x11, u, 1ULL << 21, 0, 1) == NULL);  // SMEP mati di CR4
+    CHECK(panic_smx_diag(14, 0x01, u, 1ULL << 20, 0, 1) == NULL);  // SMAP mati di CR4
+    CHECK(panic_smx_diag(14, 0x11, u, 1ULL << 20, 0, 1) != NULL);
+    CHECK(panic_smx_diag(14, 0x10, u, cr4, 0, 1) == NULL);         // tidak-ada (P=0)
+    CHECK(panic_smx_diag(14, 0x05, u, cr4, 0, 1) == NULL);         // dari user (U=1)
+    CHECK(panic_smx_diag(14, 0x03, u, cr4, 0, 0) == NULL);         // bukan halaman user
+    CHECK(panic_smx_diag(14, 0x03, 0xffffffff80000000ULL, cr4, 0, 1) == NULL);   // alamat kernel
+    CHECK(panic_smx_diag(13, 0x11, u, cr4, 0, 1) == NULL);         // bukan #PF
+    // AC=1: SMAP dilewati, #PF data itu sebab lain; fetch tetap SMEP (AC tidak berpengaruh).
+    CHECK(panic_smx_diag(14, 0x01, u, cr4, ac, 1) == NULL);
+    CHECK(panic_smx_diag(14, 0x03, u, cr4, ac | 0x2, 1) == NULL);
+    CHECK_STR(panic_smx_diag(14, 0x11, u, cr4, ac, 1), "SMEP");
+    // RSVD (error bit 3): entri tabel rusak, bukan SMEP/SMAP.
+    CHECK(panic_smx_diag(14, 0x09, u, cr4, 0, 1) == NULL);
+    CHECK(panic_smx_diag(14, 0x19, u, cr4, 0, 1) == NULL);
+    CHECK(panic_smx_diag(14, 0x0B, u, cr4, 0, 1) == NULL);
 }
 
 static void test_cmd(void)

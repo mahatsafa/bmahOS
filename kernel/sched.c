@@ -414,6 +414,14 @@ static semaphore_t test_sem = { .count = 1 };
 // context_switch() sendiri, timer dari luar yang memaksa ganti giliran.
 void schedule(void)
 {
+#ifndef BMAHOS_PROD
+    {   // F7 (dev): EFLAGS.AC harus 0 saat pindah task bila SMAP aktif (tidak ada tidur di jendela stac)
+        uint64_t fl;
+
+        __asm__ volatile("pushfq\n\tpopq %0" : "=r"(fl));
+        ASSERT(!g_smap_on || !(fl & (1ULL << 18)));
+    }
+#endif
     // Guard ganda: (1) belum ada task terdaftar, ATAU (2) scheduler
     // belum pernah benar-benar diserahkan alih dari kmain() ke task
     // pertama. Tanpa guard (2), timer yang masuk di antara

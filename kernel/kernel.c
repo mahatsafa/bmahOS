@@ -261,6 +261,23 @@ static const uint8_t user_task_r6_test_code[] = {
     0xBF, 0x00, 0x00, 0x40, 0x00,                                 // mov edi, 0x400000
     0xBE, 0x00, 0x08, 0x00, 0x00,                                 // mov esi, 2048
     0xCD, 0x80,                                                   // int 0x80
+    // F7: SYS_WRITE ke alamat HHDM (half atas) -> ditolak
+    0xB8, 0x01, 0x00, 0x00, 0x00,                                 // mov eax, 1
+    0x48, 0xBF, 0x00, 0x00, 0x10, 0x00, 0x00, 0x80, 0xFF, 0xFF,   // mov rdi, 0xffff800000100000
+    0xBE, 0x08, 0x00, 0x00, 0x00,                                 // mov esi, 8
+    0xCD, 0x80,                                                   // int 0x80
+    // F7: nyalakan EFLAGS.AC, SYS_TEST rdi=0xAC (kernel mencatat AC), matikan AC lagi
+    0x9C,                                                         // pushfq
+    0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00,               // or qword [rsp], 0x40000
+    0x9D,                                                         // popfq
+    0xB8, 0x00, 0x00, 0x00, 0x00,                                 // mov eax, 0 (SYS_TEST)
+    0xBF, 0xAC, 0x00, 0x00, 0x00,                                 // mov edi, 0xAC
+    0xBE, 0x00, 0x00, 0x00, 0x00,                                 // mov esi, 0
+    0xBA, 0x00, 0x00, 0x00, 0x00,                                 // mov edx, 0
+    0xCD, 0x80,                                                   // int 0x80
+    0x9C,                                                         // pushfq
+    0x48, 0x81, 0x24, 0x24, 0xFF, 0xFF, 0xFB, 0xFF,               // and qword [rsp], ~0x40000
+    0x9D,                                                         // popfq
     0x50,                                                         // 1: push rax
     0xEB, 0xFD,                                                   // jmp 1b
 };

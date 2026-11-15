@@ -593,3 +593,9 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   (lompatan itu akan berhasil). Degradasi diuji dengan `-cpu max,-smep,-smap` (`-cpu qemu64` tidak sampai ke kernel di
   OVMF + TCG di mesin ini; penyebab belum diselidiki).
 - **Belum terbukti**: perangkat keras asli dan VMware (skrip `uji-f7smep.ps1`); SMP (tak ada; CR4 per core harus disalin ke AP).
+- **Tinjauan F7 (2026-11-15)**: (1) `is_valid_user_ptr`/`vmm_is_user_page` diperbaiki (bug lama, commit terpisah): tolak
+  half atas dan overflow sebelum walk; walk seperti MMU (P dan U di semua level, W di semua level untuk tulis, PS =
+  daun). Tanpa itu entri HHDM 1 GB/2 MB dibaca sebagai tabel. (2) `panic_smx_diag` menerima RFLAGS: "SMAP" hanya bila
+  AC=0 dan tanpa bit RSVD. (3) `sys_write` menyalin per blok 128 byte ke buffer kernel di dalam jendela stac/clac dan
+  mencetak di luar jendela. (4) Dev: task uji R6 menyalakan EFLAGS.AC lalu `SYS_TEST` 0xAC (kernel mencatat
+  "F7: syscall AC user=1 kernel=0"), dan `schedule()` memakai ASSERT AC=0 bila SMAP aktif; write ke alamat HHDM ditolak.
