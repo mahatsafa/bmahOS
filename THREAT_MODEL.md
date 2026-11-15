@@ -205,6 +205,10 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 
 - Semua panjang dari luar divalidasi **sebelum** dipakai untuk mengindeks atau menyalin.
 - Setiap tabel atau buffer punya batas atas tertulis dan perilaku saat penuh (tolak, bukan crash).
+- Alokasi kernel kecil (`kmalloc` <= 1024 byte, F7) lewat slab: batas 64 halaman per kelas, penuh -> NULL; `kfree` menolak
+  double free, pointer asing, dan pointer tengah objek (`slab_bad_free`), metadata terpisah dari objek sehingga tulis
+  melewati objek tidak merusaknya; build dev meracun objek bebas (use-after-free tertulis terhitung di `slab_uaf`, build PROD tidak).
+  Tidak ada pemisahan antar-pemanggil (satu cache dipakai semua kode kernel) dan tidak ada kanari antar-objek.
 - Gagal tertutup (fail-closed): kondisi tak jelas berarti menolak.
 - Perbandingan rahasia (HMAC, nonce) waktu-konstan: selalu lewat `ct_memeq` (F1.9), yang kode mesinnya
   dicek di `make test`.

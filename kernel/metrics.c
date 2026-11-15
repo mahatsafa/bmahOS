@@ -278,6 +278,12 @@ static const metric_t g_metrics[] = {
     M64("ota_ok", g_ota_ok),
     M64("ota_gagal", g_ota_gagal),
     M64("app_versi", g_app_versi),   // P7-4 (kunci baru selalu di akhir tabel)
+    M64("slab_alloc", g_slab_alloc),   // F7
+    M64("slab_free", g_slab_free),
+    M64("slab_fail", g_slab_fail),
+    M64("slab_pages", g_slab_pages),
+    M64("slab_bad_free", g_slab_bad_free),
+    M64("slab_uaf", g_slab_uaf),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

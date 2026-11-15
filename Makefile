@@ -164,7 +164,7 @@ HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host -Ithird_party/bearssl/inc
 HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config panic metrics logdisk \
-               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock ota vmm
+               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock ota vmm slab
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
@@ -191,10 +191,12 @@ host_srcs_logdisk := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/kprintf.c
 host_deps_logdisk := $(KERNEL_DIR)/logdisk.c   # R4: di-#include oleh test_logdisk.c
 host_srcs_watchdog := $(KERNEL_DIR)/kprintf.c
 host_deps_watchdog := $(KERNEL_DIR)/watchdog.c # R5: di-#include oleh test_watchdog.c
-host_srcs_vmm     := $(KERNEL_DIR)/kprintf.c
+host_srcs_vmm     := $(KERNEL_DIR)/kprintf.c $(KERNEL_DIR)/slab.c   # F7: kmalloc memanggil slab
 host_deps_vmm     := $(KERNEL_DIR)/vmm.c       # perbaikan is_valid_user_ptr: di-#include oleh test_vmm.c
 host_srcs_pmm     := $(KERNEL_DIR)/kprintf.c
 host_deps_pmm     := $(KERNEL_DIR)/pmm.c tests/host/limine.h   # R6-3: limine.h pengganti
+host_srcs_slab    := $(KERNEL_DIR)/kprintf.c
+host_deps_slab    := $(KERNEL_DIR)/slab.c      # F7: di-#include oleh test_slab.c
 host_deps_fbcon   := $(KERNEL_DIR)/fbcon.c $(KERNEL_DIR)/fbfont.h   # P1: di-#include oleh test_fbcon.c
 host_srcs_pci     := $(KERNEL_DIR)/kprintf.c
 host_deps_pci     := $(KERNEL_DIR)/pci.c       # P2: di-#include oleh test_pci.c

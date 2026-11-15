@@ -273,6 +273,18 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(g_kfree_noop);
         cmd_puts(" gagal=");
         cmd_putdec(g_kmalloc_fail);
+        cmd_puts("\nslab: alokasi=");   // F7
+        cmd_putdec(g_slab_alloc);
+        cmd_puts(" lepas=");
+        cmd_putdec(g_slab_free);
+        cmd_puts(" gagal=");
+        cmd_putdec(g_slab_fail);
+        cmd_puts(" halaman=");
+        cmd_putdec(g_slab_pages);
+        cmd_puts(" lepas_salah=");
+        cmd_putdec(g_slab_bad_free);
+        cmd_puts(" uaf=");
+        cmd_putdec(g_slab_uaf);
         cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "tls")) {
         // D9: status TLS 7780, pin sertifikat, counter sesi.

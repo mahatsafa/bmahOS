@@ -279,6 +279,22 @@ static inline void user_access_end(void)
 // R6-1: syscall + fault user (trap.c)
 #define SYS_WRITE_MAX 1024   // byte per SYS_WRITE; lebih -> -1 (UART polling, interrupt mati)
 extern uint64_t g_sys_calls, g_sys_rejected, g_user_faults;
+// F7: slab allocator (slab.c) di bawah kmalloc untuk ukuran <= SLAB_MAX_SIZE.
+// Region SLAB_START di entri PML4 kheap (0x130), kheap + 384 GB (kstack di + 256 GB).
+// Tiap kelas (16, 32, ..., 1024 byte) punya SLAB_PAGES_MAX halaman + 1 halaman guard.
+#define SLAB_START      (KHEAP_START + 0x6000000000ULL)
+#define SLAB_MIN_SHIFT  4
+#define SLAB_MIN_SIZE   16
+#define SLAB_NCLASS     7
+#define SLAB_MAX_SIZE   1024
+#define SLAB_PAGES_MAX  64
+#define SLAB_STRIDE     ((uint64_t)(SLAB_PAGES_MAX + 1) * PMM_PAGE_SIZE)
+void slab_init(uint64_t pml4_phys, uint64_t base);
+void *slab_alloc(uint64_t size);
+int slab_free(void *p);
+int slab_owns(const void *p);
+int slab_selftest(void);
+extern uint64_t g_slab_alloc, g_slab_free, g_slab_fail, g_slab_pages, g_slab_bad_free, g_slab_uaf;
 void kheap_init(uint64_t pml4_phys);
 void * kmalloc(uint64_t size);
 void kfree(void *ptr);

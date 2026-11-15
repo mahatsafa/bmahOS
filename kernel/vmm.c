@@ -428,12 +428,24 @@ void kheap_init(uint64_t pml4_phys)
     kheap_pml4_phys = pml4_phys;
     kheap_current = KHEAP_START;
     kheap_mapped_end = KHEAP_START;
+    slab_init(pml4_phys, SLAB_START);   // F7
 }
 
 uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail;   // R6-3
 
 void *kmalloc(uint64_t size)
 {
+    // F7: ukuran kecil lewat slab; penuh/habis -> NULL (tanpa jatuh ke heap bump).
+    if (size <= SLAB_MAX_SIZE) {
+        void *sp = slab_alloc(size);
+        if (sp == (void *)0) {
+            g_kmalloc_fail++;
+            return (void *)0;
+        }
+        g_kmalloc_n++;
+        return sp;
+    }
+
     // R6-3: batas KHEAP_MAX (juga mencegah overflow size + header).
     if (size > KHEAP_MAX ||
         kheap_current - KHEAP_START + size + sizeof(uint64_t) + 15 > KHEAP_MAX) {
@@ -473,7 +485,22 @@ void kfree(void *ptr)
         return;
     }
 
+    // F7: objek slab dikenali dari alamat; yang ditolak (double free dsb.) tidak dihitung.
+    if (slab_owns(ptr)) {
+        if (slab_free(ptr)) {
+            g_kfree_n++;
+        }
+        return;
+    }
+
     uint64_t data_addr = (uint64_t)ptr;
+    // F7: pointer di luar heap bump (atau di dalam yang sudah dilepas) ditolak, bukan dibaca headernya.
+    if (data_addr < KHEAP_START + sizeof(uint64_t) || data_addr >= kheap_current ||
+        (data_addr & 15) != 8) {
+        g_slab_bad_free++;
+        serial_write("kfree: pointer di luar heap ditolak\r\n");
+        return;
+    }
     uint64_t header_addr = data_addr - sizeof(uint64_t);
     uint64_t *header = (uint64_t *)header_addr;
     uint64_t total = *header;

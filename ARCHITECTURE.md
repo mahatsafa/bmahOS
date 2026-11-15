@@ -26,7 +26,8 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `kprintf.c` | `kprintf` (serial), `ksnprintf` (buffer), `kassert_fail` untuk `ASSERT()` (cetak `PANIC: ... file:baris`, lalu panic.c: trace + reboot), self-test format | serial |
 | `trap.c` | `exception_dispatcher` (exception kernel -> `panic_exception`; dari ring 3 -> task dihentikan, R6-1), `irq_handler`, syscall `int 0x80` (5 argumen; test/write/exit + soket 3..11 ke sock.c, docs/SYSCALL.md; `SYS_WRITE` maks 1024 byte, counter `sys_*`), `trigger_*` uji | sched, vmm, apic |
 | `pmm.c` | bitmap frame fisik (maks 4 GiB), frame 0 tidak pernah dibagikan, counter alokasi/lepas/gagal/lepas salah (R6-3) | Limine memmap |
-| `vmm.c` | page table 4 level, `vmm_map` (tabel gagal -> `oom_panic`), NX, F7: `smep_smap_init` (CR4.SMEP/SMAP bila CPUID mendukung; `g_smep_on`/`g_smap_on`) + `vmm_user_mapped`, klon PML4 kernel, validasi pointer user, heap kernel (`kmalloc`/`kfree` bump, maks `KHEAP_MAX` 16 MB), stack kernel ber-guard `kstack_alloc` di region `KSTACK_START` (R6-2) | pmm |
+| `vmm.c` | page table 4 level, `vmm_map` (tabel gagal -> `oom_panic`), NX, F7: `smep_smap_init` (CR4.SMEP/SMAP bila CPUID mendukung; `g_smep_on`/`g_smap_on`) + `vmm_user_mapped`, klon PML4 kernel, validasi pointer user, heap kernel (`kmalloc`/`kfree`: ukuran <= 1024 ke slab.c, lebih besar bump, maks `KHEAP_MAX` 16 MB; F7: `kfree` menolak pointer di luar heap), `vmm_unmap`, stack kernel ber-guard `kstack_alloc` di region `KSTACK_START` (R6-2) | pmm |
+| `slab.c` | F7: slab allocator 7 cache ukuran tetap (16..1024 byte, pangkat dua) di region `SLAB_START`; satu slab = satu halaman pmm; metadata bitmap di .bss; maks 64 halaman per cache; double free / pointer asing ditolak dan dihitung; build dev meracun objek bebas (0xA5); `slab_selftest` saat boot | pmm, vmm |
 | `acpi.c` | RSDP, MADT (alamat LAPIC/IOAPIC, override IRQ0), FADT (register reset), `machine_reboot` (ACPI -> 8042 -> triple fault); P2: checksum + panjang RSDP/XSDT/RSDT/tiap tabel, MADT tahan entri rusak, jumlah CPU, HPET, perintah `acpi` | Limine RSDP |
 | `panic.c` | R1: dump exception (nama vektor, register, CR0-4, error #PF diurai), stack trace rantai rbp (maks 16 frame, tiap rbp dicek sebelum dibaca), reboot otomatis 10 s (polling PIT), panic bersarang -> reboot langsung; F7: #PF kernel ke halaman user didiagnosis SMEP/SMAP (`panic_smx_diag`); perintah uji `panic pf/df/ud/assert/stack/smep/smap` (build dev) | kprintf, acpi, pic, ktimer, vmm |
 | `pic.c` | remap dan mask 8259, PIT | — |
@@ -86,7 +87,9 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `0xFFFF910000001000` | MMIO IOAPIC |
 | `0xFFFF910000002000` | MMIO AHCI (ABAR) |
 | `0xFFFF910000003000` | MMIO E1000 (BAR0) |
-| `0xFFFF980000000000` | heap kernel (`KHEAP_START`), tumbuh per halaman |
+| `0xFFFF980000000000` | heap kernel (`KHEAP_START`), tumbuh per halaman (alokasi besar > 1024 byte) |
+| `KHEAP_START` + 256 GB | stack kernel ber-guard (`KSTACK_START`, R6-2) |
+| `KHEAP_START` + 384 GB | region slab (`SLAB_START`, F7): 7 sub-region x (64 halaman + 1 halaman guard tak dipetakan), halaman dipetakan P\|W\|NX dan dilepas ke pmm bila kosong |
 | PML4[0x1FF] | image kernel higher-half (.text/.data) |
 
 Setiap task user punya PML4 sendiri (klon entri kernel bersama: HHDM, MMIO, heap, kernel). Halaman data,

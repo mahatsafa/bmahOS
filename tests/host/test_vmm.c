@@ -18,6 +18,11 @@ uint64_t pmm_alloc(void)
     return g_next < 16 ? (uint64_t)(uintptr_t)g_pool[g_next++] : 0;
 }
 
+void pmm_free(uint64_t phys)
+{
+    (void)phys;   // F7: dipakai slab.c, tidak dijalankan di uji ini
+}
+
 void oom_panic(const char *where)
 {
     (void)where;

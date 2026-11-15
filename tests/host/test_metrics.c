@@ -40,6 +40,7 @@ uint64_t g_wd_gap_max, g_wd_pets;
 uint64_t g_sys_calls, g_sys_rejected, g_user_faults;
 uint64_t g_pmm_allocs, g_pmm_frees, g_pmm_fail, g_pmm_bad_free;
 uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail;
+uint64_t g_slab_alloc, g_slab_free, g_slab_fail, g_slab_pages, g_slab_bad_free, g_slab_uaf;   // F7
 uint64_t g_sock_rx, g_sock_tx, g_sock_drop, g_sock_err, g_sock_noarp;
 uint64_t g_sock_tcp_accept, g_sock_tcp_rx, g_sock_tcp_tx, g_sock_tcp_reset;   // P5-2
 uint64_t g_sock_connect;   // P5-3
@@ -142,7 +143,7 @@ static int walk(const char *pfx, int seen[], uint32_t *maxlen)
 
 static void test_table(void)
 {
-    CHECK(METRICS_N == 132);   // P7-2: + 3 ota_*, P7-4: + app_versi
+    CHECK(METRICS_N == 138);   // P7-2: + 3 ota_*, P7-4: + app_versi, F7: + 6 slab_*
     CHECK_STR(g_metrics[0].name, "uptime_ticks");
     CHECK_STR(g_metrics[77].name, "priv_hmac");     // 78 kunci lama di depan
     CHECK_STR(g_metrics[78].name, "uptime_s");
@@ -153,8 +154,10 @@ static void test_table(void)
     CHECK_STR(g_metrics[124].name, "sock_connect");     // P5-3
     CHECK_STR(g_metrics[127].name, "app_exit");   // P5-4
     CHECK_STR(g_metrics[128].name, "ota_terima");   // P7-2
-    CHECK_STR(g_metrics[METRICS_N - 2].name, "ota_gagal");   // P7-2
-    CHECK_STR(g_metrics[METRICS_N - 1].name, "app_versi");   // P7-4: kunci baru di akhir
+    CHECK_STR(g_metrics[130].name, "ota_gagal");   // P7-2
+    CHECK_STR(g_metrics[131].name, "app_versi");   // P7-4
+    CHECK_STR(g_metrics[132].name, "slab_alloc");   // F7
+    CHECK_STR(g_metrics[METRICS_N - 1].name, "slab_uaf");   // kunci baru di akhir
     int ok_chars = 1, ok_len = 1, ok_uniq = 1, ok_kind = 1;
     for (uint32_t i = 0; i < METRICS_N; i++) {
         const char *n = g_metrics[i].name;
@@ -256,16 +259,19 @@ static void test_prefix(void)
               "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
               "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n"
               "sock_connect=0\napp_loaded=0\napp_size=0\napp_exit=0\n"
-              "ota_terima=0\nota_ok=0\nota_gagal=0\napp_versi=0\n");
+              "ota_terima=0\nota_ok=0\nota_gagal=0\napp_versi=0\n"
+              "slab_alloc=0\nslab_free=0\nslab_fail=0\nslab_pages=0\nslab_bad_free=0\nslab_uaf=0\n");
     CHECK_STR(run(" 111"), "kmalloc=0\nkfree=0\nkfree_noop=0\nkmalloc_fail=0\n"
               "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
               "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n"
               "sock_connect=0\napp_loaded=0\napp_size=0\napp_exit=0\n"
-              "ota_terima=0\nota_ok=0\nota_gagal=0\napp_versi=0\n");
+              "ota_terima=0\nota_ok=0\nota_gagal=0\napp_versi=0\n"
+              "slab_alloc=0\nslab_free=0\nslab_fail=0\nslab_pages=0\nslab_bad_free=0\nslab_uaf=0\n");
     CHECK_STR(run(" sock_"), "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
               "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n"
               "sock_connect=0\n");
     CHECK_STR(run(" kmalloc"), "kmalloc=0\nkmalloc_fail=0\n");
+    CHECK_STR(run(" slab_"), "slab_alloc=0\nslab_free=0\nslab_fail=0\nslab_pages=0\nslab_bad_free=0\nslab_uaf=0\n");   // F7
     CHECK_STR(run(" app_"), "app_loaded=0\napp_size=0\napp_exit=0\napp_versi=0\n");   // P5-4, P7-4
     CHECK_STR(run(" ota_"), "ota_terima=0\nota_ok=0\nota_gagal=0\n");   // P7-2
     CHECK_STR(run(" zzz"), "ERR: metrics: tidak ada kunci yang cocok\n");
@@ -280,7 +286,7 @@ static void test_bad_args(void)
 {
     static const char *const bad[] = {
         " ", "  ", " tcp_  1", "  tcp_", " tcp_ ", " 1 2", " 1 tcp_", " tcp_ udp_",
-        " TCP_", " tcp-", " 132", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
+        " TCP_", " tcp-", " 138", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
         " tcp_\t", " -1",
     };
     set_all(0);

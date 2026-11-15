@@ -599,3 +599,40 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   AC=0 dan tanpa bit RSVD. (3) `sys_write` menyalin per blok 128 byte ke buffer kernel di dalam jendela stac/clac dan
   mencetak di luar jendela. (4) Dev: task uji R6 menyalakan EFLAGS.AC lalu `SYS_TEST` 0xAC (kernel mencatat
   "F7: syscall AC user=1 kernel=0"), dan `schedule()` memakai ASSERT AC=0 bila SMAP aktif; write ke alamat HHDM ditolak.
+
+## 2026-11-15 (F7: slab allocator)
+- **Tujuh cache ukuran tetap 16, 32, ..., 1024 byte (pangkat dua), satu slab = satu halaman 4 KB**, ukuran lebih besar tetap ke heap bump
+  lama. Alternatif: kelas sampai 2048 -- ditolak: satu objek per halaman (2048) atau tak ada (4096 - header), boros tanpa guna;
+  kelas bukan pangkat dua (24, 48, ...) -- ditunda, pembagian/pencarian jadi lebih rumit dan belum ada pemanggil yang butuh.
+  Objek sejajar ukuran kelasnya (16..1024).
+- **Region virtual sendiri `SLAB_START` = KHEAP_START + 384 GB, tiap cache punya sub-region 64 halaman + 1 halaman guard tak dipetakan.**
+  Memilih ini karena alamat -> (cache, halaman, indeks objek) cukup pembagian: `kfree` tidak butuh header per objek, tabel pencarian,
+  atau membaca memori pointer yang belum tentu milik slab. Alternatif: halaman slab lewat HHDM dengan header di awal halaman
+  (header bisa terinjak overflow objek 1 dan pointer asing di HHDM dibaca sebagai header -- ditolak); satu region bersama dengan
+  halaman bercampur antar cache (butuh tabel halaman -> cache). Masih di PML4[0x130] sehingga ikut semua klon PML4 task.
+- **Metadata (bitmap objek terpakai 256 bit per halaman, jumlah terpakai, frame) di .bss, bukan di dalam halaman, dan tanpa free list di
+  dalam objek bebas.** Alokasi = bit nol terendah. Memilih ini karena double free terdeteksi pasti (bit sudah nol), isi objek bebas
+  tidak dipercaya (use-after-free tidak bisa membelokkan free list), dan alokasi deterministik. Alternatif: free list terikat di objek
+  bebas (klasik, O(1), tetapi double free dan tulis ke objek bebas merusak list). Biaya: bss 7 x 64 x 48 byte = ~21 KB; pemindaian
+  64 halaman per alokasi (murah; kernel satu core, pemanggil hanya boot).
+- **Batas: 64 halaman per cache (256 KB; total 7 cache <= 1,75 MB). Penuh atau pmm habis -> `slab_alloc` mengembalikan 0, `slab_fail++`,
+  `kmalloc` mengembalikan NULL dan `kmalloc_fail++` (tanpa jatuh ke heap bump).** `oom_panic` tetap hanya untuk alokasi wajib (tabel
+  halaman bila `vmm_map` perlu tabel baru: pengecualian yang diwarisi dari vmm_map). Alternatif: jatuh ke heap bump bila slab penuh --
+  ditolak: menyembunyikan kebocoran dan heap bump tidak bisa dibebaskan.
+- **Halaman kosong dilepas ke pmm (vmm_unmap + pmm_free), satu halaman kosong per cache dipertahankan.** Alasan: batas 64 halaman bukan
+  alasan menimbun frame, dan akses lewat pointer lama ke halaman yang dilepas jadi #PF (bukan diam). Satu cadangan mencegah mondar-mandir
+  map/unmap pada pola alloc/free bergantian. Alokasi memilih halaman yang sebagian terisi dahulu supaya halaman kosong bisa dilepas.
+- **`kfree`: alamat di region slab -> slab (`slab_free`), selain itu jalur bump lama; kini jalur bump menolak pointer di luar
+  [KHEAP_START+8, kheap_current) atau tidak berselisih 8 mod 16 (`slab_bad_free++`) alih-alih membaca header di alamat asing.**
+  `slab_bad_free` jadi penghitung semua penolakan `kfree` (slab: double free, pointer asing/tengah objek/guard/halaman tak aktif;
+  bump: di luar heap). Penolakan tidak dihitung sebagai `kfree`. Tidak panic (build dev pun) agar uji boot bisa memicunya;
+  gagal tertutup: objek tidak disentuh. Double free pada heap bump besar tetap tak terdeteksi (batasan lama).
+- **Racun hanya build dev (bukan `BMAHOS_PROD`): halaman baru dan objek yang dibebaskan diisi 0xA5; saat dialokasikan lagi, byte yang
+  berubah dihitung `slab_uaf` + baris serial.** Alasan: biaya penuh per alokasi tidak layak di PROD; deteksi hanya "tulis setelah bebas",
+  bukan baca. Akibat: di build dev isi `kmalloc` kecil awalnya 0xA5, bukan sisa data lama (tetap tak dijamin nol).
+- **Penghitung: slab_alloc/free/fail/pages/bad_free/uaf di akhir g_metrics (138 kunci), baris `slab:` di `mem`.** `kmalloc`/`kfree`
+  tetap menghitung semua panggilan (kmalloc = slab + bump), kecuali penolakan. Uji boot `SLAB: self-test PASS` memicu
+  bad_free 3, fail 1, uaf 1 (dev) dengan sengaja; qemu-smoke memeriksa angka itu dan alloc-free konstan.
+- **Belum ada pemanggil produksi `kmalloc`** (hanya uji boot di kmain dan nx_selftest), jadi slab terbukti lewat uji host + uji boot,
+  bukan lewat beban nyata. Tanpa kunci: tidak aman dari ISR / dua task bersamaan (kernel satu core; sama dengan heap bump).
+  Tidak ada kanari antar-objek dan overflow di dalam halaman tidak terdeteksi.

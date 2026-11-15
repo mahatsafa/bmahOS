@@ -1113,6 +1113,7 @@ void kmain(void)
                  ? "kmalloc batas: PASS (KHEAP_MAX dan overflow ditolak)\r\n"
                  : "kmalloc batas: FAIL\r\n");
     serial_write("\r\n");
+    slab_selftest();   // F7
 
     /* DISABLED (Layer 7 trampoline checkpoint) -- known-good reference,
      * jangan dihapus, diganti task_create_user() + scheduler di bawah.
