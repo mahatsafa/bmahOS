@@ -9,3 +9,5 @@ linker.ld.backup
 kernel/*.pmm-working
 patches/
 testdisk/
+__pycache__/
+*.pyc
