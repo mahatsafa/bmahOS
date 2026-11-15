@@ -188,6 +188,20 @@ static void test_pmm_fail(void)
     CHECK(slab_alloc(16) == p);
 }
 
+#ifdef BMAHOS_PROD
+// Varian PROD: tanpa racun. Isi tidak diracun, tulis setelah bebas tidak terhitung.
+static void test_poison(void)
+{
+    reset(NFRAME);
+    uint8_t *p = slab_alloc(128);
+    memset(p, 0x11, 128);
+    CHECK(slab_free(p) == 1);
+    CHECK(p[0] == 0x11 && p[127] == 0x11);                           // isi tidak diubah saat bebas
+    p[127] = 0;
+    CHECK(slab_alloc(128) == p && g_slab_uaf == 0);
+    CHECK(slab_selftest() == 1 && g_slab_uaf == 0);
+}
+#else
 static void test_poison(void)
 {
     reset(NFRAME);
@@ -207,6 +221,7 @@ static void test_poison(void)
     q[0] ^= 1;
     CHECK(slab_alloc(128) == q && g_slab_uaf == 2);
 }
+#endif
 
 typedef struct { uint8_t *p; uint32_t size; uint8_t tag; } live_t;
 
@@ -256,8 +271,13 @@ static void test_random(void)
 static void test_selftest(void)
 {
     reset(NFRAME);
+    serial_capture_reset();
     CHECK(slab_selftest() == 1);
-    CHECK(g_slab_bad_free == 3 && g_slab_uaf == 1 && g_slab_fail == 1 && g_slab_alloc == g_slab_free);
+    // Penolakan disengaja dikembalikan: metrics produksi bersih setelah self-test.
+    CHECK(g_slab_bad_free == 0 && g_slab_uaf == 0 && g_slab_fail == 0 && g_slab_alloc == g_slab_free);
+    CHECK(strstr(g_serial_cap, "SLAB: self-test PASS") != 0 && strstr(g_serial_cap, "bad_free=3") != 0);
+    g_slab_fail = 5; g_slab_bad_free = 6; g_slab_uaf = 7;             // nilai awal bukan nol ikut dipulihkan
+    CHECK(slab_selftest() == 1 && g_slab_fail == 5 && g_slab_bad_free == 6 && g_slab_uaf == 7);
     CHECK(g_map_bad == 0);
     reset(NFRAME);
     g_slab_base = 0;                                                 // belum slab_init: ditolak, tak crash
@@ -276,5 +296,9 @@ int main(void)
     test_poison();
     test_random();
     test_selftest();
+    #ifdef BMAHOS_PROD
+    return test_done("slab_prod");
+#else
     return test_done("slab");
+#endif
 }

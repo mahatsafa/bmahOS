@@ -284,11 +284,12 @@ int slab_selftest(void)
         while (n < SLAB_PAGES_MAX * 4 && (held[n] = slab_alloc(1024)) != 0) {
             n++;
         }
-        if (n != SLAB_PAGES_MAX * 4 || slab_alloc(1024) != 0 || g_slab_fail != fail0 + 1) {
-            goto gagal;
+        int bad = n != SLAB_PAGES_MAX * 4 || slab_alloc(1024) != 0 || g_slab_fail != fail0 + 1;
+        for (uint32_t i = 0; i < n; i++) {   // dibebaskan juga bila uji di atas gagal
+            if (!slab_free(held[i])) bad = 1;
         }
-        for (uint32_t i = 0; i < n; i++) {
-            if (!slab_free(held[i])) goto gagal;
+        if (bad) {
+            goto gagal;
         }
     }
     step = 9;
@@ -298,6 +299,11 @@ int slab_selftest(void)
     }
     kprintf("SLAB: self-test PASS (kelas=%d 16..%d byte, maks %d halaman/cache, bad_free=%d)\r\n",
             SLAB_NCLASS, SLAB_MAX_SIZE, SLAB_PAGES_MAX, (int)(g_slab_bad_free - bad0));
+    // Penolakan/kegagalan di atas disengaja: kembalikan counter supaya metrics produksi bersih
+    // (nilai > 0 setelah boot = kejadian nyata). Buktinya baris SLAB di serial.
+    g_slab_bad_free = bad0;
+    g_slab_fail = fail0;
+    g_slab_uaf = uaf0;
     return 1;
 gagal:
     kprintf("SLAB: self-test GAGAL (langkah %d)\r\n", step);

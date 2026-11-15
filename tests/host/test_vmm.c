@@ -134,8 +134,70 @@ static void test_huge(void)
     CHECK(!vmm_user_mapped(phys(pml4), 0xffff800000000000ULL));
 }
 
+// F7: kfree heap bump. Memori heap = buffer host (kheap_base diganti); ukuran > 1024 supaya
+// kmalloc memakai jalur bump, bukan slab.
+static void test_bump(void)
+{
+    enum { HEAP = 1 << 20 };
+    uint8_t *h = aligned_alloc(4096, HEAP);
+    memset(h, 0xFF, HEAP);                    // sisa data lama: bukan header sah
+    kheap_base = (uint64_t)(uintptr_t)h;
+    kheap_current = kheap_base;
+    kheap_mapped_end = kheap_base + HEAP;
+    g_kmalloc_n = g_kfree_n = g_kfree_noop = g_kmalloc_fail = g_heap_bad_free = 0;
+
+    uint8_t *a = kmalloc(2000), *b = kmalloc(3000), *c = kmalloc(1500);
+    CHECK(a && b && c && ((uintptr_t)a & 15) == 0 && ((uintptr_t)b & 15) == 0);
+    CHECK(b >= a + 2000 && c >= b + 3000);
+    memset(a, 0, 2000);                       // isi nol: tidak ada header palsu di dalamnya
+    memset(b, 0xFF, 3000);
+    uint64_t end = kheap_current;
+
+    kfree(a + 16);                            // tengah blok, sejajar 16
+    kfree(a + 8);                             // tidak sejajar 16
+    kfree(a + 1008);                          // tengah blok isi nol
+    kfree(b + 512);                           // tengah blok isi 0xFF
+    int x;
+    kfree(&x);                                // asing (stack)
+    kfree(h);                                 // awal heap: header tak ada
+    kfree(h + HEAP);                          // di luar kheap_current
+    CHECK(g_heap_bad_free == 7 && g_kfree_n == 0 && kheap_current == end);
+
+    // Header palsu di tengah blok tanpa tanda yang cocok: tetap ditolak.
+    uint64_t *fake = (uint64_t *)(b + 256);
+    fake[0] = 4096; fake[1] = 4096;           // total palsu besar, tanda salah
+    kfree(b + 272);
+    CHECK(g_heap_bad_free == 8 && kheap_current == end);
+
+    kfree(a);                                 // bukan yang terakhir: no-op sah
+    CHECK(g_kfree_n == 1 && g_kfree_noop == 1 && kheap_current == end);
+    kfree(a);                                 // double free (tanda sudah dihapus)
+    CHECK(g_heap_bad_free == 9 && g_kfree_n == 1);
+
+    uint64_t before_c = (uint64_t)(uintptr_t)c - 16;
+    kfree(c);                                 // terakhir: reclaim
+    CHECK(kheap_current == before_c && g_kfree_n == 2 && g_kfree_noop == 1);
+    kfree(c);                                 // sesudah reclaim: di atas kheap_current
+    CHECK(g_heap_bad_free == 10 && kheap_current == before_c);
+    uint8_t *d = kmalloc(1500);
+    CHECK(d == c);                            // alamat dipakai ulang (LIFO)
+    kfree(d);
+    kfree(b);                                 // b kini terakhir (a no-op sudah bebas)
+    CHECK(g_kfree_n == 4 && g_heap_bad_free == 10);
+    CHECK(kheap_current == (uint64_t)(uintptr_t)b - 16);
+    kfree(0);                                 // NULL: diam
+    CHECK(g_heap_bad_free == 10 && g_kfree_n == 4);
+
+    // Batas: besar sekali ditolak tanpa mengubah heap.
+    uint64_t cur = kheap_current;
+    CHECK(kmalloc(KHEAP_MAX) == 0 && kmalloc((uint64_t)-8) == 0 && kheap_current == cur);
+    CHECK(g_kmalloc_fail == 2);
+    free(h);
+}
+
 int main(void)
 {
+    test_bump();
     test_ptr();
     test_range();
     test_huge();

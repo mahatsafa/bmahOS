@@ -273,6 +273,8 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(g_kfree_noop);
         cmd_puts(" gagal=");
         cmd_putdec(g_kmalloc_fail);
+        cmd_puts(" lepas_salah=");
+        cmd_putdec(g_heap_bad_free);
         cmd_puts("\nslab: alokasi=");   // F7
         cmd_putdec(g_slab_alloc);
         cmd_puts(" lepas=");

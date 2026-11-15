@@ -622,17 +622,27 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Halaman kosong dilepas ke pmm (vmm_unmap + pmm_free), satu halaman kosong per cache dipertahankan.** Alasan: batas 64 halaman bukan
   alasan menimbun frame, dan akses lewat pointer lama ke halaman yang dilepas jadi #PF (bukan diam). Satu cadangan mencegah mondar-mandir
   map/unmap pada pola alloc/free bergantian. Alokasi memilih halaman yang sebagian terisi dahulu supaya halaman kosong bisa dilepas.
-- **`kfree`: alamat di region slab -> slab (`slab_free`), selain itu jalur bump lama; kini jalur bump menolak pointer di luar
-  [KHEAP_START+8, kheap_current) atau tidak berselisih 8 mod 16 (`slab_bad_free++`) alih-alih membaca header di alamat asing.**
-  `slab_bad_free` jadi penghitung semua penolakan `kfree` (slab: double free, pointer asing/tengah objek/guard/halaman tak aktif;
-  bump: di luar heap). Penolakan tidak dihitung sebagai `kfree`. Tidak panic (build dev pun) agar uji boot bisa memicunya;
-  gagal tertutup: objek tidak disentuh. Double free pada heap bump besar tetap tak terdeteksi (batasan lama).
+- **`kfree`: alamat di region slab -> slab (`slab_free`), selain itu jalur bump.** Slab menolak double free, pointer asing,
+  pointer tengah objek, halaman guard dan halaman tak aktif (`slab_bad_free++`). Penolakan tidak dihitung sebagai `kfree`.
+  Tidak panic (build dev pun) agar uji bisa memicunya; gagal tertutup: objek tidak disentuh.
+- **Heap bump: header 16 byte `{tanda, total}` dengan tanda = total ^ alamat header ^ konstanta; counter terpisah `heap_bad_free`
+  (bukan `slab_bad_free`, supaya alarm per jalur jelas).** `kfree` menolak pointer di luar [kheap_base+16, kheap_current), tidak
+  sejajar 16, atau tanda/total tidak cocok (pointer ke tengah blok, isi bebas), lalu menghapus tanda saat dibebaskan sehingga
+  double free blok yang bukan terakhir juga ditolak (dulu dihitung no-op diam-diam). Alternatif: hanya cek 8 mod 16 (versi
+  pertama) -- ditolak: pointer tengah blok yang kebetulan sejajar dibaca sebagai header palsu, `kheap_current` mundur dan alokasi
+  tumpang tindih. Batasan: tanda bukan rahasia, jadi header palsu yang dibangun sengaja (tahu konstanta dan alamat) lolos; header
+  jadi 16 byte (alokasi besar 8 byte lebih boros, alamat data kini sejajar 16).
 - **Racun hanya build dev (bukan `BMAHOS_PROD`): halaman baru dan objek yang dibebaskan diisi 0xA5; saat dialokasikan lagi, byte yang
   berubah dihitung `slab_uaf` + baris serial.** Alasan: biaya penuh per alokasi tidak layak di PROD; deteksi hanya "tulis setelah bebas",
   bukan baca. Akibat: di build dev isi `kmalloc` kecil awalnya 0xA5, bukan sisa data lama (tetap tak dijamin nol).
-- **Penghitung: slab_alloc/free/fail/pages/bad_free/uaf di akhir g_metrics (138 kunci), baris `slab:` di `mem`.** `kmalloc`/`kfree`
-  tetap menghitung semua panggilan (kmalloc = slab + bump), kecuali penolakan. Uji boot `SLAB: self-test PASS` memicu
-  bad_free 3, fail 1, uaf 1 (dev) dengan sengaja; qemu-smoke memeriksa angka itu dan alloc-free konstan.
+- **Penghitung: slab_alloc/free/fail/pages/bad_free/uaf + heap_bad_free di akhir g_metrics (139 kunci), baris `slab:` di `mem`
+  (heap_bad_free sebagai `lepas_salah=` di baris kmalloc).** `kmalloc`/`kfree` tetap menghitung semua panggilan (kmalloc = slab
+  + bump), kecuali penolakan. `slab_selftest` memicu bad_free 3, fail 1, uaf 1 (dev) dengan sengaja, lalu **mengembalikan
+  counter penolakan/gagal/uaf ke nilai sebelum uji** supaya metrics produksi bersih (nilai > 0 setelah boot = kejadian nyata,
+  bisa dipakai alarm); buktinya baris `SLAB: self-test PASS (... bad_free=3)` di serial. qemu-smoke memeriksa baris itu,
+  metrics 0, dan alloc-free konstan. Varian PROD test_slab (`-DBMAHOS_PROD`) menguji tanpa racun.
+- **Belum teruji otomatis: #PF saat mengakses halaman slab yang sudah dilepas** (di host tidak ada MMU; di QEMU tidak ada
+  pemicu). Yang diuji: vmm_unmap + pmm_free terpanggil tepat sekali per halaman (uji host) dan pemetaan P|W|NX (uji boot).
 - **Belum ada pemanggil produksi `kmalloc`** (hanya uji boot di kmain dan nx_selftest), jadi slab terbukti lewat uji host + uji boot,
   bukan lewat beban nyata. Tanpa kunci: tidak aman dari ISR / dua task bersamaan (kernel satu core; sama dengan heap bump).
   Tidak ada kanari antar-objek dan overflow di dalam halaman tidak terdeteksi.

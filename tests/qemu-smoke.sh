@@ -285,14 +285,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=138   # F7: + 6 slab_*, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
+R3_N=139   # F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir slab_uaf" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^slab_uaf="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir heap_bad_free" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^heap_bad_free="'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -319,15 +319,15 @@ fi
 # R6-3: batas heap (uji boot) dan counter alokasi; pmm_alloc - pmm_free
 # dicatat di sini lalu dibandingkan setelah semua uji boot pertama.
 check "R6-3: kmalloc batas PASS, kmalloc_fail=2, pmm_fail=0, pmm_bad_free=1 (uji double free boot), kmalloc/pmm terhitung" \
-    'grep -aq "^kmalloc batas: PASS" "$LOG" && [ "$(mval kmalloc_fail)" = 2 ] && [ "$(mval pmm_fail)" = 0 ] && [ "$(mval pmm_bad_free)" = 1 ] && [ "$(mval pmm_alloc)" -gt "$(mval pmm_free)" ] && [ "$(mval kmalloc)" -ge 4 ]'
+    'grep -aq "^kmalloc batas: PASS" "$LOG" && grep -aq "^kfree test: PASS" "$LOG" && [ "$(mval kmalloc_fail)" = 2 ] && [ "$(mval pmm_fail)" = 0 ] && [ "$(mval pmm_bad_free)" = 1 ] && [ "$(mval pmm_alloc)" -gt "$(mval pmm_free)" ] && [ "$(mval kmalloc)" -ge 4 ]'
 PMM_OUT0=$(( $(mval pmm_alloc) - $(mval pmm_free) ))
 KM0="$(mval kmalloc)"
 
 # F7: slab allocator. Uji boot: urutan alokasi/free, double free + pointer asing + pointer tengah
 # (bad_free 3), batas cache 1024 (fail 1), use-after-free tertulis hanya di build dev (uaf 1; PROD 0 karena tanpa racun).
 if grep -q "PROD: task uji dilewati" "$LOG"; then SLAB_UAF=0; else SLAB_UAF=1; fi
-check "F7: slab self-test PASS (kelas=7 16..1024, 64 halaman/cache), slab_bad_free=3, slab_fail=1, slab_uaf=$SLAB_UAF" \
-    'grep -aq "^SLAB: self-test PASS (kelas=7 16..1024 byte, maks 64 halaman/cache, bad_free=3)" "$LOG" && [ "$(mval slab_bad_free)" = 3 ] && [ "$(mval slab_fail)" = 1 ] && [ "$(mval slab_uaf)" = "$SLAB_UAF" ] && [ "$(mval slab_alloc)" -gt "$(mval slab_free)" ] && [ "$(mval slab_pages)" -ge 1 ] && [ "$(mval slab_pages)" -le 7 ]'
+check "F7: slab self-test PASS di serial (bad_free=3 disengaja), metrics bersih: slab_bad_free/fail/uaf=0, heap_bad_free=0" \
+    'grep -aq "^SLAB: self-test PASS (kelas=7 16..1024 byte, maks 64 halaman/cache, bad_free=3)" "$LOG" && [ "$(mval slab_bad_free)" = 0 ] && [ "$(mval slab_fail)" = 0 ] && [ "$(mval slab_uaf)" = 0 ] && [ "$(mval heap_bad_free)" = 0 ] && [ "$(mval slab_alloc)" -gt "$(mval slab_free)" ] && [ "$(mval slab_pages)" -ge 1 ] && [ "$(mval slab_pages)" -le 7 ]'
 check "F7: dev: slab menolak double free/pointer asing/UAF di serial; PROD: tanpa peringatan UAF" \
     'grep -aq "^slab: double free terdeteksi, ditolak" "$LOG" && grep -aq "^slab: kfree pointer asing ditolak" "$LOG" && grep -aq "^slab: cache penuh (SLAB_PAGES_MAX)" "$LOG" && [ "$(grep -ac "^slab: PERINGATAN objek bebas berubah" "$LOG")" = "$SLAB_UAF" ]'
 SLAB_LIVE0=$(( $(mval slab_alloc) - $(mval slab_free) ))
@@ -773,8 +773,8 @@ check "R6-3: tanpa kebocoran frame/heap selama uji boot pertama (alloc-free teta
 SLAB_L="$($BM "metrics slab_" 2>&1)"
 SLAB_LIVE1=$(( $(echo "$SLAB_L" | sed -n "s/^slab_alloc=//p") - $(echo "$SLAB_L" | sed -n "s/^slab_free=//p") ))
 echo "info  F7: objek slab hidup awal=$SLAB_LIVE0 akhir=$SLAB_LIVE1, halaman awal=$SLAB_PG0"
-check "F7: tanpa kebocoran slab selama uji boot pertama (alloc-free tetap, halaman tetap, bad_free 3, fail 1)" \
-    '[ "$SLAB_LIVE1" -eq "$SLAB_LIVE0" ] && echo "$SLAB_L" | grep -q "^slab_pages=$SLAB_PG0$" && echo "$SLAB_L" | grep -q "^slab_bad_free=3$" && echo "$SLAB_L" | grep -q "^slab_fail=1$"'
+check "F7: tanpa kebocoran slab selama uji boot pertama (alloc-free tetap, halaman tetap, penolakan/gagal tetap 0)" \
+    '[ "$SLAB_LIVE1" -eq "$SLAB_LIVE0" ] && echo "$SLAB_L" | grep -q "^slab_pages=$SLAB_PG0$" && echo "$SLAB_L" | grep -q "^slab_bad_free=0$" && echo "$SLAB_L" | grep -q "^slab_fail=0$" && echo "$SLAB_L" | grep -q "^slab_uaf=0$"'
 
 sleep 1.2
 # P5-1: soket UDP program user. Dev: udpgema (slot 8) menggemakan port 5555 dengan

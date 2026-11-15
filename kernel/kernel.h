@@ -301,7 +301,7 @@ void kfree(void *ptr);
 // R6-3: batas heap + counter alokasi/pelepasan (metrics, `mem`).
 #define KHEAP_MAX (16ULL * 1024 * 1024)
 extern uint64_t g_pmm_allocs, g_pmm_frees, g_pmm_fail, g_pmm_bad_free;
-extern uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail;
+extern uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail, g_heap_bad_free;
 // Alokasi wajib (tabel halaman, PML4 task, stack task, halaman user saat
 // dibuat) gagal -> panic + reboot, bukan lanjut dengan pemetaan hilang.
 __attribute__((noreturn)) void oom_panic(const char *where);

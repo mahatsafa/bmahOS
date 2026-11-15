@@ -284,6 +284,7 @@ static const metric_t g_metrics[] = {
     M64("slab_pages", g_slab_pages),
     M64("slab_bad_free", g_slab_bad_free),
     M64("slab_uaf", g_slab_uaf),
+    M64("heap_bad_free", g_heap_bad_free),   // F7 (heap bump)
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

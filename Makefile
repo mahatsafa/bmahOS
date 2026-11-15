@@ -164,7 +164,7 @@ HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host -Ithird_party/bearssl/inc
 HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config panic metrics logdisk \
-               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock ota vmm slab
+               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock ota vmm slab slab_prod
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
@@ -197,6 +197,10 @@ host_srcs_pmm     := $(KERNEL_DIR)/kprintf.c
 host_deps_pmm     := $(KERNEL_DIR)/pmm.c tests/host/limine.h   # R6-3: limine.h pengganti
 host_srcs_slab    := $(KERNEL_DIR)/kprintf.c
 host_deps_slab    := $(KERNEL_DIR)/slab.c      # F7: di-#include oleh test_slab.c
+# F7: varian PROD (tanpa racun): test_slab.c yang sama dengan -DBMAHOS_PROD
+$(HOST_BUILD)/test_slab_prod: tests/host/test_slab.c tests/host/stubs.c tests/host/test.h $(HDRS) $(KERNEL_DIR)/slab.c $(KERNEL_DIR)/kprintf.c
+	@mkdir -p $(HOST_BUILD)
+	$(HOST_CC) $(HOST_CFLAGS) -DBMAHOS_PROD tests/host/test_slab.c tests/host/stubs.c $(KERNEL_DIR)/kprintf.c -o $@
 host_deps_fbcon   := $(KERNEL_DIR)/fbcon.c $(KERNEL_DIR)/fbfont.h   # P1: di-#include oleh test_fbcon.c
 host_srcs_pci     := $(KERNEL_DIR)/kprintf.c
 host_deps_pci     := $(KERNEL_DIR)/pci.c       # P2: di-#include oleh test_pci.c

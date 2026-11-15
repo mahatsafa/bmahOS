@@ -370,6 +370,7 @@ bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len, bool requ
 uint64_t kheap_current = 0;
 uint64_t kheap_mapped_end = 0;
 static uint64_t kheap_pml4_phys = 0;
+static uint64_t kheap_base = KHEAP_START;   // variabel agar uji host bisa memakai memori nyata
 
 // ---- R6-2: stack kernel dengan guard page ----
 // [guard 4 KB, tidak dipetakan][stack size, P|W|NX] berurutan dari
@@ -426,12 +427,20 @@ int kstack_guard_find(uint64_t addr, uint64_t *lo, uint64_t *top)
 void kheap_init(uint64_t pml4_phys)
 {
     kheap_pml4_phys = pml4_phys;
+    kheap_base = KHEAP_START;
     kheap_current = KHEAP_START;
     kheap_mapped_end = KHEAP_START;
     slab_init(pml4_phys, SLAB_START);   // F7
 }
 
 uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail;   // R6-3
+uint64_t g_heap_bad_free;   // F7: kfree heap bump ditolak (pointer asing / tengah blok / sudah bebas)
+
+// F7: header bump 16 byte {tanda, total}. tanda = total ^ alamat header ^ KHEAP_MAGIC, jadi
+// pointer ke tengah blok (isi bebas) atau blok yang sudah di-kfree (tanda dinolkan) ditolak.
+// Hanya menahan salah pakai, bukan pemalsu yang membangun header palsu dengan sengaja.
+#define KHEAP_MAGIC  0x4B48454150424D41ULL
+#define KHEAP_HDR    16
 
 void *kmalloc(uint64_t size)
 {
@@ -448,13 +457,13 @@ void *kmalloc(uint64_t size)
 
     // R6-3: batas KHEAP_MAX (juga mencegah overflow size + header).
     if (size > KHEAP_MAX ||
-        kheap_current - KHEAP_START + size + sizeof(uint64_t) + 15 > KHEAP_MAX) {
+        kheap_current - kheap_base + size + KHEAP_HDR + 15 > KHEAP_MAX) {
         g_kmalloc_fail++;
         serial_write("kmalloc: ditolak, melebihi KHEAP_MAX\r\n");
         return (void *)0;
     }
 
-    uint64_t total = size + sizeof(uint64_t);
+    uint64_t total = size + KHEAP_HDR;
     total = (total + 15) & ~((uint64_t)15);
 
     while (kheap_current + total > kheap_mapped_end) {
@@ -471,12 +480,13 @@ void *kmalloc(uint64_t size)
 
     uint64_t header_addr = kheap_current;
     uint64_t *header = (uint64_t *)header_addr;
-    *header = total;
+    header[0] = total ^ header_addr ^ KHEAP_MAGIC;
+    header[1] = total;
 
     kheap_current += total;
     g_kmalloc_n++;
 
-    return (void *)(header_addr + sizeof(uint64_t));
+    return (void *)(header_addr + KHEAP_HDR);
 }
 
 void kfree(void *ptr)
@@ -494,16 +504,25 @@ void kfree(void *ptr)
     }
 
     uint64_t data_addr = (uint64_t)ptr;
-    // F7: pointer di luar heap bump (atau di dalam yang sudah dilepas) ditolak, bukan dibaca headernya.
-    if (data_addr < KHEAP_START + sizeof(uint64_t) || data_addr >= kheap_current ||
-        (data_addr & 15) != 8) {
-        g_slab_bad_free++;
-        serial_write("kfree: pointer di luar heap ditolak\r\n");
+    // F7: pointer di luar heap bump (atau di dalam yang sudah dilepas) ditolak sebelum header dibaca;
+    // header harus bertanda sah dan blok tidak boleh melewati kheap_current.
+    uint64_t header_addr = data_addr - KHEAP_HDR;
+    uint64_t total = 0;
+    int sah = data_addr >= kheap_base + KHEAP_HDR && data_addr < kheap_current &&
+              (data_addr & 15) == 0;
+    if (sah) {
+        const uint64_t *hp = (const uint64_t *)header_addr;
+        total = hp[1];
+        sah = total >= 2 * KHEAP_HDR && (total & 15) == 0 &&
+              total <= kheap_current - header_addr &&
+              hp[0] == (total ^ header_addr ^ KHEAP_MAGIC);
+    }
+    if (!sah) {
+        g_heap_bad_free++;
+        serial_write("kfree: pointer heap tidak sah / sudah bebas, ditolak\r\n");
         return;
     }
-    uint64_t header_addr = data_addr - sizeof(uint64_t);
-    uint64_t *header = (uint64_t *)header_addr;
-    uint64_t total = *header;
+    *(uint64_t *)header_addr = 0;   // tanda dihapus: kfree kedua atas blok ini ditolak
 
     g_kfree_n++;
     if (header_addr + total == kheap_current) {

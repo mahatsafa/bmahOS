@@ -848,6 +848,7 @@ static void nx_selftest(uint64_t kernel_pml4, uint64_t user_pml4,
     }
 
     void *heap_probe = kmalloc(16);
+    void *bump_probe = kmalloc(SLAB_MAX_SIZE + 976);   // 2000 byte: heap bump
     uint64_t stack_probe = (uint64_t)&heap_probe;
     int ok = 1;
 
@@ -855,6 +856,7 @@ static void nx_selftest(uint64_t kernel_pml4, uint64_t user_pml4,
     ok &= nx_expect("kernel .rodata", kernel_pml4, (uint64_t)g_nx_rodata_probe, 1);
     ok &= nx_expect("kernel .data", kernel_pml4, (uint64_t)&g_vmm_nx_ok, 1);
     ok &= nx_expect("kernel heap", kernel_pml4, (uint64_t)heap_probe, 1);
+    ok &= nx_expect("kernel heap bump", kernel_pml4, (uint64_t)bump_probe, 1);
     ok &= nx_expect("stack boot", kernel_pml4, stack_probe, 1);
     uint64_t hhdm_frame = pmm_alloc();
     ok &= nx_expect("HHDM (frame RAM)", kernel_pml4, hhdm_frame + hhdm_offset, 1);
@@ -874,6 +876,7 @@ static void nx_selftest(uint64_t kernel_pml4, uint64_t user_pml4,
 #endif
 
     kfree(heap_probe);
+    kfree(bump_probe);
 }
 void kmain(void)
 {
@@ -1077,8 +1080,8 @@ void kmain(void)
         serial_write("kmalloc test: FAIL\r\n");
     }
     serial_write("\r\n");
-    char *d = (char *)kmalloc(16);
-    serial_write("kmalloc(16) untuk test kfree -> ");
+    char *d = (char *)kmalloc(2000);   // > 1024: heap bump, LIFO reclaim
+    serial_write("kmalloc(2000) untuk test kfree -> ");
     serial_write_hex((uint64_t)d);
     serial_write("\r\n");
 
@@ -1093,8 +1096,8 @@ void kmain(void)
     serial_write_hex(after_free);
     serial_write("\r\n");
 
-    char *e = (char *)kmalloc(16);
-    serial_write("kmalloc(16) lagi setelah kfree -> ");
+    char *e = (char *)kmalloc(2000);
+    serial_write("kmalloc(2000) lagi setelah kfree -> ");
     serial_write_hex((uint64_t)e);
     serial_write("\r\n");
 
