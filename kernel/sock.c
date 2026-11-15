@@ -441,9 +441,11 @@ uint64_t sock_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr,
 
     const uint8_t *src = (const uint8_t *)buf;
 
+    user_access_begin();   // F7: SMAP
     for (uint64_t k = 0; k < len; k++) {
         s->tx_data[k] = src[k];
     }
+    user_access_end();
     for (int k = 0; k < 4; k++) {
         s->tx_ip[k] = ip[k];
     }
@@ -497,12 +499,14 @@ uint64_t sock_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t cap, uint64_t fro
     uint32_t n = d->len < cap ? d->len : (uint32_t)cap;   // sisa datagram dibuang
     uint8_t *dst = (uint8_t *)buf;
 
+    user_access_begin();   // F7: SMAP
     for (uint32_t k = 0; k < n; k++) {
         dst[k] = d->data[k];
     }
     if (from != 0) {
         *(uint64_t *)from = SOCK_ADDR(d->ip[0], d->ip[1], d->ip[2], d->ip[3], d->port);
     }
+    user_access_end();
     s->qh = (s->qh + 1) % SOCK_QLEN;
     s->qn--;
     return n;
@@ -774,8 +778,10 @@ uint64_t sock_sys_accept(uint64_t fd, uint64_t from, uint64_t timeout, uint64_t 
                     c->owner = current_index;
                     g_sock_tcp_accept++;
                     if (from != 0) {
+                        user_access_begin();   // F7: SMAP
                         *(uint64_t *)from = SOCK_ADDR(c->ip[0], c->ip[1], c->ip[2], c->ip[3],
                                                       c->rport);
+                        user_access_end();
                     }
                     return i;
                 }
@@ -838,9 +844,11 @@ uint64_t sock_sys_send(uint64_t fd, uint64_t buf, uint64_t len, uint64_t timeout
         if (room > 0) {
             uint32_t n = len > room ? room : (uint32_t)len;
 
+            user_access_begin();   // F7: SMAP
             for (uint32_t i = 0; i < n; i++) {
                 c->tx[(c->tx_h + c->tx_n + i) % SOCK_TCP_RING] = src[i];
             }
+            user_access_end();
             c->tx_n += n;
             net_rx_tick_wake();
             return n;
@@ -877,9 +885,11 @@ uint64_t sock_sys_recv(uint64_t fd, uint64_t buf, uint64_t cap, uint64_t timeout
             uint32_t n = c->rx_n < cap ? c->rx_n : (uint32_t)cap;
             uint32_t before = SOCK_TCP_RING - c->rx_n;
 
+            user_access_begin();   // F7: SMAP
             for (uint32_t i = 0; i < n; i++) {
                 dst[i] = c->rx[(c->rx_h + i) % SOCK_TCP_RING];
             }
+            user_access_end();
             c->rx_h = (c->rx_h + n) % SOCK_TCP_RING;
             c->rx_n -= n;
             if (n > 0 && before < SOCK_TCP_WND_UPD) {

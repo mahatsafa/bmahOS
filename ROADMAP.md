@@ -247,7 +247,7 @@ Wi-Fi tidak direncanakan.
 
 ### Fase 7: Opsional, tanpa urutan
 
-SSH, SMP (N2840 punya 2 core), IPv6, SMEP/SMAP bila CPU mendukung, slab allocator, prioritas task dan batas
+SSH, SMP (N2840 punya 2 core), IPv6, SMEP/SMAP bila CPU mendukung (selesai di branch f7-smep), slab allocator, prioritas task dan batas
 sumber daya per task, Secure Boot, port library TLS.
 
 ## 6. Pengecualian IoT

@@ -906,6 +906,7 @@ void kmain(void)
     pci_scan_and_log();
     pci_find_devices();
     nx_init();
+    smep_smap_init();   // F7
 
     gdt_init();
 

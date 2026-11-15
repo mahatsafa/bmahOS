@@ -26,9 +26,9 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `kprintf.c` | `kprintf` (serial), `ksnprintf` (buffer), `kassert_fail` untuk `ASSERT()` (cetak `PANIC: ... file:baris`, lalu panic.c: trace + reboot), self-test format | serial |
 | `trap.c` | `exception_dispatcher` (exception kernel -> `panic_exception`; dari ring 3 -> task dihentikan, R6-1), `irq_handler`, syscall `int 0x80` (5 argumen; test/write/exit + soket 3..11 ke sock.c, docs/SYSCALL.md; `SYS_WRITE` maks 1024 byte, counter `sys_*`), `trigger_*` uji | sched, vmm, apic |
 | `pmm.c` | bitmap frame fisik (maks 4 GiB), frame 0 tidak pernah dibagikan, counter alokasi/lepas/gagal/lepas salah (R6-3) | Limine memmap |
-| `vmm.c` | page table 4 level, `vmm_map` (tabel gagal -> `oom_panic`), NX, klon PML4 kernel, validasi pointer user, heap kernel (`kmalloc`/`kfree` bump, maks `KHEAP_MAX` 16 MB), stack kernel ber-guard `kstack_alloc` di region `KSTACK_START` (R6-2) | pmm |
+| `vmm.c` | page table 4 level, `vmm_map` (tabel gagal -> `oom_panic`), NX, F7: `smep_smap_init` (CR4.SMEP/SMAP bila CPUID mendukung; `g_smep_on`/`g_smap_on`) + `vmm_user_mapped`, klon PML4 kernel, validasi pointer user, heap kernel (`kmalloc`/`kfree` bump, maks `KHEAP_MAX` 16 MB), stack kernel ber-guard `kstack_alloc` di region `KSTACK_START` (R6-2) | pmm |
 | `acpi.c` | RSDP, MADT (alamat LAPIC/IOAPIC, override IRQ0), FADT (register reset), `machine_reboot` (ACPI -> 8042 -> triple fault); P2: checksum + panjang RSDP/XSDT/RSDT/tiap tabel, MADT tahan entri rusak, jumlah CPU, HPET, perintah `acpi` | Limine RSDP |
-| `panic.c` | R1: dump exception (nama vektor, register, CR0-4, error #PF diurai), stack trace rantai rbp (maks 16 frame, tiap rbp dicek sebelum dibaca), reboot otomatis 10 s (polling PIT), panic bersarang -> reboot langsung; perintah uji `panic pf/df/ud/assert` (build dev) | kprintf, acpi, pic, ktimer |
+| `panic.c` | R1: dump exception (nama vektor, register, CR0-4, error #PF diurai), stack trace rantai rbp (maks 16 frame, tiap rbp dicek sebelum dibaca), reboot otomatis 10 s (polling PIT), panic bersarang -> reboot langsung; F7: #PF kernel ke halaman user didiagnosis SMEP/SMAP (`panic_smx_diag`); perintah uji `panic pf/df/ud/assert/stack/smep/smap` (build dev) | kprintf, acpi, pic, ktimer, vmm |
 | `pic.c` | remap dan mask 8259, PIT | — |
 | `apic.c` | Local APIC (EOI), IOAPIC (redirection table) | acpi, vmm |
 | `pci.c` | config space mekanisme #1; P2: enumerasi semua bus ke tabel `g_pci_devs` (maks 64, multi-function), `pci_find_class`/`pci_find_id`, pencarian AHCI dan E1000 dari tabel, perintah `pci` | kprintf |
@@ -61,7 +61,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `audit.c` | D5: audit log di RAM (ring ok 16 + ring gagal 8, entri IP:port, peran, kejadian, kode, perintah, tick), baris `AUDIT` ke UART tanpa ring log, `audit_dump` untuk perintah `audit` | kprintf, serial, cmd |
 | `cmd.c` | isi perintah baca (`help uptime mem log irq stats metrics mac ip tasks`) dan pengirim balasan | net, sched, log |
 | `metrics.c` | R3: registry metrik (tabel `g_metrics` nama -> pointer/getter, satu-satunya daftar kunci `metrics`), halaman + awalan, beban CPU per tick (`metrics_cpu_tick` dari `irq_handler`) | cmd, net, pmm, e1000, tls, netcon, audit, fat32 |
-| `gdt.S`, `interrupt.S`, `task.S` | muat GDT/TSS, stub ISR/IRQ, `context_switch`, `enter_usermode` | — |
+| `gdt.S`, `interrupt.S`, `task.S` | muat GDT/TSS, stub ISR/IRQ (F7: `clac` di awal bila SMAP aktif), `context_switch`, `enter_usermode` | — |
 
 ## 3. Urutan boot (`kmain`)
 

@@ -47,6 +47,23 @@ void panic_pf_decode(uint64_t err, char *buf, size_t size)
               (err & 16) ? " fetch" : "");
 }
 
+// F7: diagnosis #PF karena SMEP/SMAP. Cirinya: #PF dari mode kernel (U=0) ke halaman yang ADA
+// (P=1) di alamat user yang dipetakan sebagai halaman user. Fetch (I/D=1) dengan CR4.SMEP =
+// SMEP; akses data dengan CR4.SMAP = SMAP. Mengembalikan "SMEP"/"SMAP", atau NULL.
+const char *panic_smx_diag(uint64_t vector, uint64_t err, uint64_t cr2, uint64_t cr4, int user_mapped)
+{
+    if (vector != 14 || !(err & 1) || (err & 4) || cr2 >= 0x0000800000000000ULL || !user_mapped) {
+        return NULL;
+    }
+    if ((err & 16) && (cr4 & (1ULL << 20))) {
+        return "SMEP";
+    }
+    if (!(err & 16) && (cr4 & (1ULL << 21))) {
+        return "SMAP";
+    }
+    return NULL;
+}
+
 // Rantai frame: [rbp] = rbp pemanggil, [rbp+8] = alamat kembali. Setiap rbp
 // dicek SEBELUM dibaca: rata 8, >= stack_min, naik ketat dari frame sebelumnya
 // dan paling jauh PANIC_FRAME_MAX (stack tumbuh ke bawah). rbp 0 atau alamat
@@ -233,6 +250,19 @@ void panic_exception(struct exception_context *c)
             (void *)(uintptr_t)c->rsp, c->ss, on_ist ? "IST1" : "biasa");
     kprintf("PANIC: CR0=0x%lx CR2=%p CR3=0x%lx CR4=0x%lx\r\n",
             cr0, (void *)(uintptr_t)cr2, cr3, cr4);
+    // F7: SMEP/SMAP. Dicek lewat page walk CR3 supaya tidak keliru dengan #PF proteksi biasa.
+    const char *smx = panic_smx_diag(c->vector, c->error_code, cr2, cr4,
+                                     c->vector == 14 && cr2 < 0x0000800000000000ULL &&
+                                     vmm_user_mapped(cr3, cr2));
+    if (smx != NULL) {
+        if (smx[2] == 'E') {
+            kprintf("PANIC: SMEP: kernel menjalankan kode di halaman user (alamat %p)\r\n",
+                    (void *)(uintptr_t)cr2);
+        } else {
+            kprintf("PANIC: SMAP: kernel mengakses memori user di luar stac/clac (alamat %p AC=%lu)\r\n",
+                    (void *)(uintptr_t)cr2, (c->rflags >> 18) & 1);
+        }
+    }
     // R6-2: #PF/#DF di halaman guard = stack kernel meluap. Pemilik dicari
     // lewat rsp0 (puncak stack) di tabel task.
     uint64_t g_lo, g_top;
@@ -300,6 +330,36 @@ static void panic_test_stack(uint64_t depth)
     pad[1] = pad[0];
 }
 
+// F7: halaman user (U/S=1) di PML4 yang sedang aktif, alamat kanonik rendah yang tidak dipakai
+// task user (PML4 idx 0xFE). SMEP: lompat ke sana; SMAP: baca dari sana tanpa stac.
+#define PANIC_TEST_UADDR 0x00007F0000000000ULL
+
+static void panic_test_user_page(int exec)
+{
+    uint64_t frame = vmm_alloc_user_frame();
+
+    if (frame == 0) {
+        kprintf("PANIC-UJI: frame user tidak tersedia\r\n");
+        return;
+    }
+    *(volatile uint8_t *)(uintptr_t)(frame + hhdm_offset) = 0xC3;   // ret
+    vmm_map(read_cr3(), PANIC_TEST_UADDR, frame,
+            VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_USER | (exec ? 0 : VMM_FLAG_NX));
+}
+
+static void panic_test_smep(void)
+{
+    panic_test_user_page(1);
+    ((void (*)(void))(uintptr_t)PANIC_TEST_UADDR)();
+}
+
+static void panic_test_smap(void)
+{
+    panic_test_user_page(0);
+    volatile uint8_t v = *(volatile uint8_t *)(uintptr_t)PANIC_TEST_UADDR;
+    (void)v;
+}
+
 static void panic_test_assert(void)
 {
     ASSERT(g_panic_test_kind != 3);
@@ -313,6 +373,8 @@ static void panic_test_fire(void *arg)
     case 1: panic_test_df(); break;
     case 2: panic_test_ud(); break;
     case 4: panic_test_stack(0); break;
+    case 5: panic_test_smep(); break;
+    case 6: panic_test_smap(); break;
     default: panic_test_assert(); break;
     }
     kprintf("PANIC-UJI: fault tidak terjadi (jenis %d)\r\n", g_panic_test_kind);
@@ -321,13 +383,18 @@ static void panic_test_fire(void *arg)
 
 int panic_test_execute(const volatile uint8_t *cmd, uint32_t len)
 {
-    static const char *const kinds[5] = { "pf", "df", "ud", "assert", "stack" };
-    static const char *const cmds[5] = { "panic pf", "panic df", "panic ud", "panic assert",
-                                         "panic stack" };
+    static const char *const kinds[7] = { "pf", "df", "ud", "assert", "stack", "smep", "smap" };
+    static const char *const cmds[7] = { "panic pf", "panic df", "panic ud", "panic assert",
+                                         "panic stack", "panic smep", "panic smap" };
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 7; i++) {
         if (!net_cmd_is(cmd, len, cmds[i])) {
             continue;
+        }
+        // F7: tanpa dukungan CPU uji ini tidak berarti (lompatan/baca ke halaman user berhasil).
+        if ((i == 5 && !g_smep_on) || (i == 6 && !g_smap_on)) {
+            cmd_puts(i == 5 ? "ERR: SMEP tidak aktif\n" : "ERR: SMAP tidak aktif\n");
+            return 1;
         }
         if (g_panic_test_kind >= 0) {
             cmd_puts("ERR: uji panic sudah dijadwalkan\n");

@@ -58,9 +58,11 @@ static uint64_t sys_write(uint64_t buf_ptr, uint64_t len, uint64_t arg2, uint64_
     (void)arg2; (void)arg3; (void)arg4;
 
     const char *buf = (const char *)buf_ptr;
+    user_access_begin();   // F7: SMAP
     for (uint64_t i = 0; i < len; i++) {
         serial_putc(buf[i]);
     }
+    user_access_end();
 
     return len;
 }

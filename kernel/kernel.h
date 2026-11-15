@@ -249,6 +249,31 @@ uint64_t vmm_phys_of(uint64_t pml4_phys, uint64_t vaddr);
 void nx_init(void);
 uint64_t vmm_clone_kernel_pml4(uint64_t kernel_pml4_phys);
 bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len, bool require_writable);
+// F7: SMEP/SMAP. smep_smap_init() menyalakan CR4.SMEP/SMAP hanya bila CPUID mendukung;
+// g_smep_on/g_smap_on = keadaan CR4 sebenarnya (dibaca ulang). Akses kernel ke memori user
+// WAJIB dibungkus user_access_begin()/user_access_end() (stac/clac, hanya bila SMAP aktif);
+// jendelanya harus pendek dan tanpa tidur/task_switch di dalamnya.
+extern uint8_t g_smep_on, g_smap_on;
+void smep_smap_init(void);
+int vmm_user_mapped(uint64_t pml4_phys, uint64_t vaddr);   // 1 bila vaddr halaman user (U di semua level)
+#ifdef BMAHOS_HOST_TEST
+static inline void user_access_begin(void) {}
+static inline void user_access_end(void) {}
+#else
+static inline void user_access_begin(void)
+{
+    if (g_smap_on) {
+        __asm__ volatile("stac" ::: "memory", "cc");
+    }
+}
+
+static inline void user_access_end(void)
+{
+    if (g_smap_on) {
+        __asm__ volatile("clac" ::: "memory", "cc");
+    }
+}
+#endif
 // R6-1: syscall + fault user (trap.c)
 #define SYS_WRITE_MAX 1024   // byte per SYS_WRITE; lebih -> -1 (UART polling, interrupt mati)
 extern uint64_t g_sys_calls, g_sys_rejected, g_user_faults;
@@ -1124,6 +1149,7 @@ int panic_walk(uint64_t rbp, const panic_bounds_t *b, uint64_t *out, int max, in
 void panic_begin(void);
 __attribute__((noreturn)) void panic_finish(uint64_t rip, uint64_t rbp);
 __attribute__((noreturn)) void panic_exception(struct exception_context *c);
+const char *panic_smx_diag(uint64_t vector, uint64_t err, uint64_t cr2, uint64_t cr4, int user_mapped);   // F7
 int panic_test_execute(const volatile uint8_t *cmd, uint32_t len);   // build dev saja
 
 // ---- watchdog.c (R5: watchdog perangkat lunak) ----

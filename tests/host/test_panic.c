@@ -20,6 +20,14 @@ void machine_reboot(void)
     abort();
 }
 
+// F7: panic.c memakai vmm/CR3 untuk pemicu uji SMEP/SMAP dan diagnosis (tidak dijalankan di host).
+uint8_t g_smep_on, g_smap_on;
+uint64_t hhdm_offset;
+uint64_t read_cr3(void) { return 0; }
+void vmm_map(uint64_t p, uint64_t v, uint64_t pa, uint64_t f) { (void)p; (void)v; (void)pa; (void)f; }
+uint64_t vmm_alloc_user_frame(void) { return 0; }
+int vmm_user_mapped(uint64_t p, uint64_t v) { (void)p; (void)v; return 0; }
+
 void pit_init(uint32_t frequency_hz)
 {
     (void)frequency_hz;
@@ -193,6 +201,25 @@ static int exec(const char *c)
     return panic_test_execute((const volatile uint8_t *)c, (uint32_t)strlen(c));
 }
 
+// F7: diagnosis SMEP/SMAP dari kode error #PF + CR4 + hasil page walk.
+static void test_smx(void)
+{
+    const uint64_t cr4 = (1ULL << 20) | (1ULL << 21);
+    const uint64_t u = 0x00007F0000000000ULL;
+
+    CHECK_STR(panic_smx_diag(14, 0x11, u, cr4, 1), "SMEP");      // fetch kernel di halaman user
+    CHECK_STR(panic_smx_diag(14, 0x01, u, cr4, 1), "SMAP");      // baca kernel
+    CHECK_STR(panic_smx_diag(14, 0x03, u, cr4, 1), "SMAP");      // tulis kernel
+    CHECK(panic_smx_diag(14, 0x11, u, 1ULL << 21, 1) == NULL);   // SMEP mati di CR4
+    CHECK(panic_smx_diag(14, 0x01, u, 1ULL << 20, 1) == NULL);   // SMAP mati di CR4
+    CHECK(panic_smx_diag(14, 0x11, u, 1ULL << 20, 1) != NULL);
+    CHECK(panic_smx_diag(14, 0x10, u, cr4, 1) == NULL);          // tidak-ada (P=0)
+    CHECK(panic_smx_diag(14, 0x05, u, cr4, 1) == NULL);          // dari user (U=1)
+    CHECK(panic_smx_diag(14, 0x03, u, cr4, 0) == NULL);          // bukan halaman user
+    CHECK(panic_smx_diag(14, 0x03, 0xffffffff80000000ULL, cr4, 1) == NULL);   // alamat kernel
+    CHECK(panic_smx_diag(13, 0x11, u, cr4, 1) == NULL);          // bukan #PF
+}
+
 static void test_cmd(void)
 {
     CHECK(exec("panic") == 0);
@@ -223,6 +250,24 @@ static void test_cmd(void)
     CHECK(exec("panic assert") == 1);
     CHECK_STR(g_out, "panic: uji assert dalam 1 detik\n");
     CHECK(g_panic_test_kind == 3);
+
+    // F7: panic smep/smap ditolak bila CPU tidak mendukung (CR4 tidak menyala).
+    g_panic_test_kind = -1;
+    g_smep_on = g_smap_on = 0;
+    CHECK(exec("panic smep") == 1);
+    CHECK_STR(g_out, "ERR: SMEP tidak aktif\n");
+    CHECK(exec("panic smap") == 1);
+    CHECK_STR(g_out, "ERR: SMAP tidak aktif\n");
+    CHECK(g_panic_test_kind == -1);
+    g_smep_on = g_smap_on = 1;
+    CHECK(exec("panic smep") == 1);
+    CHECK_STR(g_out, "panic: uji smep dalam 1 detik\n");
+    CHECK(g_panic_test_kind == 5);
+    g_panic_test_kind = -1;
+    CHECK(exec("panic smap") == 1);
+    CHECK_STR(g_out, "panic: uji smap dalam 1 detik\n");
+    CHECK(g_panic_test_kind == 6);
+    CHECK(exec("panic smapx") == 0);
 }
 
 int main(void)
@@ -230,6 +275,7 @@ int main(void)
     test_names();
     test_pf_decode();
     test_walk();
+    test_smx();
     test_cmd();
     return test_done("panic");
 }

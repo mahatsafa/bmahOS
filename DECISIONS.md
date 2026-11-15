@@ -573,3 +573,23 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   `ota terima app` dari boot ISO tetap menulis: itu perintah eksplisit. Magic tidak diganti: menghasilkan penolakan yang sama.
 - **Migrasi tidak menimpa OTA.BIN rusak** (bukti diagnosa); OTA kernel/app eksplisit tetap menimpa seperti sebelumnya.
 - **Tanpa slot tidak ada minimum**: OTA.BIN tidak dipetakan saat OTA mati, tidak dibuat demi fitur ini.
+
+## 2026-11-15 (F7: SMEP/SMAP)
+- **Nyalakan hanya bila CPUID leaf 7 (EBX bit 7 SMEP, bit 20 SMAP) melapor**, lalu CR4 dibaca ulang dan `g_smep_on`/`g_smap_on`
+  diisi dari keadaan CR4 sebenarnya. Satu baris log per fitur ("SMEP: aktif" / "SMAP: tidak didukung CPU"). Alternatif: selalu
+  tulis CR4 (menghasilkan #GP di CPU lama) -- ditolak.
+- **stac/clac lewat `user_access_begin/end` dengan cek flag global `g_smap_on`**, bukan patch kode (alternatives) atau
+  `-mno-...`: `stac`/`clac` di CPU tanpa SMAP = #UD, dan satu cabang pada jalur syscall murah. Jendela hanya mengelilingi loop
+  penyalinan (sys_write, sendto, recvfrom, accept `from`, send, recv); tidak ada tidur di dalamnya karena AC tidak ikut
+  `context_switch` (hanya `iretq` yang memulihkannya). Alternatif: satu `copy_from_user`/`copy_to_user` umum -- ditunda, hanya
+  6 titik dan polanya sudah beragam (ring TCP berputar, `from` 8 byte).
+- **`clac` di awal `isr_common_stub` dan `irq_common_stub`** (juga lewat cek `g_smap_on`), bukan SFMASK: syscall memakai
+  `int 0x80`, bukan `syscall`, dan ring 3 bisa menyalakan EFLAGS.AC lewat `popf` (AC=1 di kernel mematikan SMAP).
+- **Diagnosis panic dari page walk, bukan dari kode error saja**: #PF dari mode kernel (U=0) ke halaman yang ADA (P=1) di alamat
+  kanonik rendah yang dipetakan user (U=1 di semua level, `vmm_user_mapped`); fetch + CR4.SMEP = SMEP, data + CR4.SMAP = SMAP
+  (dengan nilai AC). Tanpa itu #PF proteksi biasa (tulis ke halaman baca-saja) tampak sama.
+- **Uji: `panic smep` / `panic smap` (admin, build dev, jalur yang sama dengan `panic pf`)** memetakan satu halaman user di
+  PML4 aktif (0x00007F0000000000) lalu melompat / membaca dari kernel; ditolak "ERR: SMEP tidak aktif" bila CPU tidak mendukung
+  (lompatan itu akan berhasil). Degradasi diuji dengan `-cpu max,-smep,-smap` (`-cpu qemu64` tidak sampai ke kernel di
+  OVMF + TCG di mesin ini; penyebab belum diselidiki).
+- **Belum terbukti**: perangkat keras asli dan VMware (skrip `uji-f7smep.ps1`); SMP (tak ada; CR4 per core harus disalin ke AP).

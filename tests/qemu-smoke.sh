@@ -222,6 +222,10 @@ check "metrics ktimer_fired >= 5"  '[ "$(echo "$METRICS" | sed -n "s/^ktimer_fir
 
 check "CPUID: vendor dilaporkan"  'grep -aq "CPU: vendor=[^ ]" "$LOG"'
 check "CPUID: semua kunci fitur" 'grep -a "CPU: fitur" "$LOG" | grep -q "rdrand=[01] rdseed=[01] nx=[01] smep=[01] smap=[01] umip=[01] pcid=[01] apic=[01] x2apic=[01] tsc=[01] tsc_invarian=[01] sse2=[01]"'
+# F7: -cpu max di QEMU TCG melaporkan SMEP/SMAP; kernel harus menyalakannya (CR4), dan task user +
+# syscall + soket yang dites di bawah tetap jalan (jalur stac/clac).
+check "F7: SMEP aktif (CPUID smep=1 -> CR4.SMEP)" 'grep -aq "CPU: fitur.* smep=1" "$LOG" && grep -aq "^SMEP: aktif" "$LOG"'
+check "F7: SMAP aktif (CPUID smap=1 -> CR4.SMAP)" 'grep -aq "CPU: fitur.* smap=1" "$LOG" && grep -aq "^SMAP: aktif" "$LOG"'
 check "CPUID: nx=1 cocok NX self-test" 'grep -aq "CPU: fitur.* nx=1" "$LOG" && grep -q "NX: self-test PASS" "$LOG"'
 check "kprintf self-test PASS"   'grep -aq "kprintf: self-test PASS" "$LOG"'
 check "tanpa PANIC/ASSERT gagal" '! grep -aq "PANIC:" "$LOG"'
@@ -1277,6 +1281,34 @@ check "P4: tanpa disk: filter tanpa aturan" 'grep -aq "P4: filter tanpa aturan (
 check "D9: tanpa disk: TLS nonaktif" 'grep -q "TLS: nonaktif (TLSKEY.DER tidak ada)" "$BARE"'
 check "P5-4: tanpa disk: APP.BIN tidak ada (tanpa disk)" 'grep -aq "^P5-4: APP.BIN tidak ada (tanpa disk)" "$BARE"'
 
+# F7: CPU tanpa SMEP/SMAP (-cpu max,-smep,-smap). Kernel harus boot seperti biasa: stac/clac
+# dilewati (clac di CPU tanpa SMAP = #UD), task user + syscall jalan. (-cpu qemu64 tidak
+# dipakai: OVMF di QEMU TCG ini tidak sampai ke kernel dengan model itu.)
+echo
+echo "boot F7: CPU tanpa SMEP/SMAP..."
+NOSM="$WORK/serial-nosmep.log"
+cp "$OVMF_VARS" "$WORK/vars-nosmep.fd"
+timeout "$BOOT_TIMEOUT" "$QEMU" -machine q35 -m 512M -cpu max,-smep,-smap \
+    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,format=raw,file="$WORK/vars-nosmep.fd" \
+    -cdrom "$ISO" -nic none -vga none -display none -serial file:"$NOSM" -no-reboot \
+    >"$WORK/qemu-nosmep.out" 2>&1 &
+NSPID=$!
+for _ in $(seq 1 "$BOOT_TIMEOUT"); do
+    grep -q "$BARE_DONE" "$NOSM" 2>/dev/null && break
+    kill -0 "$NSPID" 2>/dev/null || break
+    sleep 1
+done
+sleep 2
+kill "$NSPID" 2>/dev/null
+wait "$NSPID" 2>/dev/null
+check "F7: tanpa SMEP/SMAP: log 'tidak didukung CPU', CR4 tidak diubah" \
+    'grep -aq "CPU: fitur.* smep=0 smap=0" "$NOSM" && grep -aq "^SMEP: tidak didukung CPU" "$NOSM" && grep -aq "^SMAP: tidak didukung CPU" "$NOSM" && ! grep -aq "^SM[AE]P: aktif" "$NOSM"'
+if grep -q "PROD: task uji dilewati" "$LOG"; then NOSM_JALAN='grep -aq "$BARE_DONE" "$NOSM"'
+else NOSM_JALAN='[ "$(grep -c "^hello" "$NOSM")" -eq 2 ] && grep -aq "$BARE_DONE" "$NOSM"'; fi
+check "F7: tanpa SMEP/SMAP: boot lanjut, task user + syscall jalan, tanpa exception" \
+    'eval "$NOSM_JALAN" && ! grep -aqE "EXCEPTION|#GP|#UD|#PF|PANIC|FATAL -" "$NOSM"'
+
 # P5-4: boot kelima: salinan disk + APP.BIN (appgema = tcpgema.c dengan port 5558,
 # build/user/appgema.bin). Dev: tabel soket 4/4 (udpgema, tcpgema, tcpklien, appgema),
 # jadi udpgema diminta keluar dulu supaya accept appgema dapat fd. PROD: hanya appgema,
@@ -1622,6 +1654,72 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         '! grep -qE "fault di dalam panic handler|PIT tidak berjalan|PANIC-UJI|WD-UJI" "$WORK/serial-panic-all.txt"'
     check "P7-4: boot keempat: APP.BIN jenis kernel ditolak (isi bukan app) di ketujuh boot, tidak dijalankan" \
         '[ "$(grep -c "^P5-4: APP.BIN ditolak (isi bukan app)$" "$WORK/serial-panic-all.txt")" -eq 7 ] && ! grep -q "^P5-4: APP.BIN dimuat" "$WORK/serial-panic-all.txt"'
+fi
+
+# F7: panic smep/smap (build dev saja): kernel melompat ke / membaca halaman user tanpa stac.
+# Dump panic harus menyebut SMEP/SMAP; satu QEMU tanpa -no-reboot, reboot otomatis di antaranya.
+if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    echo
+    echo "boot F7: uji panic smep/smap (~1 menit)..."
+    SLOG="$WORK/serial-smx.log"
+    cp "$OVMF_VARS" "$WORK/vars-smx.fd"
+    "$QEMU" -machine q35 -m 512M -cpu max \
+        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+        -drive if=pflash,format=raw,file="$WORK/vars-smx.fd" \
+        -cdrom "$ISO" \
+        -drive id=d0,file="$DISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
+        -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778 \
+        -device e1000,netdev=n0 \
+        -display none -serial file:"$SLOG" \
+        >"$WORK/qemu-smx.out" 2>&1 &
+    SXPID=$!
+    smx_wait() {   # POLA N: tunggu POLA muncul >= N kali di SLOG
+        for _ in $(seq 1 "$BOOT_TIMEOUT"); do
+            c="$(grep -ac "$1" "$SLOG" 2>/dev/null)"
+            [ "${c:-0}" -ge "$2" ] && return 0
+            kill -0 "$SXPID" 2>/dev/null || return 1
+            sleep 1
+        done
+        return 1
+    }
+    smx_p() {   # kirim perintah; diulang hanya bila belum tercatat di baris AUDIT
+        local r
+        for _ in 1 2 3; do
+            r="$($BM "$1" 2>&1)" && break
+            sleep 3
+            grep -a "^AUDIT " "$SLOG" | grep -qF " $1" && break
+        done
+        echo "$r"
+    }
+    SMX_REPLY=""
+    i=0
+    for kind in smep smap; do
+        i=$((i + 1))
+        smx_wait "Entropi: siap" "$i" || break
+        smx_wait "net task dimulai" "$i" || break
+        sleep 1.2
+        SMX_REPLY="$SMX_REPLY$(smx_p "panic $kind")
+"
+        smx_wait "PANIC: reboot otomatis dalam 10 detik" "$i" || break
+        smx_wait "ACPI-R: reboot via register reset FADT" "$i" || break
+    done
+    smx_wait "PCI-1: E1000 di" 3
+    kill "$SXPID" 2>/dev/null
+    wait "$SXPID" 2>/dev/null
+    tr -d '\r' < "$SLOG" > "$WORK/serial-smx.txt"
+    X="$WORK/serial-smx.txt"
+    echo "balasan:"; echo "$SMX_REPLY"
+    grep -a "^PANIC: \(exception\|SM\|CR0\|RIP\)" "$X" | head -12
+    check "F7: balasan perintah panic smep/smap" \
+        '[ "$(echo "$SMX_REPLY" | grep -c "^panic: uji sm\(ep\|ap\) dalam 1 detik$")" -eq 2 ]'
+    check "F7: panic smep: #PF fetch kernel (error=0x11), baris SMEP + alamat halaman user" \
+        'grep -q "^PANIC: exception #PF page fault (vektor 14) error=0x11 \[proteksi baca kernel fetch\]$" "$X" && grep -q "^PANIC: SMEP: kernel menjalankan kode di halaman user (alamat 0x00007f0000000000)$" "$X"'
+    check "F7: panic smap: #PF baca kernel (error=0x1), baris SMAP + alamat halaman user, AC=0" \
+        'grep -q "^PANIC: exception #PF page fault (vektor 14) error=0x1 \[proteksi baca kernel\]$" "$X" && grep -q "^PANIC: SMAP: kernel mengakses memori user di luar stac/clac (alamat 0x00007f0000000000 AC=0)$" "$X"'
+    check "F7: dump panic: CR4.SMEP (bit 20) dan CR4.SMAP (bit 21) menyala, CR2 = alamat uji" \
+        '[ "$(sed -n "s/^PANIC: CR0=.* CR2=0x00007f0000000000 CR3=.* CR4=0x\([0-9a-f]*\)$/\1/p" "$X" | while read v; do [ $(( (0x$v >> 20) & 3 )) -eq 3 ] && echo ok; done | wc -l)" -eq 2 ]'
+    check "F7: 2 panic -> 2 reboot otomatis, 3 boot normal (SMEP/SMAP aktif tiap boot), tanpa panic bersarang" \
+        '[ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$X")" -eq 2 ] && [ "$(grep -c "^SMEP: aktif$" "$X")" -eq 3 ] && [ "$(grep -c "^SMAP: aktif$" "$X")" -eq 3 ] && ! grep -qE "fault di dalam panic handler|PIT tidak berjalan|PANIC-UJI" "$X"'
 fi
 
 echo

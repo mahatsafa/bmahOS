@@ -148,6 +148,57 @@ uint64_t vmm_phys_of(uint64_t pml4_phys, uint64_t vaddr)
     return table;
 }
 
+// F7: keadaan SMEP/SMAP sebenarnya (CR4 dibaca ulang setelah ditulis).
+uint8_t g_smep_on;
+uint8_t g_smap_on;
+
+// F7: nyalakan CR4.SMEP (bit 20) / CR4.SMAP (bit 21) hanya bila CPUID leaf 7
+// melaporkannya. Tanpa dukungan: kernel jalan seperti biasa (stac/clac dilewati).
+// Butuh cpu_features_init() lebih dulu.
+void smep_smap_init(void)
+{
+    uint64_t cr4;
+
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    if (g_cpu.smep) {
+        cr4 |= 1ULL << 20;
+    }
+    if (g_cpu.smap) {
+        cr4 |= 1ULL << 21;
+    }
+    if (g_cpu.smep || g_cpu.smap) {
+        __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
+        __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    }
+    g_smep_on = (cr4 >> 20) & 1;
+    g_smap_on = (cr4 >> 21) & 1;
+    serial_write(g_smep_on ? "SMEP: aktif\r\n" : g_cpu.smep ? "SMEP: gagal dinyalakan\r\n"
+                                                        : "SMEP: tidak didukung CPU\r\n");
+    serial_write(g_smap_on ? "SMAP: aktif\r\n" : g_cpu.smap ? "SMAP: gagal dinyalakan\r\n"
+                                                        : "SMAP: tidak didukung CPU\r\n");
+}
+
+// F7: 1 bila vaddr dipetakan sebagai halaman user menurut MMU: present dan U/S=1 di
+// SEMUA level (halaman 1 GB/2 MB berhenti di PDPT/PD). Dipakai diagnosis panic.
+int vmm_user_mapped(uint64_t pml4_phys, uint64_t vaddr)
+{
+    uint64_t table = pml4_phys & VMM_ENTRY_ADDR_MASK;
+
+    for (int level = 3; level >= 0; level--) {
+        uint64_t *t = (uint64_t *)(table + hhdm_offset);
+        uint64_t e = t[(vaddr >> (12 + 9 * level)) & 0x1FF];
+
+        if (!(e & VMM_FLAG_PRESENT) || !(e & VMM_FLAG_USER)) {
+            return 0;
+        }
+        if ((level == 1 || level == 2) && (e & 0x80)) {
+            return 1;
+        }
+        table = e & VMM_ENTRY_ADDR_MASK;
+    }
+    return 1;
+}
+
 // Butuh cpu_features_init() lebih dulu (F1.8a: NX dibaca dari g_cpu).
 void nx_init(void)
 {

@@ -36,9 +36,19 @@ idt_load_asm:
 # Then this common stub saves all GPRs.
 # ===============================================================
 
+# F7: EFLAGS.AC dari ring 3 tidak boleh terbawa ke kernel (AC=1 mematikan SMAP).
+# clac hanya dijalankan bila SMAP aktif (clac di CPU tanpa SMAP = #UD).
+.macro CLAC_BILA_SMAP
+    cmpb $0, g_smap_on(%rip)
+    je 1f
+    clac
+1:
+.endm
+
 .type isr_common_stub, @function
 isr_common_stub:
 
+    CLAC_BILA_SMAP
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -207,6 +217,7 @@ ISR_NOERR 128
 # ===============================================================
 .type irq_common_stub, @function
 irq_common_stub:
+    CLAC_BILA_SMAP
     pushq %rax
     pushq %rbx
     pushq %rcx
