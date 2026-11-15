@@ -178,27 +178,6 @@ void smep_smap_init(void)
                                                         : "SMAP: tidak didukung CPU\r\n");
 }
 
-// F7: 1 bila vaddr dipetakan sebagai halaman user menurut MMU: present dan U/S=1 di
-// SEMUA level (halaman 1 GB/2 MB berhenti di PDPT/PD). Dipakai diagnosis panic.
-int vmm_user_mapped(uint64_t pml4_phys, uint64_t vaddr)
-{
-    uint64_t table = pml4_phys & VMM_ENTRY_ADDR_MASK;
-
-    for (int level = 3; level >= 0; level--) {
-        uint64_t *t = (uint64_t *)(table + hhdm_offset);
-        uint64_t e = t[(vaddr >> (12 + 9 * level)) & 0x1FF];
-
-        if (!(e & VMM_FLAG_PRESENT) || !(e & VMM_FLAG_USER)) {
-            return 0;
-        }
-        if ((level == 1 || level == 2) && (e & 0x80)) {
-            return 1;
-        }
-        table = e & VMM_ENTRY_ADDR_MASK;
-    }
-    return 1;
-}
-
 // Butuh cpu_features_init() lebih dulu (F1.8a: NX dibaca dari g_cpu).
 void nx_init(void)
 {
@@ -297,47 +276,38 @@ uint64_t vmm_clone_kernel_pml4(uint64_t kernel_pml4_phys)
 // dari user, seperti SYS_WRITE).
 static bool vmm_is_user_page(uint64_t pml4_phys, uint64_t vaddr, bool require_writable)
 {
-    uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
-    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
-    uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
-    uint64_t pt_idx   = (vaddr >> 12) & 0x1FF;
-
-    uint64_t *pml4_virt = (uint64_t *)(pml4_phys + hhdm_offset);
-    uint64_t pml4_entry = pml4_virt[pml4_idx];
-    if ((pml4_entry & VMM_FLAG_PRESENT) == 0) {
+    // Bug lama: alamat half atas (HHDM, kernel) tidak ditolak, dan bit PS tidak dibaca,
+    // jadi entri 1 GB/2 MB HHDM diperlakukan sebagai penunjuk tabel (RAM sembarang
+    // dibaca sebagai PD/PT) dan pointer kernel bisa lolos. Kini seperti MMU: alamat
+    // kanonik half bawah, P dan U (dan W bila menulis) di SEMUA level, PS menghentikan walk.
+    if (vaddr >= VMM_USER_END) {
         return false;
     }
 
-    uint64_t pdpt_phys = pml4_entry & VMM_ENTRY_ADDR_MASK;
-    uint64_t *pdpt_virt = (uint64_t *)(pdpt_phys + hhdm_offset);
-    uint64_t pdpt_entry = pdpt_virt[pdpt_idx];
-    if ((pdpt_entry & VMM_FLAG_PRESENT) == 0) {
-        return false;
-    }
+    uint64_t table = pml4_phys & VMM_ENTRY_ADDR_MASK;
 
-    uint64_t pd_phys = pdpt_entry & VMM_ENTRY_ADDR_MASK;
-    uint64_t *pd_virt = (uint64_t *)(pd_phys + hhdm_offset);
-    uint64_t pd_entry = pd_virt[pd_idx];
-    if ((pd_entry & VMM_FLAG_PRESENT) == 0) {
-        return false;
-    }
+    for (int level = 3; level >= 0; level--) {
+        uint64_t *t = (uint64_t *)(table + hhdm_offset);
+        uint64_t e = t[(vaddr >> (12 + 9 * level)) & 0x1FF];
 
-    uint64_t pt_phys = pd_entry & VMM_ENTRY_ADDR_MASK;
-    uint64_t *pt_virt = (uint64_t *)(pt_phys + hhdm_offset);
-    uint64_t pt_entry = pt_virt[pt_idx];
-    if ((pt_entry & VMM_FLAG_PRESENT) == 0) {
-        return false;
+        if (!(e & VMM_FLAG_PRESENT) || !(e & VMM_FLAG_USER)) {
+            return false;
+        }
+        if (require_writable && !(e & VMM_FLAG_WRITABLE)) {
+            return false;
+        }
+        if ((level == 1 || level == 2) && (e & 0x80)) {
+            return true;   // halaman 2 MB / 1 GB: daun
+        }
+        table = e & VMM_ENTRY_ADDR_MASK;
     }
-
-    if ((pt_entry & VMM_FLAG_USER) == 0) {
-        return false;
-    }
-
-    if (require_writable && (pt_entry & VMM_FLAG_WRITABLE) == 0) {
-        return false;
-    }
-
     return true;
+}
+
+// F7: 1 bila vaddr halaman user menurut MMU (dipakai diagnosis panic).
+int vmm_user_mapped(uint64_t pml4_phys, uint64_t vaddr)
+{
+    return vmm_is_user_page(pml4_phys, vaddr, false);
 }
 
 // ptr/len byte-granular dari sudut pandang pemanggil syscall, tapi
@@ -350,8 +320,8 @@ bool is_valid_user_ptr(uint64_t pml4_phys, uint64_t ptr, uint64_t len, bool requ
     }
 
     uint64_t end = ptr + len;
-    if (end < ptr) {
-        return false;
+    if (end < ptr || ptr >= VMM_USER_END || end > VMM_USER_END) {
+        return false;   // overflow, half atas, atau melewati batas user
     }
 
     uint64_t page_start = ptr & ~(PMM_PAGE_SIZE - 1);

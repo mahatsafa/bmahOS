@@ -221,6 +221,7 @@ void pmm_free(uint64_t phys_addr);
 #define VMM_FLAG_USER      0x4ULL   // US bit -- wajib untuk halaman yang boleh diakses ring 3
 #define VMM_FLAG_NX        (1ULL << 63) // XD bit -- halaman tidak bisa dieksekusi
 #define VMM_ENTRY_ADDR_MASK 0x000FFFFFFFFFF000ULL
+#define VMM_USER_END        0x0000800000000000ULL   // batas atas ruang user (kanonik half bawah)
 #define VMM_SHARED_PML4_IDX_HHDM     0x100  // hhdm_offset region
 #define VMM_SHARED_PML4_IDX_APIC1    0x120  // MMIO Local APIC/IOAPIC
 #define VMM_SHARED_PML4_IDX_APIC2    0x122  // MMIO Local APIC/IOAPIC
