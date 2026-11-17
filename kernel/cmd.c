@@ -324,6 +324,20 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
                (len > 8 && net_cmd_is(cmd, 8, "logdisk "))) {
         logdisk_execute(cmd + 7, len - 7);   // R4
     } else if (net_cmd_is(cmd, len, "tasks")) {
+        // F7: batas task user per jendela, lalu per slot: prioritas, pemakaian seumur task
+        cmd_puts("batas user per ");
+        cmd_putdec(RES_WIN_TICKS);
+        cmd_puts(" tick: fd=");
+        cmd_putdec(RES_FD_MAX);
+        cmd_puts(" syscall=");
+        cmd_putdec(RES_SYS_MAX);
+        cmd_puts(" tulis=");
+        cmd_putdec(RES_WRITE_MAX);
+        cmd_puts(" cpu=");
+        cmd_putdec(RES_CPU_MAX);
+        cmd_puts(" henti=");
+        cmd_putdec(RES_STRIKES_MAX);
+        cmd_puts(" jendela\n");
         for (size_t i = 0; i < task_count; i++) {
             cmd_puts("slot ");
             cmd_putdec(i);
@@ -334,6 +348,22 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
             }
             if (i == g_idle_index) {
                 cmd_puts(" idle");
+            }
+            cmd_puts(" prio=");
+            cmd_puts(prio_name(tasks[i].prio));
+            cmd_puts(" cpu=");
+            cmd_putdec(tasks[i].cpu_total);
+            if (tasks[i].is_user_task) {
+                cmd_puts(" sys=");
+                cmd_putdec(tasks[i].sys_total);
+                cmd_puts(" fd=");
+                cmd_putdec(sock_fd_count(i));
+                cmd_putc('/');
+                cmd_putdec(tasks[i].fd_max);
+                cmd_puts(" tolak=");
+                cmd_putdec(tasks[i].deny_total);
+                cmd_puts(" strike=");
+                cmd_putdec(tasks[i].res_strikes);
             }
             if (i == current_index) {
                 cmd_puts(" (menjalankan perintah ini)");

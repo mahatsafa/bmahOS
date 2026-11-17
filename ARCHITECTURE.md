@@ -36,7 +36,8 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `ahci.c` | inisialisasi port, `ahci_read` (polling, satu frame) | pci, vmm, pmm |
 | `fat32.c` | validasi BPB, root directory, cluster chain, `fat32_find_file`/`fat32_load_file`; D6: tulis root dir (`fat32_write_name`, `fat32_read_name`, `fat32_root_read`) dengan urutan tulis aman; D7: `fat32_delete_name`, `fat32_rename_name`, `fat32_replace_name` (ganti isi atomik lewat file sementara) | ahci |
 | `fscmd.c` | D6: perintah `ls`/`baca`/`tulis`/`tambah` (D7: + `hapus`/`ganti`; nama 8.3, nama dilindungi, teks), dipanggil dari `priv_cmd_execute` | fat32, cmd, kprintf |
-| `sched.c` | `task_t`, scheduler round-robin preemptive, sleep/wait/exit, semaphore, task user, `spawn` | vmm, pmm, `task.S` |
+| `sched.c` | `task_t`, scheduler preemptive (pemilih di `prio.c`), sleep/wait/exit, semaphore, task user, `spawn` | vmm, pmm, `task.S`, prio |
+| `prio.c` | F7: pemilih prioritas 3 tingkat (tinggi net task, normal kernel, rendah user) + penuaan 20 tick; batas per task user per jendela 100 tick (CPU 50, syscall 500, tulis 4096 B, soket 2), penolakan -122, penghentian setelah 5 jendela melanggar; counter `res_*`/`sched_aged`. Murni: diuji host | kernel.h (`task_t`), kprintf |
 | `ktimer.c` | timer dengan callback (`ktimer_start/cancel/run`), senarai terurut deadline, callback dijalankan loop net task; self-test boot | sched (`task_sleep` di self-test) |
 | `e1000.c` | driver Intel 8254x: ring TX/RX (64 slot), kirim, eksperimen GSI INTx, statistik | pci, vmm, apic |
 | `net.c` | ARP, IPv4, ICMP echo, UDP (echo 7777), batas laju, TCP (port 7: tabel 4 TCB maks 2 per IP + 2 TCB untuk soket user: listen (P5-2) dan connect/SYN_SENT (P5-3), buffer 1024 byte per koneksi, kirim stop-and-wait, retransmisi lewat ktimer, penutupan FIN/TIME_WAIT, echo sementara), dispatch RX, `net_poll` | e1000, auth, entropy, ktimer |

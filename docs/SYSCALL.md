@@ -166,6 +166,7 @@ RST, segmen di luar urutan dibuang).
 | -13 | EACCES | port di luar rentang atau port sistem |
 | -14 | EFAULT | pointer user tidak sah |
 | -22 | EINVAL | jenis soket, soket belum/sudah terikat, port tujuan 0, alamat > 48 bit, listen/accept/connect pada soket yang salah, sendto/recvfrom pada soket TCP |
+| -122 | EDQUOT | jatah per task habis (F7): soket (2 per task; `socket`, `accept`), syscall (500 per detik), byte `write` (4096 per detik); tanpa efek. Terlalu lama melanggar: task dihentikan |
 | -24 | EMFILE | 4 soket sudah terbuka; `connect`: 2 slot koneksi TCP user terpakai |
 | -32 | EPIPE | `send` ke koneksi TCP yang sudah ditutup baik-baik |
 | -90 | EMSGSIZE | datagram > 1472 byte |

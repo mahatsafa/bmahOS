@@ -116,6 +116,30 @@ static int64_t sk_fail(int64_t e)
     return e;
 }
 
+// F7: jumlah fd terbuka milik task idx (jatah RES_FD_MAX per task, `tasks`).
+uint32_t sock_fd_count(size_t idx)
+{
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < SOCK_MAX; i++) {
+        if (g_sk[i].used && g_sk[i].owner == idx) {
+            n++;
+        }
+    }
+    return n;
+}
+
+// F7: jatah soket per task habis? Menolak (SOCK_EDQUOT) lebih dulu dari tabel penuh
+// (SOCK_EMFILE) supaya satu task tidak bisa menghabiskan seluruh tabel global.
+static int sk_quota_full(void)
+{
+    if (sock_fd_count(current_index) >= res_fd_limit(current_index)) {
+        res_fd_denied(current_index);
+        return 1;
+    }
+    return 0;
+}
+
 // fd milik task yang sedang berjalan, atau NULL.
 static sk_t *sk_get(uint64_t fd)
 {
@@ -366,6 +390,9 @@ uint64_t sock_sys_socket(uint64_t type, uint64_t a1, uint64_t a2, uint64_t a3, u
 
     if (type != SOCK_UDP && type != SOCK_TCP) {
         return (uint64_t)sk_fail(SOCK_EINVAL);
+    }
+    if (sk_quota_full()) {
+        return (uint64_t)sk_fail(SOCK_EDQUOT);
     }
     for (uint32_t i = 0; i < SOCK_MAX; i++) {
         if (!g_sk[i].used) {
@@ -761,6 +788,9 @@ uint64_t sock_sys_accept(uint64_t fd, uint64_t from, uint64_t timeout, uint64_t 
             }
         }
         if (c) {
+            if (sk_quota_full()) {
+                return (uint64_t)sk_fail(SOCK_EDQUOT);   // koneksi tetap menunggu
+            }
             for (uint32_t i = 0; i < SOCK_MAX; i++) {
                 if (!g_sk[i].used) {
                     sk_t *n = &g_sk[i];

@@ -391,3 +391,18 @@ WEAK int ota_execute(const volatile uint8_t *cmd, uint32_t len)
     (void)len;
     return 0;
 }
+
+// F7: prio.c tidak ikut di uji lain (sock.c memanggil jatah soket): hanya dicatat.
+WEAK int g_stub_fd_denied = 0;
+
+WEAK uint32_t res_fd_limit(size_t slot)
+{
+    (void)slot;
+    return SOCK_MAX + 1;   // tanpa jatah di uji lain
+}
+
+WEAK void res_fd_denied(size_t slot)
+{
+    (void)slot;
+    g_stub_fd_denied++;
+}

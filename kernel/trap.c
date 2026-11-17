@@ -156,6 +156,26 @@ static void syscall_handler(struct exception_context *context)
                 (context->rflags >> 18) & 1, (fl >> 18) & 1, (uint64_t)g_smap_on);
     }
 #endif
+    // F7: batas sumber daya task user (prio.c): jatah syscall per jendela dan byte SYS_WRITE.
+    // Ditolak = tanpa efek, kode SOCK_EDQUOT. Terlalu lama melanggar = task dihentikan
+    // (seperti sys_exit: tidak kembali). SYS_EXIT tidak pernah ditolak. Sebelum cek nomor:
+    // banjir nomor tak dikenal (satu baris serial tiap panggilan) ikut terbatasi.
+    {
+        int kind = syscall_num == SYS_EXIT ? RES_SC_EXIT :
+                   syscall_num == SYS_WRITE ? RES_SC_WRITE : RES_SC_OTHER;
+        int rc = res_syscall(&tasks[current_index], current_index, timer_ticks, kind, context->rsi);
+
+        if (rc == RES_KILL)
+        {
+            task_exit();
+        }
+        if (rc == RES_DENY)
+        {
+            context->rax = (uint64_t)(int64_t)SOCK_EDQUOT;
+            return;
+        }
+    }
+
     if (syscall_num >= SYSCALL_COUNT || syscall_table[syscall_num].fn == 0)
     {
         g_sys_rejected++;
@@ -231,6 +251,7 @@ volatile uint64_t timer_ticks = 0;
 void irq_handler(struct exception_context *context)
 {
     uint64_t irq_num = context->vector;
+    int res_kill = 0;
 
     if (irq_num == 0) {
         timer_ticks++;
@@ -238,6 +259,11 @@ void irq_handler(struct exception_context *context)
         entropy_event(ENTROPY_SRC_TIMER, 0);
         net_rx_tick_wake();
         watchdog_check(context);   // R5: hanya memeriksa; tepukan dari net task
+        if (scheduler_started && current_index < task_count) {
+            // F7: bebankan tick ke task yang jalan; RES_KILL hanya bila tick jatuh di ring 3
+            res_kill = res_tick(&tasks[current_index], current_index, timer_ticks,
+                                (context->cs & 3) == 3) == RES_KILL;
+        }
     }
 
     if (irq_num == 1) {
@@ -253,6 +279,9 @@ void irq_handler(struct exception_context *context)
     // dibalik, LAPIC ISR bit masih nyala selama kita pindah task, dan
     // timer berikutnya (untuk task manapun) tidak akan pernah masuk.
     if (irq_num == 0) {
+        if (res_kill) {
+            task_exit();   // F7: batas sumber daya dilanggar terus (tidak kembali)
+        }
         schedule();
     }
 }

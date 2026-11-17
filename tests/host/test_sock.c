@@ -6,6 +6,17 @@
 #include <stdlib.h>
 #include "kernel.h"
 #include "test.h"
+// F7 tugas: jatah soket per task. Uji lama memakai satu task untuk seluruh tabel (4 fd), jadi jatah
+// bawaannya SOCK_MAX + 1 (tak tercapai); test_jatah_fd menurunkannya ke 2 (nilai produksi).
+static uint32_t g_fd_quota = SOCK_MAX + 1;
+extern int g_stub_fd_denied;
+
+uint32_t res_fd_limit(size_t slot)
+{
+    (void)slot;
+    return g_fd_quota;
+}
+
 #include "../../kernel/sock.c"
 
 int g_e1000_rx_initialized = 1;
@@ -831,6 +842,54 @@ static void test_connect(void)
     g_conn_ret = 0;
 }
 
+// F7 tugas: jatah soket per task (RES_FD_MAX = 2): socket dan accept ditolak SOCK_EDQUOT lebih dulu
+// dari tabel penuh; task lain tidak terpengaruh; menutup fd memulihkan jatah.
+static void test_jatah_fd(void)
+{
+    reset();
+    g_fd_quota = 2;
+    g_stub_fd_denied = 0;
+    CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == 0);
+    CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == 1);
+    CHECK(sock_fd_count(3) == 2 && sock_fd_count(4) == 0);
+    CHECK(sys(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0)) == SOCK_EDQUOT);
+    CHECK(sys(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0)) == SOCK_EDQUOT);
+    CHECK(g_stub_fd_denied == 2);
+    CHECK(sock_fd_count(3) == 2);   // tidak ada fd tercipta
+
+    // task lain tetap bisa (tabel 4 slot: 2 + 2), lalu tabel global penuh -> EMFILE, bukan EDQUOT
+    current_index = 4;
+    CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == 2);
+    CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == 3);
+    CHECK(sys(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0)) == SOCK_EDQUOT);
+    current_index = 5;
+    CHECK(sys(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0)) == SOCK_EMFILE);
+    CHECK(g_stub_fd_denied == 3);
+
+    // menutup memulihkan jatah
+    current_index = 3;
+    CHECK(sock_sys_close(1, 0, 0, 0, 0) == 0);
+    CHECK(sock_fd_count(3) == 1);
+    CHECK(sys(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0)) == 1);
+    CHECK(sock_fd_count(3) == 2);
+
+    // accept: task yang sudah memegang 2 fd (listen + satu lagi) tidak dapat fd ketiga;
+    // koneksi tetap menunggu
+    CHECK(sock_sys_close(0, 0, 0, 0, 0) == 0 && sock_sys_close(1, 0, 0, 0, 0) == 0);
+    CHECK(sock_sys_socket(SOCK_TCP, 0, 0, 0, 0) == 0);
+    CHECK(sock_sys_bind(0, 5556, 0, 0, 0) == 0 && sock_sys_listen(0, 0, 0, 0, 0) == 0);
+    CHECK(sock_sys_socket(SOCK_UDP, 0, 0, 0, 0) == 1);
+    sock_tcp_syn(0, PEER_IP, 4000, 5556);
+    sock_tcp_open(0);
+    int before = g_stub_fd_denied;
+    CHECK(sys(sock_sys_accept(0, 0, 0, 0, 0)) == SOCK_EDQUOT);
+    CHECK(g_stub_fd_denied == before + 1);
+    CHECK(sock_tcp_app(0) == 0);
+    CHECK(sock_sys_close(1, 0, 0, 0, 0) == 0);
+    CHECK(sock_sys_accept(0, 0, 0, 0, 0) == 1);   // jatah pulih: accept berhasil
+    g_fd_quota = SOCK_MAX + 1;
+}
+
 int main(void)
 {
     test_socket_bind();
@@ -840,5 +899,6 @@ int main(void)
     test_cmd();
     test_tcp_api();
     test_connect();
+    test_jatah_fd();
     return test_done("sock");
 }

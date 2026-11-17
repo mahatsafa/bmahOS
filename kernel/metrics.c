@@ -285,6 +285,12 @@ static const metric_t g_metrics[] = {
     M64("slab_bad_free", g_slab_bad_free),
     M64("slab_uaf", g_slab_uaf),
     M64("heap_bad_free", g_heap_bad_free),   // F7 (heap bump)
+    M64("res_fd_deny", g_res_fd_deny),       // F7 tugas: batas sumber daya task user
+    M64("res_sys_deny", g_res_sys_deny),
+    M64("res_wr_deny", g_res_wr_deny),
+    M64("res_cpu_win", g_res_cpu_win),
+    M64("res_killed", g_res_killed),
+    M64("sched_aged", g_sched_aged),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

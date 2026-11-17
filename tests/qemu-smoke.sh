@@ -285,14 +285,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=139   # F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
+R3_N=145   # F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir heap_bad_free" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^heap_bad_free="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir sched_aged" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^sched_aged="'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -332,6 +332,38 @@ check "F7: dev: slab menolak double free/pointer asing/UAF di serial; PROD: tanp
     'grep -aq "^slab: double free terdeteksi, ditolak" "$LOG" && grep -aq "^slab: kfree pointer asing ditolak" "$LOG" && grep -aq "^slab: cache penuh (SLAB_PAGES_MAX)" "$LOG" && [ "$(grep -ac "^slab: PERINGATAN objek bebas berubah" "$LOG")" = "$SLAB_UAF" ]'
 SLAB_LIVE0=$(( $(mval slab_alloc) - $(mval slab_free) ))
 SLAB_PG0="$(mval slab_pages)"
+
+# F7 tugas: prioritas task + batas sumber daya per task user. Net task = tinggi, idle = idle,
+# task user = rendah; header batas di `tasks`. Dev: program uji (userspace/batas.c, slot setelah
+# APP.BIN) melanggar jatah soket (fd ke-2), byte tulis, syscall, lalu dihentikan setelah 5 jendela
+# beruntun; sistem tetap responsif.
+check "F7 tugas: serial: baris boot prioritas + batas" \
+    'grep -aq "^F7: prioritas task: tinggi=net normal=kernel rendah=user idle (penuaan 20 tick); batas user per 100 tick: fd=2 syscall=500 tulis=4096 cpu=50 henti=5 jendela" "$LOG"'
+FT_NET="$(sed -n "s/^R5: watchdog aktif batas=1000 tick (net task slot \([0-9]*\)).*/\1/p" "$LOG" | tr -d '\r' | head -1)"
+FT_TASKS="$($BM tasks)"
+check "F7 tugas: tasks: header batas, net task prio=tinggi, idle prio=idle" \
+    'echo "$FT_TASKS" | grep -q "^batas user per 100 tick: fd=2 syscall=500 tulis=4096 cpu=50 henti=5 jendela$" && echo "$FT_TASKS" | grep -q "^slot $FT_NET: .*prio=tinggi cpu=[0-9]*" && echo "$FT_TASKS" | grep -q "^slot [0-9]*: [A-Z]* idle prio=idle cpu=[0-9]*"'
+if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    for i in $(seq 1 120); do
+        FT_SLOT="$(sed -n "s/^RES: task user slot \([0-9]*\) melanggar batas soket.*/\1/p" "$LOG" | tr -d '\r' | head -1)"
+        [ -n "$FT_SLOT" ] && grep -aq "^RES: task user slot $FT_SLOT dihentikan" "$LOG" && break
+        sleep 1
+    done
+    FT_R="$($BM "metrics res_")"
+    FT_TASKS="$($BM tasks)"
+    check "F7 tugas: dev: program uji ditolak: soket ke-2 -122, tulis, syscall; dihentikan setelah 5 jendela" \
+        'grep -aq "^batas: socket ke-2 kode=-122" "$LOG" && grep -aq "^RES: task user slot $FT_SLOT melanggar batas soket (jatah 1 per task)" "$LOG" && grep -aq "^RES: task user slot $FT_SLOT melanggar batas tulis (" "$LOG" && grep -aq "^RES: task user slot $FT_SLOT melanggar batas syscall (501 dari 500 per 100 tick)" "$LOG" && grep -aq "^RES: task user slot $FT_SLOT dihentikan (batas dilanggar 5 jendela beruntun)" "$LOG"'
+    check "F7 tugas: dev: metrics res_*: fd/sys/tulis ditolak, task dihentikan (jatah CPU hanya diuji di host: 6 task user berebut CPU, tak ada yang capai 50 tick)" \
+        '[ "$(echo "$FT_R" | sed -n "s/^res_fd_deny=//p")" -ge 1 ] && [ "$(echo "$FT_R" | sed -n "s/^res_sys_deny=//p")" -ge 1 ] && [ "$(echo "$FT_R" | sed -n "s/^res_wr_deny=//p")" -ge 1 ] && [ "$(echo "$FT_R" | sed -n "s/^res_killed=//p")" -ge 1 ]'
+    check "F7 tugas: dev: tasks: slot uji DEAD user prio=rendah dengan tolak > 0, task user lain prio=rendah" \
+        'echo "$FT_TASKS" | grep -q "^slot $FT_SLOT: DEAD user prio=rendah cpu=[0-9]* sys=[0-9]* fd=0/1 tolak=[1-9][0-9]* strike=[0-9]*" && [ "$(echo "$FT_TASKS" | grep -c " user prio=rendah ")" -ge 5 ]'
+    check "F7 tugas: dev: sesudah pelanggar dihentikan net task tetap responsif (ping/uptime), watchdog tanpa panic" \
+        '[ "$($BM ping)" = "pong" ] && $BM uptime | grep -q "^uptime: " && ! grep -aq "^PANIC: watchdog" "$LOG"'
+else
+    FT_R="$($BM "metrics res_")"
+    check "F7 tugas: PROD: tanpa task user uji: res_* semua 0, sched_aged 0" \
+        '[ "$(echo "$FT_R" | grep -c "^res_[a-z_]*=0$")" -eq 5 ] && [ "$(mval sched_aged)" = 0 ]'
+fi
 
 # R4: log persisten (LOG.BIN). Boot pertama = boot 1; setelah > 5 s ada rekaman.
 check "R4: serial: logdisk aktif rekaman=128 boot=1 seq=1 rusak=0" \
@@ -1117,7 +1149,9 @@ OT_G="$(ota_kirim "$OD/a5.bmo")"
 OT_H="$(ota_kirim "$OD/a5.bmo")"
 OT_I="$(ota_kirim "$OD/k9.bmo" --ota-jenis app)"
 OT_J="$(ota_kirim "$OD/a5.bmo" --ota-jenis kernel)"   # review: app sebagai kernel
+sleep 2.5   # sama seperti ota_kirim: sesi CLI TCP sebelumnya (kiriman OTA) belum lepas
 OT_MIN="$($BMT --key "$KEY" ota 2>&1)"
+echo "$OT_MIN" | head -4 | sed "s/^/info  OT_MIN: /"
 echo "$OT_G" | sed "s/^/info  ota a5: /"
 if [ "$OTA_KUNCI" = uji ]; then
     check "P7-4: ota terima app v5 -> APP.BIN ditulis + dibaca balik, berlaku setelah reboot" \

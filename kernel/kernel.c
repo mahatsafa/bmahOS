@@ -486,6 +486,7 @@ uint64_t net_stack_used(void)
 extern const uint8_t user_udpgema_start[], user_udpgema_end[];   // userbin.S (P5-1)
 extern const uint8_t user_tcpgema_start[], user_tcpgema_end[];   // P5-2
 extern const uint8_t user_tcpklien_start[], user_tcpklien_end[];   // P5-3
+extern const uint8_t user_batas_start[], user_batas_end[];   // F7 (dev)
 
 static void net_task_entry(void)
 {
@@ -1317,6 +1318,7 @@ void kmain(void)
     if (task_count < MAX_TASKS) {
         task_create(&tasks[task_count], net_task_entry, NET_TASK_STACK);
         net_stack_paint(&tasks[task_count]);
+        tasks[task_count].prio = PRIO_HIGH;   // F7: net task tertinggi (watchdog R5 tetap tepat waktu)
         serial_write("Net-7: net task dibuat di slot ");
         serial_write_hex((uint64_t)task_count);
         serial_write("\r\n");
@@ -1328,6 +1330,7 @@ void kmain(void)
     if (task_count < MAX_TASKS) {
         g_idle_index = task_count;
         task_create(&tasks[task_count], idle_task_entry, 4096);
+        tasks[task_count].prio = PRIO_IDLE;   // F7: di luar tingkat, hanya jalan bila tak ada yang layak
         serial_write("Idle: task idle dibuat di slot ");
         serial_write_hex((uint64_t)task_count);
         serial_write("\r\n");
@@ -1338,6 +1341,21 @@ void kmain(void)
 
     // P5-4: APP.BIN sesudah net task + idle: nomor slot lain tidak bergeser.
     app_load();
+
+    kprintf("F7: prioritas task: tinggi=net normal=kernel rendah=user idle (penuaan %u tick); "
+            "batas user per %u tick: fd=%u syscall=%u tulis=%u cpu=%u henti=%u jendela\r\n",
+            (uint32_t)PRIO_AGE_TICKS, (uint32_t)RES_WIN_TICKS, (uint32_t)RES_FD_MAX,
+            (uint32_t)RES_SYS_MAX, (uint32_t)RES_WRITE_MAX, (uint32_t)RES_CPU_MAX,
+            (uint32_t)RES_STRIKES_MAX);
+
+#ifndef BMAHOS_PROD
+    // F7 (dev): program uji batas sumber daya; sesudah APP.BIN supaya slot lain tidak bergeser.
+    if (task_count < MAX_TASKS) {
+        // Tabel soket global (4) tinggal 1 slot bebas (udpgema, tcpgema, tcpklien memegang 3):
+        // jatah soket task uji diturunkan ke 1 supaya jalur penolakan jatah teruji di QEMU.
+        spawn(user_batas_start, (size_t)(user_batas_end - user_batas_start))->fd_max = 1;
+    }
+#endif
 
     static task_t kernel_dummy_task;
     // current_index WAJIB di-set sebelum switch pertama -- kalau

@@ -63,6 +63,7 @@ void task_create(task_t *task, void (*entry_function)(void), uint64_t stack_size
     // pernah masuk ring 3. g_current_pml4_phys sudah diisi di kmain()
     // sebelum task_create() pertama dipanggil.
     task->pml4_phys = g_current_pml4_phys;
+    prio_init_task(task, PRIO_NORMAL, timer_ticks);   // F7 (net task / idle diubah kmain)
 }
 
 task_t tasks[MAX_TASKS];
@@ -207,6 +208,7 @@ void task_create_user(
     // ini, task_create_user() masih menerima user_code_vaddr/
     // user_stack_vaddr eksplisit dari caller seperti sebelumnya.
     task->next_free_vaddr = USER_VADDR_ALLOC_BASE;
+    prio_init_task(task, PRIO_LOW, timer_ticks);   // F7: task user = rendah + batas sumber daya
 
     // --- Halaman user code + stack (ring 3, VMM_FLAG_USER) ---
     uint64_t user_code_frame = vmm_alloc_user_frame();
@@ -357,6 +359,7 @@ task_t *spawn(const uint8_t *image, size_t image_len)
     task->waiting_for_sem = 0;
     task->is_user_task = true;
     task->pml4_phys = pml4_phys;
+    prio_init_task(task, PRIO_LOW, timer_ticks);   // F7: task user = rendah + batas sumber daya
 
     // --- Halaman code + stack (ring 3, VMM_FLAG_USER) ---
     uint64_t code_frame = vmm_alloc_user_frame();
@@ -437,10 +440,13 @@ void schedule(void)
     // yang waktu bangunnya sudah tiba. Scheduler yang bertanggung
     // jawab menentukan "siapa yang runnable", jadi pengecekan ini
     // wajar dilakukan di sini, bukan di irq_handler() terpisah.
+    uint64_t now = timer_ticks;
+
     for (size_t i = 0; i < task_count; i++) {
         if (tasks[i].status == TASK_SLEEPING &&
-            timer_ticks >= tasks[i].wake_at_tick) {
+            now >= tasks[i].wake_at_tick) {
             tasks[i].status = TASK_READY;
+            tasks[i].ready_at = now;   // F7: umur antrean mulai dari bangun
         }
     }
 
@@ -461,30 +467,19 @@ void schedule(void)
             tasks[i].waiting_for_sem == 0 &&
             tasks[tasks[i].waiting_for].status == TASK_DEAD) {
             tasks[i].status = TASK_READY;
+            tasks[i].ready_at = now;
         }
     }
 
-    // Bounded scan: cari task READY berikutnya, MAKSIMAL task_count
-    // kali percobaan. Ini WAJIB dibatasi -- kalau semua task DEAD,
-    // loop tanpa batas akan menggantung scheduler selamanya di dalam
-    // interrupt context (fatal, karena timer berikutnya pun tidak
-    // akan pernah bisa masuk lagi).
-    size_t next_index = current_index;
-    bool found = false;
+    // F7: pilih berdasarkan prioritas + penuaan (prio.c, loop terbatas task_count). Task yang
+    // sedang jalan diberi umur nol dulu: yang menunggu adalah yang lain.
+    tasks[current_index].ready_at = now;
 
-    for (size_t attempt = 0; attempt < task_count; attempt++) {
-        next_index = (next_index + 1) % task_count;
-        if (tasks[next_index].status == TASK_READY &&
-            next_index != g_idle_index) {
-            found = true;
-            break;
-        }
-    }
+    size_t next_index = prio_pick(tasks, task_count, current_index, g_idle_index, now);
 
-    // Semua task DEAD (atau tidak ada yang READY) -- tidak ada yang
-    // bisa dijalankan, jangan context switch ke mana pun.
-    // Kalau ada task idle, pindah ke sana (kecuali sudah di idle).
-    if (!found) {
+    // Tidak ada task layak (semua tidur/blok/DEAD/kena jatah CPU): pindah ke idle bila ada
+    // (kecuali sudah di idle).
+    if (next_index == (size_t)-1) {
         if (g_idle_index == (size_t)-1 || current_index == g_idle_index) {
             return;
         }
@@ -609,6 +604,7 @@ void task_wake(size_t idx)
 
     if (idx < task_count && tasks[idx].status == TASK_SLEEPING) {
         tasks[idx].status = TASK_READY;
+        tasks[idx].ready_at = timer_ticks;
     }
     irq_restore(flags);
 }
@@ -687,6 +683,7 @@ void sem_post(semaphore_t *sem)
         if (tasks[i].status == TASK_BLOCKED &&
             tasks[i].waiting_for_sem == sem) {
             tasks[i].status = TASK_READY;
+            tasks[i].ready_at = timer_ticks;
             break;
         }
     }

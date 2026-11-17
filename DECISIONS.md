@@ -646,3 +646,39 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Belum ada pemanggil produksi `kmalloc`** (hanya uji boot di kmain dan nx_selftest), jadi slab terbukti lewat uji host + uji boot,
   bukan lewat beban nyata. Tanpa kunci: tidak aman dari ISR / dua task bersamaan (kernel satu core; sama dengan heap bump).
   Tidak ada kanari antar-objek dan overflow di dalam halaman tidak terdeteksi.
+
+## 2026-11-16 (F7: prioritas task dan batas sumber daya per task user)
+
+- **Tiga tingkat tetap (tinggi = net task, normal = task kernel, rendah = task user termasuk APP.BIN) + idle di luar tingkat;
+  bergilir di dalam tingkat.** Memilih ini karena hanya net task yang punya tenggat (watchdog R5, 1000 tick) dan hanya task user
+  yang tak tepercaya; tiga tingkat cukup dan pemilihnya tetap satu pemindaian terbatas `task_count`. Alternatif: prioritas
+  numerik 0..255 per task (tak ada kebutuhan, lebih banyak keadaan), antrean siap per tingkat (struktur baru untuk 15 task).
+  Titik awal bergilir = task terakhir yang dipilih di tingkat itu, bukan `current_index`: net task bangun tiap tick dan akan
+  selalu jadi titik awal, sehingga task user berindeks tepat sesudahnya menang terus.
+- **Cegah kelaparan dengan penuaan, bukan kuantum per tingkat.** Task READY (bukan yang sedang jalan) yang menunggu >= 20 tick
+  (0,2 s) sejak jalan/jadi READY/diganti dipilih lebih dulu (terlama dahulu), satu tick, lalu umurnya mulai lagi. Batas atas
+  tunggu = 20 + jumlah task READY tick; net task yang macet pun tidak bisa memonopoli. Alternatif: jatah kuantum tetap per tingkat
+  (mis. 4:2:1) -- membuang CPU ke tingkat kosong atau butuh pengecualian; penaikan prioritas sementara -- keadaan tambahan yang harus
+  dipulihkan. Net task tetap aman untuk watchdog: ia bangun (sem_post) pada tick itu juga dan dipilih sebelum semua tingkat lain;
+  yang bisa menyela hanya satu tick penuaan per >= 20 tick (diuji host: latensi 0 tick).
+- **Batas per task user, jendela 100 tick (bergulir malas): CPU 50 tick, syscall 500, byte SYS_WRITE 4096, soket 2.** Dipilih
+  karena itulah jalur yang bisa dipakai APP.BIN tak tepercaya untuk merugikan sistem: CPU (menyaingi/menunda task lain), banjir
+  syscall (tiap panggilan jalan dengan interrupt mati; nomor tak dikenal mencetak satu baris serial), SYS_WRITE (UART polling
+  dengan interrupt mati: 1024 byte ~ 90 ms pada 115200 baud), dan soket (tabel global hanya 4). APP sah (echo TCP) jauh di bawah
+  batas. Konstanta kompilasi, tidak lewat CONFIG.CFG: batas yang bisa diperlebar dari disk memperbesar permukaan serangan
+  tanpa kebutuhan nyata; mudah ditambahkan kelak lewat pola config.c.
+- **Pelanggaran: syscall ditolak dengan -122 (EDQUOT, tanpa efek) -- fail-closed; CPU habis = tidak dijadwalkan sampai jendela
+  baru; satu baris log per jenis per task; 5 jendela beruntun melanggar (CPU habis, syscall atau tulis; soket tidak dihitung) =
+  task dihentikan** (`task_exit` dari syscall atau dari tick yang jatuh di ring 3; nomor jendela terlewat = bersih). SYS_EXIT tidak
+  pernah ditolak. Memilih -122 karena kode -24 (EMFILE) sudah berarti tabel penuh dan program uji bisa membedakan. Alternatif:
+  langsung bunuh pada pelanggaran pertama (APP sah yang sekali melonjak ikut mati), hanya menolak (pembanjir tak pernah berhenti).
+  Soket: per task (bukan hanya tabel global) supaya satu task tak menghabiskan seluruh 4 slot; dicek sebelum EMFILE (juga di accept).
+- **CPU dicuplik per tick (task yang jalan saat tick dibebani), bukan diukur tepat.** Murah dan cukup untuk jatah kasar; task
+  yang sengaja tidur tepat sebelum tick bisa lolos (batas diketahui). `res_*` hidup di `prio.c` yang murni (menerima `task_t*` dan
+  waktu), sehingga seluruh logika diuji host tanpa kernel. Metrics baru di akhir tabel (145 kunci): res_fd_deny, res_sys_deny,
+  res_wr_deny, res_cpu_win, res_killed, sched_aged. `tasks` menampilkan header batas dan per slot prio, cpu, sys, fd, tolak, strike.
+- **Dev: task uji `userspace/batas.c` (slot sesudah APP.BIN, nomor slot lain tidak bergeser; MAX_TASKS 15, tersisa satu stack
+  kernel dari KSTACK_MAX_STACKS 16).** Tabel soket tinggal 1 slot bebas pada boot dev, jadi jatah soket task uji diturunkan ke 1
+  (`fd_max` per task, bawaan 2). **Belum teruji di QEMU: jatah CPU** (enam task user berbagi CPU, tak ada yang mencapai 50 tick per
+  jendela; teruji di host dengan simulasi), dan penuaan di bawah beban nyata. Tanpa refactor terpisah: tidak ada kode lama yang
+  dipindah; `schedule()` hanya mengganti pemindaian round-robin dengan `prio_pick`.

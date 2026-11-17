@@ -945,8 +945,10 @@ extern uint64_t g_audit_seq;    // audit.c: nomor urut entri terakhir
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----
-#define MAX_TASKS 14   // P5-4: 13 -> 14 (slot dev: 8 task uji + udpgema + tcpgema + tcpklien + net + idle
-                      // + APP.BIN; PROD: net + idle + APP.BIN)
+#define MAX_TASKS 15   // P5-4: 13 -> 14 (slot dev: 8 task uji + udpgema + tcpgema + tcpklien + net + idle
+                      // + APP.BIN; PROD: net + idle + APP.BIN). F7: 14 -> 15 (+ task uji batas, dev,
+                      // sesudah APP.BIN supaya nomor slot lain tidak bergeser). KSTACK_MAX_STACKS 16:
+                      // tersisa satu stack kernel.
 
 typedef enum {
     TASK_READY,
@@ -1000,6 +1002,17 @@ typedef struct {
     // untuk task_create() biasa. Nilai awal diisi USER_VADDR_ALLOC_BASE
     // oleh task_create_user().
     uint64_t next_free_vaddr;
+    // F7 (prio.c): prioritas + batas sumber daya. res_* hanya bermakna untuk task user.
+    uint8_t prio;            // PRIO_*
+    uint64_t ready_at;       // tick terakhir task ini dapat CPU / jadi READY / diganti (umur antrean)
+    uint64_t res_win;        // tick awal jendela batas
+    uint32_t res_cpu;        // tick CPU di jendela ini
+    uint32_t res_sys;        // syscall di jendela ini
+    uint32_t res_wr;         // byte SYS_WRITE di jendela ini
+    uint32_t res_strikes;    // jendela beruntun yang melanggar
+    uint32_t res_flags;      // RESF_*
+    uint32_t fd_max;         // jatah soket task ini (RES_FD_MAX; dev menurunkan untuk task uji)
+    uint64_t cpu_total, sys_total, deny_total;   // seumur task (tampil di `tasks`)
 } task_t;
 
 extern task_t tasks[MAX_TASKS];
@@ -1020,6 +1033,48 @@ void sem_wait(semaphore_t *sem);
 void sem_post(semaphore_t *sem);
 void task_a_entry(void);
 void task_b_entry(void);
+
+// ---- prio.c (F7: prioritas task + batas sumber daya per task user) ----
+// Tingkat: tinggi (net task), normal (task kernel), rendah (task user/APP); idle di luar tingkat
+// (hanya jalan bila tak ada yang READY). Dalam satu tingkat bergilir (round-robin per tingkat).
+// Penuaan: task READY yang menunggu >= PRIO_AGE_TICKS tick dipilih lebih dulu (yang terlama),
+// jadi tiap task READY pasti kebagian CPU walau tingkat di atasnya tak pernah berhenti.
+#define PRIO_HIGH       0
+#define PRIO_NORMAL     1
+#define PRIO_LOW        2
+#define PRIO_IDLE       3
+#define PRIO_LEVELS     3      // tingkat yang bisa dipilih (HIGH..LOW)
+#define PRIO_AGE_TICKS  20     // 0,2 detik pada 100 Hz
+// Batas per task user per jendela RES_WIN_TICKS tick. Semua konstanta kompilasi (tanpa CONFIG.CFG).
+#define RES_WIN_TICKS    100   // 1 detik
+#define RES_FD_MAX       2     // soket terbuka per task (tabel global SOCK_MAX = 4)
+#define RES_SYS_MAX      500   // syscall per jendela (kecuali SYS_EXIT)
+#define RES_WRITE_MAX    4096  // byte SYS_WRITE per jendela (UART polling dengan interrupt mati)
+#define RES_CPU_MAX      50    // tick CPU per jendela (separuh); lewat = tak dijadwalkan sampai jendela baru
+#define RES_STRIKES_MAX  5     // jendela beruntun melanggar -> task dihentikan
+#define RESF_BAD    (1u << 0)  // jendela ini melanggar (dihitung satu kali per jendela)
+#define RESF_CPUW   (1u << 1)  // jatah CPU jendela ini sudah habis (dihitung sekali)
+#define RESF_LOG_FD  (1u << 8) // satu baris log per jenis per task seumur hidup
+#define RESF_LOG_SYS (1u << 9)
+#define RESF_LOG_WR  (1u << 10)
+#define RESF_LOG_CPU (1u << 11)
+#define RES_SC_OTHER 0
+#define RES_SC_WRITE 1
+#define RES_SC_EXIT  2
+#define RES_ALLOW    0
+#define RES_DENY     1
+#define RES_KILL     2
+#define SOCK_EDQUOT  (-122)    // jatah per task habis (fd, syscall, byte tulis)
+extern uint64_t g_res_fd_deny, g_res_sys_deny, g_res_wr_deny, g_res_cpu_win, g_res_killed, g_sched_aged;
+void prio_init_task(task_t *t, uint8_t prio, uint64_t now);
+size_t prio_pick(task_t *t, size_t n, size_t cur, size_t idle, uint64_t now);
+void prio_reset(void);
+int res_tick(task_t *t, size_t slot, uint64_t now, int in_user);
+int res_syscall(task_t *t, size_t slot, uint64_t now, int kind, uint64_t len);
+void res_fd_denied(size_t slot);
+uint32_t res_fd_limit(size_t slot);   // jatah soket task slot (0 bila slot tak sah)
+uint32_t sock_fd_count(size_t idx);   // sock.c: fd terbuka milik task idx
+const char *prio_name(uint8_t prio);
 
 // ---- kernel.c: dipakai sched.c ----
 extern void enter_usermode(uint64_t entry_vaddr, uint64_t user_stack_top);

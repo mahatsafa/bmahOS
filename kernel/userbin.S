@@ -15,4 +15,9 @@ user_tcpgema_end:
 user_tcpklien_start:
     .incbin "build/user/tcpklien.bin"   // P5-3
 user_tcpklien_end:
+    .global user_batas_start
+    .global user_batas_end
+user_batas_start:
+    .incbin "build/user/batas.bin"   // F7 (dev): pelanggar batas sumber daya
+user_batas_end:
     .section .note.GNU-stack,"",@progbits
