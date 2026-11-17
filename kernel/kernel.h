@@ -948,7 +948,7 @@ void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 #define MAX_TASKS 15   // P5-4: 13 -> 14 (slot dev: 8 task uji + udpgema + tcpgema + tcpklien + net + idle
                       // + APP.BIN; PROD: net + idle + APP.BIN). F7: 14 -> 15 (+ task uji batas, dev,
                       // sesudah APP.BIN supaya nomor slot lain tidak bergeser). KSTACK_MAX_STACKS 16:
-                      // tersisa satu stack kernel.
+                      // build dev dengan PROG.BIN (FAT32-4B) sudah memakai 16/16, tanpa sisa.
 
 typedef enum {
     TASK_READY,
@@ -1011,6 +1011,8 @@ typedef struct {
     uint32_t res_wr;         // byte SYS_WRITE di jendela ini
     uint32_t res_strikes;    // jendela beruntun yang melanggar
     uint32_t res_flags;      // RESF_*
+    uint32_t res_logn;       // baris log syscall ditolak tercetak di jendela ini
+    uint32_t res_supp;       // baris log syscall ditolak yang ditekan sejak baris terakhir
     uint32_t fd_max;         // jatah soket task ini (RES_FD_MAX; dev menurunkan untuk task uji)
     uint64_t cpu_total, sys_total, deny_total;   // seumur task (tampil di `tasks`)
 } task_t;
@@ -1051,9 +1053,10 @@ void task_b_entry(void);
 #define RES_SYS_MAX      500   // syscall per jendela (kecuali SYS_EXIT)
 #define RES_WRITE_MAX    4096  // byte SYS_WRITE per jendela (UART polling dengan interrupt mati)
 #define RES_CPU_MAX      50    // tick CPU per jendela (separuh); lewat = tak dijadwalkan sampai jendela baru
-#define RES_STRIKES_MAX  5     // jendela beruntun melanggar -> task dihentikan
+#define RES_STRIKES_MAX  5     // jendela beruntun melanggar syscall/tulis/syscall tak sah -> task dihentikan
 #define RESF_BAD    (1u << 0)  // jendela ini melanggar (dihitung satu kali per jendela)
-#define RESF_CPUW   (1u << 1)  // jatah CPU jendela ini sudah habis (dihitung sekali)
+#define RESF_CPUW   (1u << 1)  // jatah CPU jendela ini sudah habis (dihitung sekali; BUKAN strike)
+#define RES_LOG_BURST 4        // baris log syscall ditolak yang boleh tercetak per task per jendela
 #define RESF_LOG_FD  (1u << 8) // satu baris log per jenis per task seumur hidup
 #define RESF_LOG_SYS (1u << 9)
 #define RESF_LOG_WR  (1u << 10)
@@ -1072,6 +1075,8 @@ void prio_reset(void);
 int res_tick(task_t *t, size_t slot, uint64_t now, int in_user);
 int res_syscall(task_t *t, size_t slot, uint64_t now, int kind, uint64_t len);
 void res_fd_denied(size_t slot);
+int res_log_ok(task_t *t, size_t slot, uint64_t now);   // 1 = boleh cetak (satu per task per jendela)
+int res_reject(task_t *t, size_t slot, uint64_t now);   // syscall tak sah: pelanggaran; 1 = boleh cetak
 uint32_t res_fd_limit(size_t slot);   // jatah soket task slot (0 bila slot tak sah)
 uint32_t sock_fd_count(size_t idx);   // sock.c: fd terbuka milik task idx
 const char *prio_name(uint8_t prio);

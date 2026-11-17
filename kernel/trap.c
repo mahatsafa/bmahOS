@@ -152,8 +152,10 @@ static void syscall_handler(struct exception_context *context)
         uint64_t fl;
 
         __asm__ volatile("pushfq\n\tpopq %0" : "=r"(fl));
-        kprintf("F7: syscall AC user=%lu kernel=%lu smap=%lu\r\n",
-                (context->rflags >> 18) & 1, (fl >> 18) & 1, (uint64_t)g_smap_on);
+        if (res_log_ok(&tasks[current_index], current_index, timer_ticks)) {
+            kprintf("F7: syscall AC user=%lu kernel=%lu smap=%lu\r\n",
+                    (context->rflags >> 18) & 1, (fl >> 18) & 1, (uint64_t)g_smap_on);
+        }
     }
 #endif
     // F7: batas sumber daya task user (prio.c): jatah syscall per jendela dan byte SYS_WRITE.
@@ -179,9 +181,11 @@ static void syscall_handler(struct exception_context *context)
     if (syscall_num >= SYSCALL_COUNT || syscall_table[syscall_num].fn == 0)
     {
         g_sys_rejected++;
-        serial_write("SYSCALL tidak dikenal: ");
-        serial_write_hex(syscall_num);
-        serial_write("\r\n");
+        if (res_reject(&tasks[current_index], current_index, timer_ticks)) {   // F7: log terbatas
+            serial_write("SYSCALL tidak dikenal: ");
+            serial_write_hex(syscall_num);
+            serial_write("\r\n");
+        }
         context->rax = (uint64_t)-1;
         return;
     }
@@ -195,13 +199,15 @@ static void syscall_handler(struct exception_context *context)
             !is_valid_user_ptr(g_current_pml4_phys, context->rdi, context->rsi, false))
         {
             g_sys_rejected++;
-            serial_write("syscall_handler(): DITOLAK -- pointer/len tidak valid (syscall=");
-            serial_write_hex(syscall_num);
-            serial_write(", ptr=");
-            serial_write_hex(context->rdi);
-            serial_write(", len=");
-            serial_write_hex(context->rsi);
-            serial_write(")\r\n");
+            if (res_reject(&tasks[current_index], current_index, timer_ticks)) {   // F7: log terbatas
+                serial_write("syscall_handler(): DITOLAK -- pointer/len tidak valid (syscall=");
+                serial_write_hex(syscall_num);
+                serial_write(", ptr=");
+                serial_write_hex(context->rdi);
+                serial_write(", len=");
+                serial_write_hex(context->rsi);
+                serial_write(")\r\n");
+            }
             context->rax = (uint64_t)-1;
             return;
         }

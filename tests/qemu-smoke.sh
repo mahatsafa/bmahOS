@@ -353,6 +353,8 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     FT_TASKS="$($BM tasks)"
     check "F7 tugas: dev: program uji ditolak: soket ke-2 -122, tulis, syscall; dihentikan setelah 5 jendela" \
         'grep -aq "^batas: socket ke-2 kode=-122" "$LOG" && grep -aq "^RES: task user slot $FT_SLOT melanggar batas soket (jatah 1 per task)" "$LOG" && grep -aq "^RES: task user slot $FT_SLOT melanggar batas tulis (" "$LOG" && grep -aq "^RES: task user slot $FT_SLOT melanggar batas syscall (501 dari 500 per 100 tick)" "$LOG" && grep -aq "^RES: task user slot $FT_SLOT dihentikan (batas dilanggar 5 jendela beruntun)" "$LOG"'
+    check "F7 tugas: dev: banjir syscall pointer tak sah: baris DITOLAK terbatas (1..24, bukan ratusan), ada baris ditekan" \
+        '[ "$(grep -ac "DITOLAK -- pointer/len tidak valid (syscall=0x0000000000000001, ptr=0xFFFFFFFF80100000, len=0x0000000000000008)" "$LOG")" -ge 1 ] && [ "$(grep -ac "DITOLAK -- pointer/len tidak valid (syscall=0x0000000000000001, ptr=0xFFFFFFFF80100000, len=0x0000000000000008)" "$LOG")" -le 24 ] && grep -aq "^RES: task user slot $FT_SLOT: [0-9]* baris syscall ditolak ditekan" "$LOG"'
     check "F7 tugas: dev: metrics res_*: fd/sys/tulis ditolak, task dihentikan (jatah CPU hanya diuji di host: 6 task user berebut CPU, tak ada yang capai 50 tick)" \
         '[ "$(echo "$FT_R" | sed -n "s/^res_fd_deny=//p")" -ge 1 ] && [ "$(echo "$FT_R" | sed -n "s/^res_sys_deny=//p")" -ge 1 ] && [ "$(echo "$FT_R" | sed -n "s/^res_wr_deny=//p")" -ge 1 ] && [ "$(echo "$FT_R" | sed -n "s/^res_killed=//p")" -ge 1 ]'
     check "F7 tugas: dev: tasks: slot uji DEAD user prio=rendah dengan tolak > 0, task user lain prio=rendah" \
@@ -361,8 +363,8 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         '[ "$($BM ping)" = "pong" ] && $BM uptime | grep -q "^uptime: " && ! grep -aq "^PANIC: watchdog" "$LOG"'
 else
     FT_R="$($BM "metrics res_")"
-    check "F7 tugas: PROD: tanpa task user uji: res_* semua 0, sched_aged 0" \
-        '[ "$(echo "$FT_R" | grep -c "^res_[a-z_]*=0$")" -eq 5 ] && [ "$(mval sched_aged)" = 0 ]'
+    check "F7 tugas: PROD: tanpa task user uji: res_* semua 0" \
+        '[ "$(echo "$FT_R" | grep -c "^res_[a-z_]*=0$")" -eq 5 ]'
 fi
 
 # R4: log persisten (LOG.BIN). Boot pertama = boot 1; setelah > 5 s ada rekaman.

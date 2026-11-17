@@ -4,8 +4,9 @@
 //      global hanya menyisakan 1 slot) -> socket() ke-2 = -122 (SOCK_EDQUOT), lalu semua
 //      ditutup supaya tabel soket global tidak tertahan;
 //   2. tulis: 6 x SYS_WRITE 1024 byte -> jatah 4096 byte per jendela habis, sisanya -122;
-//   3. syscall: SYS_CLOSE fd tak sah tanpa henti -> lewat 500 per jendela = -122, dan
-//      setelah 5 jendela beruntun melanggar kernel menghentikan task ini.
+//   3. syscall: SYS_CLOSE fd tak sah + SYS_WRITE pointer kernel (ditolak) tanpa henti -> lewat
+//      500 per jendela = -122; baris log "DITOLAK" terbatas per jendela; setelah 5 jendela
+//      beruntun melanggar kernel menghentikan task ini.
 // Hasil diperiksa dari log kernel ("RES: ...") dan metrics res_*, bukan dari program ini.
 
 #include "bm.h"
@@ -58,6 +59,7 @@ __attribute__((section(".text.start"), noreturn)) void _start(void)
     }
 
     for (;;) {
+        bm_write((const void *)0xFFFFFFFF80100000UL, 8);   // pointer kernel: ditolak, log terbatas
         bm_close(63);
     }
 }

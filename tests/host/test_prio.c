@@ -157,8 +157,8 @@ static void test_tinggi_tepat_waktu(void)
 
 static void test_jatah_cpu(void)
 {
-    // satu task user pelahap CPU + idle: jatah 50 dari tiap 100 tick, sisanya idle; strike
-    // naik tiap jendela; ke-RES_STRIKES_MAX saat tick di ring 3 -> RES_KILL
+    // satu task user pelahap CPU + idle: jatah 50 dari tiap 100 tick, sisanya idle. CPU habis
+    // hanya membatasi (res_cpu_win naik, satu baris log), TIDAK jadi strike dan tidak dibunuh.
     reset(2);
     set_user(0);
     tasks[1].prio = PRIO_IDLE;
@@ -166,34 +166,32 @@ static void test_jatah_cpu(void)
 
     size_t cur = 0;
     uint64_t run = 0, idle = 0;
-    int kill_at = -1;
+    int kills = 0;
 
-    for (uint64_t now = 1; now <= 1000 && kill_at < 0; now++) {
+    for (uint64_t now = 1; now <= 1000; now++) {
         size_t nx = step(2, cur, 1, now);
 
         cur = nx;
         if (cur == 0) {
             run++;
             if (res_tick(&tasks[0], 0, now, 1) == RES_KILL) {
-                kill_at = (int)now;
+                kills++;
             }
         } else {
             idle++;
             res_tick(&tasks[1], 1, now, 0);
         }
     }
-    CHECK(kill_at > 0);
-    CHECK(g_res_killed == 1);
-    CHECK(g_res_cpu_win >= RES_STRIKES_MAX);
-    // ~5 jendela + ujung: dihentikan antara jendela ke-5 dan ke-7
-    CHECK(kill_at >= (int)(RES_STRIKES_MAX * RES_WIN_TICKS) && kill_at <= (int)((RES_STRIKES_MAX + 2) * RES_WIN_TICKS));
-    // pemakaian CPU <= ~separuh (+ satu tick per jendela karena pencuplikan)
-    CHECK(run <= (uint64_t)(kill_at / 2 + RES_STRIKES_MAX + 5));
-    CHECK(run >= (uint64_t)(kill_at / 2 - RES_STRIKES_MAX - 5));
+    CHECK(kills == 0 && g_res_killed == 0);
+    CHECK(tasks[0].res_strikes == 0);
+    CHECK(g_res_cpu_win >= 9);
+    CHECK(run <= 500 + 10 && run >= 500 - 10);   // ~separuh (+ satu tick per jendela karena pencuplikan)
     CHECK(idle > 0);
     CHECK(tasks[0].cpu_total == run);
     CHECK(strstr(g_serial_cap, "RES: task user slot 0 melanggar batas cpu") != NULL);
-    CHECK(strstr(g_serial_cap, "RES: task user slot 0 dihentikan") != NULL);
+    char *p = strstr(g_serial_cap, "melanggar batas cpu");
+    CHECK(p != NULL && strstr(p + 5, "melanggar batas cpu") == NULL);   // satu baris saja
+    CHECK(strstr(g_serial_cap, "RES: task user slot 0 dihentikan") == NULL);
 }
 
 static void test_cpu_tidak_melanggar(void)
@@ -217,18 +215,115 @@ static void test_cpu_tidak_melanggar(void)
 
 static void test_tidur_mereset(void)
 {
-    // jendela melanggar lalu tidur lama: strike dihapus (jendela terlewat bersih)
+    // jendela melanggar (syscall tak sah) lalu tidur lama: strike dihapus (jendela terlewat bersih)
     reset(1);
     set_user(0);
-    for (uint64_t now = 1; now < 100; now++) {
-        res_tick(&tasks[0], 0, now, 0);   // 99 tick -> melewati jatah
-    }
+    res_reject(&tasks[0], 0, 5);
     CHECK(tasks[0].res_flags & RESF_BAD);
-    res_tick(&tasks[0], 0, 100, 0);       // jendela tutup: strike = 1
+    res_syscall(&tasks[0], 0, 100, RES_SC_OTHER, 0);   // jendela tutup: strike = 1
     CHECK(tasks[0].res_strikes == 1);
-    res_tick(&tasks[0], 0, 500, 0);       // tidur 4 jendela: strike direset
+    res_syscall(&tasks[0], 0, 500, RES_SC_OTHER, 0);   // tidur 4 jendela: strike direset
     CHECK(tasks[0].res_strikes == 0);
-    CHECK(!(tasks[0].res_flags & RESF_BAD) || tasks[0].res_cpu == 1);
+}
+
+// Syscall tak sah (nomor tak dikenal / pointer-len ditolak) di bawah jatah syscall dan tulis:
+// dulu lolos selamanya (500 x 8 B < 4096) sambil membanjiri serial. Kini baris log terbatas
+// RES_LOG_BURST per jendela (sisanya ditekan, dilaporkan satu baris) dan tiap jendela yang
+// memuatnya = strike -> dihentikan.
+static void test_ditolak(void)
+{
+    reset(2);
+    set_user(0);
+    tasks[1].is_user_task = false;
+    int cetak = 0, kill_at = -1;
+    uint64_t ditekan = 0;
+
+    for (uint64_t now = 1; now <= 1000 && kill_at < 0; now++) {
+        for (int k = 0; k < 100; k++) {   // 100 per tick = jauh di atas jatah, tapi uji jalur tak sah
+            int rc = res_syscall(&tasks[0], 0, now, RES_SC_OTHER, 0);
+
+            if (rc == RES_KILL) {
+                kill_at = (int)now;
+                break;
+            }
+            if (rc == RES_ALLOW && res_reject(&tasks[0], 0, now)) {
+                cetak++;
+            } else if (rc == RES_ALLOW) {
+                ditekan++;
+            }
+            if (k == 4) {
+                break;   // 5 per tick: ~500 per jendela, tepat di jatah
+            }
+        }
+    }
+    CHECK(kill_at > 0 && g_res_killed == 1);
+    CHECK(cetak <= RES_LOG_BURST * (int)(RES_STRIKES_MAX + 2));   // terbatas, bukan ratusan
+    CHECK(ditekan > 100);
+    CHECK(strstr(g_serial_cap, "baris syscall ditolak ditekan") != NULL);
+    CHECK(strstr(g_serial_cap, "dihentikan (batas dilanggar 5 jendela beruntun)") != NULL);
+    CHECK(tasks[0].deny_total > 100);
+
+    // satu syscall tak sah sekali-sekali (bukan jendela beruntun) tidak membunuh
+    reset(1);
+    set_user(0);
+    for (uint64_t now = 1; now <= 3000; now++) {
+        if (now % 250 == 0) {
+            res_reject(&tasks[0], 0, now);
+        }
+        CHECK(res_syscall(&tasks[0], 0, now, RES_SC_OTHER, 0) != RES_KILL);
+    }
+    CHECK(g_res_killed == 0);
+
+    // task kernel: tak dibatasi, selalu boleh cetak
+    reset(1);
+    for (int k = 0; k < 20; k++) {
+        CHECK(res_reject(&tasks[0], 0, 1) == 1);
+    }
+    CHECK(res_log_ok(&tasks[0], 0, 1) == 1 && tasks[0].deny_total == 0);
+}
+
+// Net task bangun bergantian dengan dua task user yang tak pernah berhenti, sambil tingkat
+// rendah ikut menua: yang menyela net task hanya satu tick penuaan, jadi latensinya paling
+// banyak 1 tick; penuaan benar-benar terjadi (sched_aged > 0) dan tiap task user tetap jalan.
+static void test_penuaan_di_samping_net(void)
+{
+    reset(4);
+    tasks[0].prio = PRIO_HIGH;
+    set_user(1);
+    set_user(2);
+    tasks[3].prio = PRIO_IDLE;
+    size_t cur = 1;
+    uint64_t woke = 0, maxlat = 0;
+    uint64_t cnt[3] = {0, 0, 0};
+
+    tasks[0].status = TASK_SLEEPING;
+    for (uint64_t now = 1; now <= 3000; now++) {
+        // net: sibuk 40 tick (READY terus, tingkat rendah menua di belakangnya), tidur 5 tick
+        int sibuk = (now % 45) < 40;
+
+        if (sibuk && tasks[0].status == TASK_SLEEPING) {
+            tasks[0].status = TASK_READY;
+            tasks[0].ready_at = now;
+            woke = now;
+        } else if (!sibuk) {
+            tasks[0].status = TASK_SLEEPING;
+        }
+        size_t nx = step(4, cur, 3, now);
+
+        if (nx < 3) {
+            cnt[nx]++;
+        }
+        if (nx == 0 && woke) {
+            if (now - woke > maxlat) {
+                maxlat = now - woke;
+            }
+            woke = 0;
+        }
+        cur = nx;
+    }
+    CHECK(maxlat <= 1);
+    CHECK(g_sched_aged > 0);
+    CHECK(cnt[1] > 0 && cnt[2] > 0);
 }
 
 static void test_syscall(void)
@@ -344,6 +439,8 @@ int main(void)
     test_jatah_cpu();
     test_cpu_tidak_melanggar();
     test_tidur_mereset();
+    test_ditolak();
+    test_penuaan_di_samping_net();
     serial_capture_reset();
     test_syscall();
     test_tulis();

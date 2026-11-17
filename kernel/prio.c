@@ -19,9 +19,11 @@
 //  - syscall > RES_SYS_MAX per jendela, byte SYS_WRITE > RES_WRITE_MAX per jendela:
 //    syscall itu ditolak dengan SOCK_EDQUOT (fail-closed, tanpa efek).
 //  - soket: RES_FD_MAX per task (diperiksa sock.c, dicatat res_fd_denied).
-//  Jendela yang melanggar (CPU habis / syscall / tulis) menambah satu "strike" saat jendela
-//  ditutup; jendela bersih atau jendela yang terlewat tanpa kegiatan mereset. RES_STRIKES_MAX
-//  strike beruntun -> task dihentikan (res_tick / res_syscall mengembalikan RES_KILL; pemanggil
+//  Jendela yang melanggar (syscall / tulis melewati jatah, atau syscall tak sah: nomor tak
+//  dikenal / pointer-len ditolak) menambah satu "strike" saat jendela ditutup; jendela bersih
+//  atau jendela yang terlewat tanpa kegiatan mereset. CPU habis TIDAK jadi strike (cukup
+//  dibatasi: tingkat rendah + throttle sudah melindungi task lain, dan APP yang CPU-bound
+//  tetapi sah tidak boleh dibunuh). RES_STRIKES_MAX strike beruntun -> task dihentikan (res_tick / res_syscall mengembalikan RES_KILL; pemanggil
 //  memanggil task_exit). Satu baris log per jenis per task, dan satu baris saat dihentikan.
 
 uint64_t g_res_fd_deny;     // metrics res_fd_deny: socket/accept ditolak (jatah soket)
@@ -66,6 +68,8 @@ void prio_init_task(task_t *t, uint8_t prio, uint64_t now)
     t->res_wr = 0;
     t->res_strikes = 0;
     t->res_flags = 0;
+    t->res_supp = 0;
+    t->res_logn = 0;
     t->fd_max = RES_FD_MAX;
     t->cpu_total = 0;
     t->sys_total = 0;
@@ -91,6 +95,7 @@ static void res_roll(task_t *t, uint64_t now)
     t->res_sys = 0;
     t->res_wr = 0;
     t->res_flags &= ~(RESF_BAD | RESF_CPUW);
+    t->res_logn = 0;
 }
 
 static int prio_eligible(task_t *t, size_t i, size_t idle, uint64_t now)
@@ -185,7 +190,7 @@ int res_tick(task_t *t, size_t slot, uint64_t now, int in_user)
     res_roll(t, now);
     t->res_cpu++;
     if (t->res_cpu >= RES_CPU_MAX && !(t->res_flags & RESF_CPUW)) {
-        t->res_flags |= RESF_CPUW | RESF_BAD;
+        t->res_flags |= RESF_CPUW;   // dibatasi saja, bukan strike
         g_res_cpu_win++;
         res_log(t, slot, RESF_LOG_CPU, "cpu", t->res_cpu, RES_CPU_MAX);
     }
@@ -227,6 +232,39 @@ int res_syscall(task_t *t, size_t slot, uint64_t now, int kind, uint64_t len)
         t->res_wr += (uint32_t)len;
     }
     return RES_ALLOW;
+}
+
+// Batas laju baris log syscall ditolak (nomor tak dikenal, pointer/len ditolak, uji dev):
+// RES_LOG_BURST baris per task per jendela; sisanya dihitung (res_supp) dan dilaporkan sekali, di
+// awal baris yang dicetak pada jendela berikutnya. Task kernel tidak dibatasi.
+int res_log_ok(task_t *t, size_t slot, uint64_t now)
+{
+    if (!t->is_user_task) {
+        return 1;
+    }
+    res_roll(t, now);
+    if (t->res_logn >= RES_LOG_BURST) {
+        t->res_supp++;
+        return 0;
+    }
+    if (t->res_logn++ == 0 && t->res_supp) {
+        kprintf("RES: task user slot %lu: %u baris syscall ditolak ditekan\r\n",
+                (uint64_t)slot, t->res_supp);
+        t->res_supp = 0;
+    }
+    return 1;
+}
+
+// Syscall tak sah dari task user = pelanggaran jendela ini (strike bila berlanjut), supaya APP
+// yang terus mengirim syscall tak sah dihentikan walau di bawah jatah syscall/tulis.
+int res_reject(task_t *t, size_t slot, uint64_t now)
+{
+    if (t->is_user_task) {
+        res_roll(t, now);
+        t->res_flags |= RESF_BAD;
+        t->deny_total++;
+    }
+    return res_log_ok(t, slot, now);
 }
 
 // Jatah soket habis (sock.c): tolak saja, tanpa strike (pelanggaran berulang tetap kena jatah

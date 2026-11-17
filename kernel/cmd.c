@@ -339,6 +339,10 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(RES_STRIKES_MAX);
         cmd_puts(" jendela\n");
         for (size_t i = 0; i < task_count; i++) {
+            if (g_cmd_len + 176 > CMD_OUT_MAX) {   // satu baris maks ~160 byte + penanda
+                cmd_puts("...(terpotong)\n");
+                break;
+            }
             cmd_puts("slot ");
             cmd_putdec(i);
             cmd_puts(": ");

@@ -668,7 +668,7 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   batas. Konstanta kompilasi, tidak lewat CONFIG.CFG: batas yang bisa diperlebar dari disk memperbesar permukaan serangan
   tanpa kebutuhan nyata; mudah ditambahkan kelak lewat pola config.c.
 - **Pelanggaran: syscall ditolak dengan -122 (EDQUOT, tanpa efek) -- fail-closed; CPU habis = tidak dijadwalkan sampai jendela
-  baru; satu baris log per jenis per task; 5 jendela beruntun melanggar (CPU habis, syscall atau tulis; soket tidak dihitung) =
+  baru; satu baris log per jenis per task; 5 jendela beruntun melanggar (syscall/tulis melewati jatah atau syscall tak sah; soket dan CPU habis tidak dihitung, lihat koreksi di bawah) =
   task dihentikan** (`task_exit` dari syscall atau dari tick yang jatuh di ring 3; nomor jendela terlewat = bersih). SYS_EXIT tidak
   pernah ditolak. Memilih -122 karena kode -24 (EMFILE) sudah berarti tabel penuh dan program uji bisa membedakan. Alternatif:
   langsung bunuh pada pelanggaran pertama (APP sah yang sekali melonjak ikut mati), hanya menolak (pembanjir tak pernah berhenti).
@@ -682,3 +682,24 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   (`fd_max` per task, bawaan 2). **Belum teruji di QEMU: jatah CPU** (enam task user berbagi CPU, tak ada yang mencapai 50 tick per
   jendela; teruji di host dengan simulasi), dan penuaan di bawah beban nyata. Tanpa refactor terpisah: tidak ada kode lama yang
   dipindah; `schedule()` hanya mengganti pemindaian round-robin dengan `prio_pick`.
+
+### Koreksi F7 tugas setelah review (2026-11-18)
+
+- **Syscall tak sah dihitung pelanggaran dan log-nya dibatasi.** Dulu `syscall_handler` mencetak satu baris serial (~130 byte,
+  UART polling, interrupt mati) untuk tiap nomor tak dikenal / pointer-len ditolak, dan 500 panggilan per jendela x 8 byte tulis
+  tidak pernah melewati jatah 4096: banjir ~65 KB serial per jendela yang juga menggusur LOG.BIN, tanpa strike. Kini
+  `res_reject` (prio.c) menandai jendela melanggar (strike, hentikan setelah 5 jendela beruntun) dan `res_log_ok` membatasi baris
+  log syscall ditolak (juga baris uji dev "F7: syscall AC") ke 4 per task per jendela; sisanya dihitung dan dilaporkan satu baris
+  "N baris syscall ditolak ditekan" di awal jendela berikutnya yang mencetak. Empat (bukan satu) karena task uji R6 sengaja memicu
+  dua penolakan berurutan yang dicek qemu-smoke. Alternatif: tanpa batas laju (ditolak: banjir serial), batas laju global
+  (satu task pembanjir menekan baris task lain).
+- **Jendela CPU-habis tidak lagi strike; hanya dibatasi (throttle).** Keputusan koordinator: tingkat rendah + throttle sudah
+  melindungi net task dan task lain, sedangkan APP CPU-bound yang sah tidak boleh dibunuh hanya karena memakai separuh CPU.
+  Penghentian tetap untuk pelanggaran syscall/tulis/syscall tak sah. `res_cpu_win` dan satu baris log "batas cpu" tetap ada.
+- **Jatah tulis (4096 B/jendela) per task, bukan total sistem:** n task user yang masing-masing menulis penuh tetap bisa menghasilkan
+  n x 4096 B/s ke UART; batas total sistem tidak dibuat (cukup untuk 1 APP + task uji; tambahkan bila jumlah task user bertambah).
+- **Koneksi TCP yang belum di-accept (accept ditolak EDQUOT karena jatah soket penuh) kena `TCP_IDLE_TIMEOUT` 30 s tanpa kemajuan**
+  (net.c) dan ditutup/dibebaskan; tidak ada timeout khusus baru. Selama itu slot TCB user (2) tertahan.
+- `sched_aged` tidak dijadikan syarat nol di PROD: penuaan sah saat handshake TLS/ECDSA/OTA (net task memakai CPU lama).
+- `tasks` memberi penanda "...(terpotong)" bila sisa keluaran kurang dari satu baris (pola audit_dump).
+
