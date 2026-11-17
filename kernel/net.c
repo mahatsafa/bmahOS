@@ -266,7 +266,7 @@ uint64_t g_net_rx_ipv4 = 0;
 uint64_t g_net_rx_other = 0;
 uint64_t g_net_udp_badsum = 0;
 
-static int net_udp_budget_ok(void)
+int net_udp_budget_ok(void)
 {
     uint64_t now = timer_ticks;
 
@@ -292,13 +292,9 @@ static int net_udp_budget_ok(void)
 // menggusur slot penyerang; batas global tetap berlaku).
 #define NET_UDP_SRC_SLOTS   8
 
-typedef struct {
-    uint8_t ip[4];
-    uint64_t window;
-    uint32_t used;
-    int in_use;
-} net_src_budget_t;
-
+// Refactor (F7 IPv6): kunci sumber selebar 16 byte (IPv4 memakai 4 byte
+// pertama, IPv6 16) dan tabel diberikan pemanggil, supaya IPv6 memakai kode
+// yang sama dengan tabelnya sendiri (ip6.c). Perilaku IPv4 tidak berubah.
 static net_src_budget_t g_net_src[NET_UDP_SRC_SLOTS];
 uint64_t g_net_udp_src_dropped = 0;
 // C1: counter TCP
@@ -373,17 +369,24 @@ static int net_serial_log_ok(void)
     return 1;
 }
 
-static int net_udp_src_budget_ok(const volatile uint8_t *ip)
+// 1 = datagram diizinkan (jatah terpakai satu), 0 = melewati batas g_net_src_rate
+// (pemanggil yang menghitung counter dibuang). tab[0..n), key[0..klen) klen <= 16.
+int net_src_budget_take(net_src_budget_t *tab, uint32_t n, const volatile uint8_t *key,
+                        uint32_t klen)
 {
     uint64_t now = timer_ticks;
     net_src_budget_t *s = 0;
     net_src_budget_t *victim = 0;
 
-    for (uint32_t i = 0; i < NET_UDP_SRC_SLOTS; i++) {
-        net_src_budget_t *e = &g_net_src[i];
+    for (uint32_t i = 0; i < n; i++) {
+        net_src_budget_t *e = &tab[i];
+        int same = e->in_use;
 
-        if (e->in_use && e->ip[0] == ip[0] && e->ip[1] == ip[1] &&
-            e->ip[2] == ip[2] && e->ip[3] == ip[3]) {
+        for (uint32_t j = 0; same && j < klen; j++) {
+            same = e->ip[j] == key[j];
+        }
+
+        if (same) {
             s = e;
             break;
         }
@@ -397,8 +400,8 @@ static int net_udp_src_budget_ok(const volatile uint8_t *ip)
 
     if (s == 0) {
         s = victim;
-        for (int i = 0; i < 4; i++) {
-            s->ip[i] = ip[i];
+        for (uint32_t i = 0; i < 16; i++) {
+            s->ip[i] = i < klen ? key[i] : 0;
         }
         s->window = now;
         s->used = 0;
@@ -411,11 +414,20 @@ static int net_udp_src_budget_ok(const volatile uint8_t *ip)
     }
 
     if (s->used >= g_net_src_rate) {
-        g_net_udp_src_dropped++;
         return 0;
     }
 
     s->used++;
+    return 1;
+}
+
+static int net_udp_src_budget_ok(const volatile uint8_t *ip)
+{
+    if (!net_src_budget_take(g_net_src, NET_UDP_SRC_SLOTS, ip, 4)) {
+        g_net_udp_src_dropped++;
+        return 0;
+    }
+
     return 1;
 }
 

@@ -827,6 +827,17 @@ extern const uint8_t *g_cmd_src_ip;
 #define NET_UDP_BUDGET_PER_SEC 100
 #define NET_UDP_SRC_PER_SEC 20
 
+// Batas laju per sumber (B4): satu slot per alamat sumber (kunci maks 16 byte).
+typedef struct {
+    uint8_t ip[16];
+    uint64_t window;
+    uint32_t used;
+    int in_use;
+} net_src_budget_t;
+int net_src_budget_take(net_src_budget_t *tab, uint32_t n, const volatile uint8_t *key,
+                        uint32_t klen);   // 1 izinkan, 0 lewat batas
+int net_udp_budget_ok(void);              // batas global (jendela 100 tick); 0 = dibuang
+
 extern uint8_t g_net_ip[4];          // P3-4: 0.0.0.0 selama DHCP belum terikat
 int net_ip_ready(void);              // P3-4: 1 bila IP sudah ada
 extern uint32_t g_net_arp_replies_sent;
