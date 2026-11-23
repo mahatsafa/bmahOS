@@ -307,6 +307,7 @@ static const metric_t g_metrics[] = {
     M64("nd_evict", g_nd_evict),
     M64("ip6_dad_conflict", g_ip6_dad_conflict),
     M64("udp6_echo", g_udp6_echo),
+    M64("ip6_ignored", g_ip6_ignored),       // F7 IPv6 (review): ICMPv6 diabaikan, unicast lain
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

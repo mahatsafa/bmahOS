@@ -285,14 +285,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=161   # F7 IPv6: + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
+R3_N=162   # F7 IPv6: + ip6_ignored (review), + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir udp6_echo" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^udp6_echo="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir ip6_ignored" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^ip6_ignored="'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).

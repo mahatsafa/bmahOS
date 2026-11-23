@@ -913,7 +913,11 @@ static size_t mk_ns6(uint8_t *f, const uint8_t *src, const uint8_t *dst, uint8_t
         memcpy(b + n + 2, slla, 6);
         n += 8;
     }
-    return mk_icmp6(f, src, dst, hop, 135, b, n);
+    size_t len = mk_icmp6(f, src, dst, hop, 135, b, n);
+    if (slla) {
+        memcpy(f + 6, slla, 6);   // SLLA harus sama dengan MAC sumber Ethernet
+    }
+    return len;
 }
 
 static size_t mk_na6(uint8_t *f, const uint8_t *src, const uint8_t *dst, uint8_t flags,
@@ -1342,14 +1346,22 @@ static void test_ip6(void)
             rx_nt(f, mk_echo6(f, o, OUR6, "x"));
         }
         CHECK(memcmp(snap, g_net_src, sizeof(snap)) == 0);
-        // Jatah global (100/s) dipakai bersama IPv4: habis -> dibuang walau sumber baru.
+        // Jatah global IPv6 (100/s) terpisah dari IPv4: habis -> dibuang walau sumber baru,
+        // tanpa menyentuh counter IPv4; jatah IPv4 yang habis tidak menahan IPv6.
+        timer_ticks += 1000;
+        g_ip6_bused = NET_UDP_BUDGET_PER_SEC;
+        g_ip6_bwin = timer_ticks;
+        r0 = g_ip6_rate_drop;
+        uint64_t ud0 = g_net_udp_dropped;
+        o[15] = 0xC0;
+        rx_nt(f, mk_echo6(f, o, OUR6, "global"));
+        CHECK(g_tx_n == 0 && g_ip6_rate_drop == r0 + 1 && g_net_udp_dropped == ud0);
         timer_ticks += 1000;
         g_net_budget_used = NET_UDP_BUDGET_PER_SEC;
         g_net_budget_window = timer_ticks;
-        r0 = g_ip6_rate_drop;
-        o[15] = 0xC0;
-        rx_nt(f, mk_echo6(f, o, OUR6, "global"));
-        CHECK(g_tx_n == 0 && g_ip6_rate_drop == r0 + 1);
+        o[15] = 0xC1;
+        rx_nt(f, mk_echo6(f, o, OUR6, "v4habis"));
+        CHECK(g_tx_n == 1 && g_net_udp_dropped == ud0);
         timer_ticks += 1000;
     }
 
@@ -1367,11 +1379,12 @@ static void test_ip6(void)
         CHECK(strcmp(ip6_state_name(), "DAD") == 0);
         rx(f, mk_na6(f, PEER6, ALL6, 0x20, OUR6, m2));
         CHECK(strcmp(ip6_state_name(), "nonaktif (DAD konflik)") == 0 && g_ip6_dad_conflict == c0 + 1);
-        uint64_t o0 = g_ip6_off;
+        uint64_t o0 = g_ip6_off, dd0 = g_ip6_drop;
         timer_ticks += 1000;
         ip6_poll();
         rx(f, mk_echo6(f, PEER6, OUR6, "x"));
-        CHECK(g_tx_n == 0 && g_ip6_off == o0 + 1 && ip6_up_metric() == 0);
+        // Konflik: frame dihitung ip6_drop (bukan ip6_off, itu hanya untuk nonaktif).
+        CHECK(g_tx_n == 0 && g_ip6_off == o0 && g_ip6_drop == dd0 + 1 && ip6_up_metric() == 0);
         // Konflik lewat NS DAD tetangga (sumber ::, target kita) saat DAD.
         uint8_t zero[16] = { 0 };
         g_e1000_rx_initialized = 1;
@@ -1387,6 +1400,126 @@ static void test_ip6(void)
     ip6_bring_down();
     CHECK(strcmp(ip6_state_name(), "nonaktif") == 0);
     g_ip6_cfg = 0;
+}
+
+// Perbaikan temuan review IPv6: saring dulu baru jatah, jatah IPv6 sendiri, MAC sendiri,
+// SLLA, NS dari :: hanya ke solicited-node, muatan ganjil.
+static void test_ip6_review(void)
+{
+    uint8_t f[1600];
+    size_t n;
+    static const uint8_t zero6[16] = { 0 };
+
+    ip6_bring_up();
+    CHECK(ip6_up_metric() == 1);
+
+    // Panjang ganjil: echo ICMPv6 3 byte data (plen 11) dan UDP 3 byte (plen 11);
+    // checksum balasan diverifikasi pengait kirim (g_tx_bad).
+    timer_ticks += 1000;
+    n = mk_echo6(f, PEER6, OUR6, "abc");
+    CHECK((f[18] << 8 | f[19]) == 11);
+    uint64_t e0 = g_icmp6_echo;
+    rx_nt(f, n);
+    CHECK(g_tx_n == 1 && g_tx_bad == 0 && g_icmp6_echo == e0 + 1 && g_tx[0][54] == 129);
+    CHECK((g_tx[0][18] << 8 | g_tx[0][19]) == 11 && memcmp(g_tx[0] + 54 + 8, "abc", 3) == 0);
+    n = mk_udp6(f, PEER6, OUR6, 5001, 7777, "abc");
+    CHECK((f[18] << 8 | f[19]) == 11);
+    uint64_t u0 = g_udp6_echo;
+    rx_nt(f, n);
+    CHECK(g_tx_n == 1 && g_tx_bad == 0 && g_udp6_echo == u0 + 1);
+    CHECK((g_tx[0][18] << 8 | g_tx[0][19]) == 11 && memcmp(g_tx[0] + 54 + 8, "abc", 3) == 0);
+
+    // RA/MLD/RS ke ff02::1 tidak menyentuh jatah (IPv6 maupun IPv4) dan tidak dibalas.
+    {
+        timer_ticks += 1000;
+        uint8_t b[40] = { 0 };
+        uint8_t o[16];
+        static const uint8_t ty[3] = { 134, 130, 133 };
+        uint32_t used6 = g_ip6_bused;
+        uint32_t used4 = g_net_budget_used;
+        uint64_t d4 = g_net_udp_dropped, s4 = g_net_udp_src_dropped;
+        uint64_t rd = g_ip6_rate_drop, ig = g_ip6_ignored;
+        net_src_budget_t snap[NET_UDP_SRC_SLOTS];
+        memcpy(snap, g_net_src, sizeof(snap));
+
+        memcpy(o, PEER6, 16);
+        for (int i = 0; i < 300; i++) {
+            o[15] = (uint8_t)(i + 2);
+            rx_nt(f, mk_icmp6(f, o, ALL6, 255, ty[i % 3], b, 36));
+            CHECK(g_tx_n == 0);
+        }
+        CHECK(g_ip6_bused == used6 && g_net_budget_used == used4);
+        CHECK(g_net_udp_dropped == d4 && g_net_udp_src_dropped == s4 && g_ip6_rate_drop == rd);
+        CHECK(g_ip6_ignored == ig + 300 && memcmp(snap, g_net_src, sizeof(snap)) == 0);
+
+        // Banjir tipe diabaikan tidak membuat UDP echo IPv4 (dan IPv6) kelaparan.
+        rx_nt(f, mk_udp(f, 5000, 7777, "echo4", 0));
+        CHECK(g_tx_n == 1);
+        timer_ticks += 1000;
+        rx_nt(f, mk_udp6(f, PEER6, OUR6, 5002, 7777, "echo6"));
+        CHECK(g_tx_n == 1);
+        // Unicast host lain dihitung diabaikan, bukan jatah.
+        uint8_t other[16];
+        memcpy(other, OUR6, 16);
+        other[15] ^= 0x55;
+        ig = g_ip6_ignored;
+        rx_nt(f, mk_echo6(f, PEER6, other, "x"));
+        CHECK(g_tx_n == 0 && g_ip6_ignored == ig + 1);
+    }
+
+    // SLLA harus sama dengan MAC sumber Ethernet: beda -> dibuang, nd_bad, tanpa NA
+    // dan tanpa entri tetangga; sama -> NA ke MAC itu.
+    {
+        timer_ticks += 1000;
+        uint8_t m1[6] = { 0x02, 0, 0, 0, 0x0b, 0x01 };
+        uint64_t nb = g_nd_bad;
+        int nc = ip6_neigh_count();
+        n = mk_ns6(f, PEER6, SN6, 255, OUR6, m1);
+        memcpy(f + 6, PEER_MAC, 6);   // MAC Ethernet berbeda dari SLLA
+        rx_nt(f, n);
+        CHECK(g_tx_n == 0 && g_nd_bad == nb + 1 && ip6_neigh_count() == nc);
+        rx_nt(f, mk_ns6(f, PEER6, SN6, 255, OUR6, m1));
+        CHECK(g_tx_n == 1 && g_tx_bad == 0 && memcmp(g_tx[0], m1, 6) == 0);
+    }
+
+    // NS dari :: ke ff02::1 (bukan solicited-node kita): dibuang, nd_bad, tanpa NA.
+    {
+        timer_ticks += 1000;
+        uint64_t nb = g_nd_bad;
+        rx_nt(f, mk_ns6(f, zero6, ALL6, 255, OUR6, NULL));
+        CHECK(g_tx_n == 0 && g_nd_bad == nb + 1);
+        rx_nt(f, mk_ns6(f, zero6, SN6, 255, OUR6, NULL));   // ke solicited-node: NA ke ff02::1
+        CHECK(g_tx_n == 1 && g_tx[0][38] == 0xff && g_tx[0][39] == 0x02 && g_tx[0][53] == 1);
+    }
+
+    // DAD: NS dari :: ke ff02::1 bukan konflik; NS/NA berMAC sumber kita sendiri
+    // (pantulan, RFC 4862 5.4.3) bukan konflik; NS dari MAC lain tetap konflik.
+    {
+        uint64_t c0 = g_ip6_dad_conflict, ig;
+        g_ip6_cfg = 1;
+        g_e1000_rx_initialized = 1;
+        ip6_init();
+        g_e1000_rx_initialized = 0;
+        ip6_poll();
+        CHECK(strcmp(ip6_state_name(), "DAD") == 0);
+        rx_nt(f, mk_ns6(f, zero6, ALL6, 255, OUR6, NULL));
+        CHECK(strcmp(ip6_state_name(), "DAD") == 0 && g_ip6_dad_conflict == c0);
+        ig = g_ip6_ignored;
+        n = mk_ns6(f, zero6, SN6, 255, OUR6, NULL);
+        memcpy(f + 6, g_e1000_mac, 6);
+        rx_nt(f, n);
+        CHECK(strcmp(ip6_state_name(), "DAD") == 0 && g_ip6_dad_conflict == c0 &&
+              g_ip6_ignored == ig + 1);
+        n = mk_na6(f, PEER6, ALL6, 0x20, OUR6, g_e1000_mac);
+        memcpy(f + 6, g_e1000_mac, 6);
+        rx_nt(f, n);
+        CHECK(strcmp(ip6_state_name(), "DAD") == 0 && g_ip6_dad_conflict == c0 &&
+              g_ip6_ignored == ig + 2);
+        rx_nt(f, mk_ns6(f, zero6, SN6, 255, OUR6, NULL));   // MAC sumber PEER_MAC: konflik
+        CHECK(strcmp(ip6_state_name(), "nonaktif (DAD konflik)") == 0 &&
+              g_ip6_dad_conflict == c0 + 1);
+    }
+    ip6_bring_down();
 }
 
 // Frame contoh untuk dipotong dan diacak.
@@ -3845,6 +3978,7 @@ int main(void)
     test_tcp_probe();
     test_dhcp_hooks();
     test_ip6();
+    test_ip6_review();
     return test_done("net");
 }
 #endif

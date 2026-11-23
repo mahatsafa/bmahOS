@@ -50,6 +50,7 @@ static ip6_neigh_t g_ip6_neigh[IP6_NEIGH_MAX];
 static net_src_budget_t g_ip6_src[IP6_SRC_SLOTS];
 
 uint64_t g_ip6_rx, g_ip6_drop, g_ip6_off, g_ip6_nxt_drop, g_ip6_tcp_drop;
+uint64_t g_ip6_ignored;   // ICMPv6 tipe lain, unicast host lain, NS/NA pantulan MAC sendiri
 uint64_t g_ip6_rate_drop, g_ip6_badsum, g_icmp6_echo, g_nd_ns_rx, g_nd_na_tx;
 uint64_t g_nd_na_rx, g_nd_bad, g_nd_evict, g_ip6_dad_conflict, g_udp6_echo;
 
@@ -427,6 +428,27 @@ static int ip6_nd_opts(const volatile uint8_t *icmp, uint32_t plen, uint8_t want
     return 0;
 }
 
+// Jatah global IPv6 sendiri (jendela 100 tick, sebesar jatah UDP IPv4): tidak menyentuh
+// g_net_budget_* maupun g_net_udp_dropped IPv4. Hanya frame yang akan dijawab
+// (echo, NS, NA, UDP ke 7777 untuk kita) memakainya.
+static uint64_t g_ip6_bwin;
+static uint32_t g_ip6_bused;
+
+static int ip6_budget_ok(void)
+{
+    uint64_t now = timer_ticks;
+
+    if (now - g_ip6_bwin >= 100) {
+        g_ip6_bwin = now;
+        g_ip6_bused = 0;
+    }
+    if (g_ip6_bused >= NET_UDP_BUDGET_PER_SEC) {
+        return 0;
+    }
+    g_ip6_bused++;
+    return 1;
+}
+
 static void ip6_icmp(volatile uint8_t *buf, uint32_t plen, int to_us, int to_mc)
 {
     volatile uint8_t *l4 = buf + 54;
@@ -486,10 +508,21 @@ static void ip6_icmp(volatile uint8_t *buf, uint32_t plen, int to_us, int to_mc)
     if (type == 135) {
         int unspec = ip6_is_zero(src);
 
-        if (ip6_nd_opts(l4, plen, 1, &lladdr) < 0 || (unspec && (lladdr || !to_mc)) ||
+        if (ip6_nd_opts(l4, plen, 1, &lladdr) < 0 ||
+            (unspec && (lladdr || !ip6_eq(buf + 38, g_ip6_snmc))) ||
             (!unspec && to_mc && !lladdr)) {
             g_nd_bad++;
             return;
+        }
+        // SLLA harus sama dengan MAC sumber Ethernet: kalau tidak, NA akan dipantulkan
+        // ke MAC korban dan cache tetangga bisa diracuni.
+        if (lladdr) {
+            for (int i = 0; i < 6; i++) {
+                if (lladdr[i] != buf[6 + i]) {
+                    g_nd_bad++;
+                    return;
+                }
+            }
         }
         g_nd_ns_rx++;
         if (!ip6_eq(target, g_ip6_ll)) {
@@ -598,8 +631,12 @@ static void ip6_udp(volatile uint8_t *buf, uint32_t plen, int to_us)
 // Dari net_rx_dispatch untuk EtherType 0x86DD; len = panjang frame.
 void ip6_rx(volatile uint8_t *buf, uint32_t len)
 {
-    if (g_ip6_state == IP6_OFF || g_ip6_state == IP6_CONFLICT) {
+    if (g_ip6_state == IP6_OFF) {
         g_ip6_off++;
+        return;
+    }
+    if (g_ip6_state == IP6_CONFLICT) {
+        g_ip6_drop++;   // konflik DAD: IPv6 mati sampai reboot, frame dihitung dibuang
         return;
     }
     g_ip6_rx++;
@@ -624,7 +661,8 @@ void ip6_rx(volatile uint8_t *buf, uint32_t len)
     int to_mc = ip6_eq(dst, g_ip6_snmc) || ip6_eq(dst, IP6_ALLNODES);
 
     if (!to_us && !to_mc) {
-        return;   // lalu lintas host lain (NIC promiscuous): bukan urusan kita
+        g_ip6_ignored++;   // lalu lintas host lain (NIC promiscuous): bukan urusan kita
+        return;
     }
     // Sumber: link-local se-link; :: hanya untuk NS (DAD tetangga). Alamat kita
     // sendiri (pantulan), multicast, loopback, global: dibuang.
@@ -649,8 +687,41 @@ void ip6_rx(volatile uint8_t *buf, uint32_t len)
         g_ip6_nxt_drop++;   // header ekstensi, fragmen, protokol lain
         return;
     }
-    // B4: per sumber lalu global, sebelum checksum dan balasan.
-    if (!net_src_budget_take(g_ip6_src, IP6_SRC_SLOTS, src, 16) || !net_udp_budget_ok()) {
+    // Saring dulu, jatah belakangan: hanya frame yang akan diproses (ICMPv6 128/135/136,
+    // UDP ke kita port 7777) memakai jatah. RA, MLD dan tipe lain tidak mengurangi apa pun.
+    int cost = 0;
+
+    if (nxt == 58) {
+        uint8_t type = buf[54];
+
+        if (plen < 8) {
+            g_ip6_drop++;
+            return;
+        }
+        if (type != 128 && type != 135 && type != 136) {
+            g_ip6_ignored++;
+            return;
+        }
+        // NS/NA yang MAC sumbernya MAC kita sendiri: pantulan (DAD terpantul, RFC 4862
+        // 5.4.3), bukan tetangga. Bukan konflik.
+        if (type != 128) {
+            int own = 1;
+
+            for (int i = 0; i < 6; i++) {
+                own &= buf[6 + i] == g_e1000_mac[i];
+            }
+            if (own) {
+                g_ip6_ignored++;
+                return;
+            }
+        }
+        cost = 1;
+    } else {
+        cost = to_us && plen >= 8 && g_ip6_state == IP6_UP && g_net_echo &&
+               ((((uint32_t)buf[56] << 8) | buf[57]) == 7777);
+    }
+    // B4: per sumber lalu global (jatah IPv6 sendiri), sebelum checksum dan balasan.
+    if (cost && (!net_src_budget_take(g_ip6_src, IP6_SRC_SLOTS, src, 16) || !ip6_budget_ok())) {
         g_ip6_rate_drop++;
         return;
     }

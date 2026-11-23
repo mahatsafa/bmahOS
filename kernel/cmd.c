@@ -271,7 +271,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts(" rx=");
         cmd_putdec(g_ip6_rx);
         cmd_puts(" dibuang=");
-        cmd_putdec(g_ip6_drop + g_ip6_nxt_drop + g_ip6_tcp_drop + g_ip6_rate_drop + g_ip6_badsum);
+        cmd_putdec(g_ip6_drop + g_ip6_nxt_drop + g_ip6_tcp_drop + g_ip6_rate_drop + g_ip6_badsum + g_nd_bad);
         cmd_puts(" echo=");
         cmd_putdec(g_icmp6_echo);
         cmd_puts(" udp_echo=");

@@ -206,9 +206,12 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 26. IPv6 (F7, bawaan mati): packet filter P4 tidak berlaku (hanya `filter_ipv4`); kebijakan IPv6 tetap di ip6.c dan `echo=0` mematikan
    echo IPv6 juga. Penyerang se-link yang memalsukan NA/NS DAD saat boot bisa membuat IPv6 nonaktif (DAD konflik; IPv4 tidak terpengaruh);
    setelah DAD selesai NA palsu tidak mengubah apa pun selain MAC entri tetangga yang sudah ada (cache diagnostik). Banjir dari ribuan
-   alamat fe80 palsu menggusur slot tabel sumber IPv6 (8) dan menghabiskan jatah global 100/s yang dibagi dengan IPv4 (counter
-   `udp_dropped` ikut naik); tabel IPv4 tidak tersentuh. Tanpa MLD: switch dengan MLD snooping bisa tidak meneruskan NS ke
-   solicited-node (bmahOS tidak mengirim laporan MLD); tanpa RA/SLAAC global, DHCPv6, jalur admin, TCP. Firmware (OVMF) dapat memakai EUI-64 yang
+   alamat fe80 palsu menggusur slot tabel sumber IPv6 (8) dan menghabiskan jatah global 100/s milik IPv6 sendiri (terpisah dari
+   IPv4: `udp_dropped` dan jatah UDP IPv4 tidak tersentuh; hanya ICMPv6 128/135/136 dan UDP 7777 ke kita yang memakai jatah, RA/MLD dan tipe
+   lain hanya menaikkan `ip6_ignored`); tabel IPv4 tidak tersentuh. NS/NA ber-MAC sumber kita sendiri (pantulan DAD, RFC 4862 5.4.3) diabaikan,
+   NS ber-SLLA beda dari MAC Ethernet dibuang (`nd_bad`), NS dari `::` hanya sah ke solicited-node kita. Konflik DAD (IP6_CONFLICT) hanya
+   pulih lewat reboot. Tanpa MLD (sengaja tidak diimplementasi): switch dengan MLD snooping bisa tidak meneruskan NS/DAD ke
+   solicited-node (bmahOS tidak mengirim laporan MLD); QEMU dan VMware tidak terpengaruh karena E1000 menerima multicast/promiscuous; tanpa RA/SLAAC global, DHCPv6, jalur admin, TCP. Firmware (OVMF) dapat memakai EUI-64 yang
    sama sebelum boot. DAD hanya 2 probe 1 detik; tautan yang belum naik saat probe membuat DAD lolos tanpa bukti.
 
 ## 7. Aturan pengembangan yang menurunkan risiko

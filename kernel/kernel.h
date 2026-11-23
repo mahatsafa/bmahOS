@@ -935,6 +935,7 @@ uint16_t ip6_l4_checksum(const volatile uint8_t *src, const volatile uint8_t *ds
                          const volatile uint8_t *l4, uint32_t len);
 uint64_t ip6_up_metric(void);
 extern uint64_t g_ip6_rx, g_ip6_drop, g_ip6_off, g_ip6_nxt_drop, g_ip6_tcp_drop;
+extern uint64_t g_ip6_ignored;
 extern uint64_t g_ip6_rate_drop, g_ip6_badsum, g_icmp6_echo, g_nd_ns_rx, g_nd_na_tx;
 extern uint64_t g_nd_na_rx, g_nd_bad, g_nd_evict, g_ip6_dad_conflict, g_udp6_echo;
 

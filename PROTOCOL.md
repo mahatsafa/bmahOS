@@ -348,12 +348,16 @@ register umum dump panic), maks 160 karakter.
   (ekstensi, fragmen) `ip6_nxt_drop`; tanpa balasan/RST.
 - ICMPv6: echo request (kode 0, ke unicast kita) -> echo reply; NS (hop 255, kode 0, target kita) -> NA (S|O, TLLA) ke MAC SLLA,
   NS dari `::` -> NA (O) ke ff02::1; NA/NS selama DAD untuk alamat kita = konflik; tipe lain (RA, RS, Redirect, MLD) diabaikan.
-  Checksum pseudo-header wajib (`ip6_badsum`).
+  Checksum pseudo-header wajib (`ip6_badsum`). NS dibuang (`nd_bad`) bila SLLA beda dari MAC sumber Ethernet, atau NS dari `::` tidak
+  ke solicited-node kita. NS/NA ber-MAC sumber kita sendiri (pantulan DAD) dan tipe ICMPv6 lain dihitung `ip6_ignored`, tanpa jatah.
+  Konflik DAD mematikan IPv6 sampai reboot (frame dihitung `ip6_drop`). MLD sengaja tidak ada: switch ber-MLD snooping bisa memblokir
+  NS/DAD ke solicited-node; QEMU/VMware (E1000 menerima multicast) tidak terpengaruh.
 - UDP: hanya port 7777 (`echo=1`), panjang UDP = muatan IPv6, checksum wajib (nol dibuang). Tidak ada UDP 7778, soket user, TCP.
-- Batas laju: per sumber (`udp_rate`, tabel 8 slot IPv6 sendiri) lalu global 100/s, sebelum checksum (`ip6_rate_drop`).
+- Batas laju: hanya frame yang diproses (ICMPv6 128/135/136, UDP 7777 ke kita) memakai jatah: per sumber (`udp_rate`, tabel 8 slot IPv6
+  sendiri) lalu global 100/s IPv6 sendiri (tidak menyentuh jatah/counter IPv4), sebelum checksum (`ip6_rate_drop`).
 - `ip`: baris `ip6: <alamat> (<aktif|DAD|nonaktif (DAD konflik)>) tetangga=N/8` + satu baris `  <alamat> <mac>` per tetangga; `stats`: baris `ip6:`.
 - Metrics (akhir tabel): ip6_up, ip6_rx, ip6_drop, ip6_off, ip6_nxt_drop, ip6_tcp_drop, ip6_rate_drop, ip6_badsum, icmp6_echo,
-  nd_ns_rx, nd_na_tx, nd_na_rx, nd_bad, nd_evict, ip6_dad_conflict, udp6_echo.
+  nd_ns_rx, nd_na_tx, nd_na_rx, nd_bad, nd_evict, ip6_dad_conflict, udp6_echo, ip6_ignored.
 
 ## DHCP `dhcp` (P3-4)
 
