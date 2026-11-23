@@ -21,6 +21,14 @@ void serial_capture_reset(void)
 }
 
 WEAK volatile int g_serial_mute = 0;
+
+// SMP-1: kunci serial dan CPU tunggal di host.
+WEAK uint64_t serial_lock(void) { return 0; }
+WEAK void serial_unlock(uint64_t flags) { (void)flags; }
+WEAK void serial_lock_reset(void) {}
+WEAK int cpu_index(void) { return 0; }
+WEAK void smp_panic_stop_others(void) {}
+WEAK void smp_panic_report(void) {}
 WEAK volatile uint64_t timer_ticks = 0;
 
 WEAK void serial_putc(char c)

@@ -13,6 +13,14 @@
 #define LAPIC_REG_ID   0x20
 #define LAPIC_REG_SVR  0xF0
 #define LAPIC_REG_EOI  0xB0
+#define LAPIC_REG_ICR_LO 0x300
+#define LAPIC_REG_ICR_HI 0x310
+#define LAPIC_ICR_PENDING (1u << 12)
+#define LAPIC_ICR_ASSERT  (1u << 14)
+#define LAPIC_ICR_OTHERS  (3u << 18)
+#define LAPIC_IPI_SPIN    200000
+
+volatile int g_lapic_ready = 0;   // SMP-1: 1 setelah MMIO LAPIC dipetakan BSP
 
 #define IOAPIC_REG_IOREGSEL 0x00
 #define IOAPIC_REG_IOWIN    0x10
@@ -37,6 +45,70 @@ static void lapic_write(uint32_t reg, uint32_t value)
 void lapic_send_eoi(void)
 {
     lapic_write(LAPIC_REG_EOI, 0);
+}
+
+uint32_t lapic_id_self(void)
+{
+    if (!g_lapic_ready) {
+        return 0;   // LAPIC belum dipetakan (tanpa ACPI/MADT)
+    }
+    return lapic_read(LAPIC_REG_ID) >> 24;   // xAPIC: ID di bit 31..24
+}
+
+// AP: software enable + vektor spurious 0xFF (sama seperti BSP).
+void lapic_enable_this_cpu(void)
+{
+    uint32_t svr = lapic_read(LAPIC_REG_SVR);
+
+    svr |= (1 << 8);
+    svr = (svr & ~0xFFu) | 0xFF;
+    lapic_write(LAPIC_REG_SVR, svr);
+}
+
+static int lapic_icr_wait(void)
+{
+    for (uint32_t i = 0; i < LAPIC_IPI_SPIN; i++) {
+        if (!(lapic_read(LAPIC_REG_ICR_LO) & LAPIC_ICR_PENDING)) {
+            return 0;
+        }
+        __builtin_ia32_pause();
+    }
+    return -1;
+}
+
+// IPI fixed ke satu LAPIC ID (mode fisik, edge, assert). Batas putaran: tidak menggantung.
+int lapic_send_ipi(uint32_t lapic_id, uint8_t vector)
+{
+    if (!g_lapic_ready) {
+        return -1;
+    }
+    uint64_t f = irq_save();
+    int rc = lapic_icr_wait();
+
+    if (rc == 0) {
+        lapic_write(LAPIC_REG_ICR_HI, lapic_id << 24);
+        lapic_write(LAPIC_REG_ICR_LO, LAPIC_ICR_ASSERT | vector);
+        rc = lapic_icr_wait();
+    }
+    irq_restore(f);
+    return rc;
+}
+
+// Shorthand "semua kecuali diri sendiri" (dipakai panic: tanpa perlu daftar CPU).
+int lapic_send_ipi_others(uint8_t vector)
+{
+    if (!g_lapic_ready) {
+        return -1;
+    }
+    uint64_t f = irq_save();
+    int rc = lapic_icr_wait();
+
+    if (rc == 0) {
+        lapic_write(LAPIC_REG_ICR_LO, LAPIC_ICR_OTHERS | LAPIC_ICR_ASSERT | vector);
+        rc = lapic_icr_wait();
+    }
+    irq_restore(f);
+    return rc;
 }
 
 uint32_t ioapic_read(uint32_t reg)
@@ -68,6 +140,7 @@ void apic_enable_local_apic(uint64_t pml4_phys)
     vmm_map(pml4_phys, LAPIC_VIRT, g_local_apic_address,
             VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | VMM_FLAG_NOCACHE | VMM_FLAG_NX);
 
+    g_lapic_ready = 1;
     uint32_t id = lapic_read(LAPIC_REG_ID);
     serial_write("LAPIC: mapped, ID register = ");
     serial_write_hex(id);

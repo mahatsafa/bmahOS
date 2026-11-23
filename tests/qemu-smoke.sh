@@ -109,7 +109,7 @@ done
 TLSPIN="$(sha256sum "$WORK/TLSCERT.DER" | cut -d" " -f1)"
 cp "$OVMF_VARS" "$WORK/vars.fd"
 
-"$QEMU" -machine q35 -m 512M -cpu max \
+"$QEMU" -machine q35 -m 512M -cpu max -smp 2 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$WORK/vars.fd" \
     -cdrom "$ISO" \
@@ -285,14 +285,27 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=162   # F7 IPv6: + ip6_ignored (review), + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
+R3_N=167   # F7 SMP-1: + smp_cpus/smp_online/smp_ipi_tx/smp_ipi_rx/smp_irq_stray, F7 IPv6: + ip6_ignored (review), + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir ip6_ignored" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^ip6_ignored="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir smp_irq_stray" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^smp_irq_stray="'
+
+# F7 SMP-1: boot utama pakai -smp 2. AP hidup, IPI uji lulus, metrics + perintah cpu. Baris log
+# kernel diakhiri \r\n: tanpa "$" di grep.
+mval() { echo "$R3_ALL" | sed -n "s/^$1=//p"; }
+check "SMP-1: 2/2 CPU aktif (-smp 2)" 'grep -aq "SMP: 2/2 CPU aktif (BSP lapic=" "$LOG"'
+check "SMP-1: AP 1 aktif di log" 'grep -aq "SMP: AP 1 aktif (lapic=" "$LOG"'
+check "SMP-1: uji IPI PASS (1 AP)" 'grep -aq "SMP: uji IPI PASS (1 AP)" "$LOG"'
+check "SMP-1: metrics smp_cpus=2 smp_online=2 smp_ipi_tx>=1 smp_ipi_rx>=1" \
+    '[ "$(mval smp_cpus)" = 2 ] && [ "$(mval smp_online)" = 2 ] && [ "$(mval smp_ipi_tx)" -ge 1 ] && [ "$(mval smp_ipi_rx)" -ge 1 ]'
+SMP_CPU="$($BM cpu)"
+check "SMP-1: smp_irq_stray=0 (tanpa IRQ timer/NIC salah masuk ke AP)" '[ "$(mval smp_irq_stray)" = 0 ]'
+check "SMP-1: perintah cpu: 2 CPU, BSP + AP online=1" \
+    'echo "$SMP_CPU" | grep -q "^cpu: tercatat=2 aktif=2 maks=8 stray=0" && echo "$SMP_CPU" | grep -q "^cpu 0: lapic=[0-9]* online=1 ipi_rx=0 (BSP)" && echo "$SMP_CPU" | grep -q "^cpu 1: lapic=[0-9]* online=1 ipi_rx=[1-9]"'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -670,10 +683,10 @@ if echo "$ACPI_L" | grep -q "^HPET len="; then
 else
     HPET_OK='echo "$ACPI_L" | grep -q "^acpi: .* hpet=0x0 (tidak dipakai)$" && grep -aq "P2: ACPI .* hpet=tidak ada" "$LOG"'
 fi
-check "P2: acpi: FACP/APIC ok, ditolak 0, cpu 1, HPET sah bila ada" \
-    'echo "$ACPI_L" | grep -q "^FACP len=[0-9]* rev=[0-9]* ok$" && echo "$ACPI_L" | grep -q "^APIC len=[0-9]* rev=[0-9]* ok$" && echo "$ACPI_L" | grep -q "^acpi: tabel=[0-9]* ditolak=0 cpu=1 hpet=" && ! echo "$ACPI_L" | grep -q " rusak$" && eval "$HPET_OK"'
+check "P2: acpi: FACP/APIC ok, ditolak 0, cpu 2 (SMP-1), HPET sah bila ada" \
+    'echo "$ACPI_L" | grep -q "^FACP len=[0-9]* rev=[0-9]* ok$" && echo "$ACPI_L" | grep -q "^APIC len=[0-9]* rev=[0-9]* ok$" && echo "$ACPI_L" | grep -q "^acpi: tabel=[0-9]* ditolak=0 cpu=2 hpet=" && ! echo "$ACPI_L" | grep -q " rusak$" && eval "$HPET_OK"'
 check "P2: serial: ringkasan PCI dan ACPI saat boot" \
-    'grep -aq "PCI: pci: [0-9]* perangkat, tidak muat 0" "$LOG" && grep -aq "P2: ACPI tabel=[0-9]* ditolak=0 cpu=1 hpet=" "$LOG"'
+    'grep -aq "PCI: pci: [0-9]* perangkat, tidak muat 0" "$LOG" && grep -aq "P2: ACPI tabel=[0-9]* ditolak=0 cpu=2 hpet=" "$LOG"'
 
 # P3-1: RTC CMOS QEMU = UTC host (-rtc base=utc bawaan), jadi epoch `waktu`
 # harus dekat jam CentOS (selisih <= 120 s, TCG lambat).
@@ -1333,6 +1346,8 @@ done
 sleep 2
 kill "$BPID" 2>/dev/null
 wait "$BPID" 2>/dev/null
+check "SMP-1: boot 1 CPU: SMP: 1/1 CPU aktif, uji IPI dilewati" \
+    'grep -aq "SMP: 1/1 CPU aktif (BSP lapic=" "$BARE" && grep -aq "SMP: uji IPI dilewati" "$BARE"'
 check "tanpa NIC: E1000 dilewati"      'grep -q "PCI-1: E1000 tidak ditemukan" "$BARE"'
 check "tanpa NIC: net task berhenti rapi" 'grep -q "RX belum di-init, net task berhenti (task_exit)" "$BARE"'
 if ! grep -q "PROD: task uji dilewati" "$LOG"; then
@@ -1541,7 +1556,7 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     # P7-4 (review): APP.BIN = kernel bertanda tangan kunci uji -> "isi bukan app" tiap boot.
     mcopy -o -i "$DISK" "$OD/k9.bmo" ::APP.BIN
     cp "$OVMF_VARS" "$WORK/vars-panic.fd"
-    "$QEMU" -machine q35 -m 512M -cpu max \
+    "$QEMU" -machine q35 -m 512M -cpu max -smp 2 \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$WORK/vars-panic.fd" \
         -cdrom "$ISO" \
@@ -1683,6 +1698,11 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         done
     }
     check "R1: reboot setelah ~10 s (3x 9..13 s)" 'panic_wait_ok $PANIC_WAIT'
+    # F7 SMP-1: boot panic memakai -smp 2: baris PANIC memuat cpu= dan CPU lain dihentikan.
+    check "SMP-1: panic -smp 2: baris PANIC memuat cpu=0 (3x)" \
+        '[ "$(grep -c "^PANIC: tick=[0-9]* task=[0-9]* cpu=0$" "$P")" -eq 3 ]'
+    check "SMP-1: panic -smp 2: CPU lain dihentikan 1/1 (3x)" \
+        '[ "$(grep -c "^SMP: CPU lain dihentikan 1/1$" "$P")" -eq 3 ]'
     check "R2: set netcon 1 lewat UDP sebelum panic" \
         'echo "$PNC_SET" | grep -q "OK netcon_port=$NCPORT (tersimpan)" && echo "$PNC_SET" | grep -q "OK netcon=1 (tersimpan)"'
     PNC1="$WORK/netcon-panic-r1.bin"

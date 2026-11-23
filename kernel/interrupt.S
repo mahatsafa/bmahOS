@@ -268,3 +268,13 @@ irq\num:
 # IRQ0 = timer, terhubung ke vektor 32 setelah PIC remap
 IRQ 32, 0
 IRQ 33, 1
+# SMP-1: IPI uji dan IPI berhenti (panic). Nomor irq = nomor vektor (irq_handler memakai >= 240).
+IRQ 240, 240
+IRQ 241, 241
+
+# SMP-1: vektor spurious LAPIC (SVR = 0xFF). Interrupt spurious tidak boleh di-EOI; cukup kembali.
+.global isr_spurious
+.type isr_spurious, @function
+isr_spurious:
+    iretq
+.size isr_spurious, .-isr_spurious

@@ -308,6 +308,11 @@ static const metric_t g_metrics[] = {
     M64("ip6_dad_conflict", g_ip6_dad_conflict),
     M64("udp6_echo", g_udp6_echo),
     M64("ip6_ignored", g_ip6_ignored),       // F7 IPv6 (review): ICMPv6 diabaikan, unicast lain
+    MFN("smp_cpus", smp_metric_cpus),        // F7 SMP-1: CPU tercatat (<= 8)
+    MFN("smp_online", smp_metric_online),
+    MFN("smp_ipi_tx", smp_metric_ipi_tx),    // jumlah per-CPU
+    MFN("smp_ipi_rx", smp_metric_ipi_rx),
+    MFN("smp_irq_stray", smp_metric_stray),   // IRQ timer/NIC yang salah masuk ke AP (harus 0)
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

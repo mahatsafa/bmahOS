@@ -18,6 +18,8 @@ extern char __text_start[];
 extern char __text_end[];
 
 static volatile int g_panic_depth = 0;
+// SMP-1: CPU yang pertama panic (cmpxchg). CPU lain yang panic bersamaan langsung berhenti.
+static volatile int g_panic_cpu = -1;
 
 static const char *const g_exc_names[32] = {
     "#DE pembagian nol", "#DB debug", "NMI", "#BP breakpoint",
@@ -129,7 +131,27 @@ void panic_begin(void)
 {
     __asm__ volatile("cli");
     g_serial_mute = 0;   // dump wajib sampai ke UART
+
+    // SMP-1: satu CPU saja yang boleh panic. CPU kedua (panic bersamaan) hanya berhenti:
+    // ia tidak boleh mereset kunci serial milik CPU pertama.
+    int me = cpu_index();
+    int expected = -1;
+
+    if (!__atomic_compare_exchange_n(&g_panic_cpu, &expected, me, 0, __ATOMIC_SEQ_CST,
+                                     __ATOMIC_SEQ_CST) && expected != me) {
+        for (;;) {
+            __asm__ volatile("cli; hlt");
+        }
+    }
     g_panic_depth++;
+
+    // Hanya CPU pemenang: hentikan CPU lain (sekali), lalu reset kunci serial (CPU lain
+    // sudah berhenti, atau tidak mau berhenti karena IF=0 dan mungkin memegang kunci).
+    smp_panic_stop_others();
+    serial_lock_reset();
+    if (g_panic_depth == 1) {
+        smp_panic_report();
+    }
 
     if (g_panic_depth == 2) {
         serial_write("\r\nPANIC: fault di dalam panic handler, reboot sekarang\r\n");
@@ -164,7 +186,8 @@ void panic_finish(uint64_t rip, uint64_t rbp)
 
     // #0 = RIP saat exception (bila ada); #1.. = alamat kembali. Tanpa RIP
     // (ASSERT) #0 adalah kassert_fail sendiri dan tidak dicetak.
-    kprintf("PANIC: tick=%lu task=%lu\r\n", (uint64_t)timer_ticks, (uint64_t)current_index);
+    kprintf("PANIC: tick=%lu task=%lu cpu=%d\r\n", (uint64_t)timer_ticks, (uint64_t)current_index,
+            cpu_index());
     if (rip != 0) {
         kprintf("PANIC: trace #0 %p\r\n", (void *)(uintptr_t)rip);
     }

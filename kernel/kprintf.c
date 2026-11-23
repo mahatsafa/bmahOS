@@ -125,9 +125,9 @@ void kprintf(const char *fmt, ...)
     va_list ap;
     va_start(ap, fmt);
     // Satu lock untuk seluruh baris supaya tidak disisipi task lain.
-    uint64_t flags = irq_save();
+    uint64_t flags = serial_lock();   // SMP-1: kunci reentran, baris CPU lain tidak bercampur
     kfmt(put_serial, NULL, fmt, ap);
-    irq_restore(flags);
+    serial_unlock(flags);
     va_end(ap);
 }
 

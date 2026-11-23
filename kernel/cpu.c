@@ -148,6 +148,9 @@ void idt_init(void)
     // handler-nya SELALU jalan di ring 0, terlepas dari ring pemanggil.
     idt_set_entry(128, (uint64_t)isr128, 0x08, 0xEE);
 
+    // SMP-1: vektor spurious LAPIC (SVR 0xFF): iretq tanpa EOI.
+    idt_set_entry(0xFF, (uint64_t)isr_spurious, 0x08, 0x8E);
+
     // R1: #DF selalu memakai IST1 (bmahOS_tss.ist1, gdt_init).
     bmahOS_idt[8].ist = 1;
 }
@@ -217,9 +220,9 @@ static void gdt_set_entry(
     bmahOS_gdt[index].base_high = 0x00;
 }
 
-static void tss_set_descriptor(int index, uint64_t base, uint32_t limit)
+static void tss_set_descriptor(struct gdt_entry *gdt, int index, uint64_t base, uint32_t limit)
 {
-    uint8_t *descriptor = (uint8_t *)&bmahOS_gdt[index];
+    uint8_t *descriptor = (uint8_t *)&gdt[index];
 
     descriptor[0] = (uint8_t)(limit >> 0);
     descriptor[1] = (uint8_t)(limit >> 8);
@@ -254,6 +257,7 @@ void gdt_init(void)
     gdt_set_entry(6, 0xF3, 0x00);
 
     tss_set_descriptor(
+        bmahOS_gdt,
         3,
         (uint64_t)&bmahOS_tss,
         sizeof(bmahOS_tss) - 1
@@ -266,6 +270,20 @@ void gdt_init(void)
     // ring 3 (IOPL 0) selalu #GP.
     bmahOS_tss.iopb_offset = sizeof(bmahOS_tss);
     bmahOS_tss.ist1 = (uint64_t)&g_df_stack[DF_STACK_SIZE];
+}
+
+// SMP-1: GDT milik AP = salinan entri kode/data BSP + deskriptor TSS milik AP (tiap CPU wajib
+// punya TSS sendiri: ltr menandai deskriptor "busy", dan RSP0/IST1 tidak boleh dipakai bersama).
+void gdt_build_ap(struct gdt_entry gdt[7], struct tss *tss, uint64_t rsp0, uint64_t ist1)
+{
+    for (int i = 0; i < 7; i++) {
+        gdt[i] = bmahOS_gdt[i];
+    }
+    memset(tss, 0, sizeof(*tss));
+    tss->rsp0 = rsp0;
+    tss->ist1 = ist1;
+    tss->iopb_offset = sizeof(*tss);
+    tss_set_descriptor(gdt, 3, (uint64_t)tss, sizeof(*tss) - 1);
 }
 
 void print_bmahOS_gdt(void)
@@ -330,6 +348,20 @@ void gdt_load_and_reload(void)
     gdtr.base = (uint64_t)&bmahOS_gdt[0];
 
     gdt_load_and_reload_asm(&gdtr);
+}
+
+void gdt_load_ap(struct gdt_entry gdt[7])
+{
+    struct {
+        uint16_t limit;
+        uint64_t base;
+    } __attribute__((packed)) gdtr;
+
+    gdtr.limit = sizeof(bmahOS_gdt) - 1;
+    gdtr.base = (uint64_t)&gdt[0];
+
+    gdt_load_and_reload_asm(&gdtr);
+    tss_load_asm();
 }
 
 void read_bmahOS_gdtr(void)

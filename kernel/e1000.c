@@ -381,7 +381,7 @@ void e1000_irq_experiment(void)
     for (uint32_t gsi = 16; gsi <= last; gsi++) {
         uint32_t idx = IOAPIC_REDTBL_BASE + gsi * 2;
 
-        ioapic_write(idx + 1, 0);
+        ioapic_write(idx + 1, lapic_id_self() << 24);   // SMP-1: tujuan = LAPIC ID BSP (bukan 0 tetap)
         // vektor 33, fixed, physical, active-low (bit13), level (bit15), unmasked
         ioapic_write(idx, 33u | (1u << 13) | (1u << 15));
     }

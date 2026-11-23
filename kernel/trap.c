@@ -259,6 +259,24 @@ void irq_handler(struct exception_context *context)
     uint64_t irq_num = context->vector;
     int res_kill = 0;
 
+    // SMP-1: IPI. Tidak menyentuh scheduler/timer (hanya BSP yang menjalankan task).
+    if (irq_num == SMP_VEC_IPI_TEST) {
+        smp_ipi_rx();
+        lapic_send_eoi();
+        return;
+    }
+    if (irq_num == SMP_VEC_STOP) {
+        smp_stop_self();   // tidak kembali
+    }
+
+    // SMP-1: IRQ timer/NIC hanya boleh sampai ke BSP (IOAPIC diarahkan ke ID LAPIC BSP).
+    // Bila masuk ke CPU lain: hitung (smp_irq_stray), EOI, abaikan (jangan menyentuh task/scheduler).
+    if (irq_num <= 1 && g_smp_online > 1 && cpu_index() != 0) {
+        g_smp_stray++;
+        lapic_send_eoi();
+        return;
+    }
+
     if (irq_num == 0) {
         timer_ticks++;
         metrics_cpu_tick(current_index == g_idle_index);   // R3

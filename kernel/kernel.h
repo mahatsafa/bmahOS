@@ -110,7 +110,57 @@ static inline void irq_restore(uint64_t flags)
     }
 }
 
+// F7 SMP-1: spinlock (xchg + pause). Dipakai bersama BSP dan AP. Pemegang kunci yang juga
+// dipanggil dari ISR WAJIB mematikan interrupt lokal (spin_lock_irqsave), kalau tidak ISR
+// di CPU yang sama bisa menunggu kunci yang dipegang task yang diinterupsinya (deadlock).
+typedef struct {
+    volatile uint32_t v;   // 0 = bebas, 1 = dipegang
+} spinlock_t;
+
+#define SPINLOCK_INIT { 0 }
+
+static inline void spin_lock(spinlock_t *l)
+{
+    while (__atomic_exchange_n(&l->v, 1, __ATOMIC_ACQUIRE) != 0) {
+        while (__atomic_load_n(&l->v, __ATOMIC_RELAXED) != 0) {
+            __builtin_ia32_pause();
+        }
+    }
+    __asm__ volatile("" ::: "memory");   // barrier compiler
+}
+
+static inline int spin_trylock(spinlock_t *l)
+{
+    return __atomic_exchange_n(&l->v, 1, __ATOMIC_ACQUIRE) == 0;
+}
+
+static inline void spin_unlock(spinlock_t *l)
+{
+    __asm__ volatile("" ::: "memory");   // barrier compiler
+    __atomic_store_n(&l->v, 0, __ATOMIC_RELEASE);
+}
+
+static inline uint64_t spin_lock_irqsave(spinlock_t *l)
+{
+    uint64_t flags = irq_save();
+
+    spin_lock(l);
+    return flags;
+}
+
+static inline void spin_unlock_irqrestore(spinlock_t *l, uint64_t flags)
+{
+    spin_unlock(l);
+    irq_restore(flags);
+}
+
 // ---- serial.c ----
+// SMP-1: kunci serial reentran per CPU (pemilik = indeks CPU). serial_lock mematikan interrupt
+// lokal lalu mengambil kunci (pemilik yang sama boleh masuk lagi); panic memakai
+// serial_lock_reset supaya tidak menunggu kunci milik CPU yang sudah berhenti.
+uint64_t serial_lock(void);
+void serial_unlock(uint64_t flags);
+void serial_lock_reset(void);
 void serial_init(void);
 void serial_putc(char c);
 void serial_write(const char *s);
@@ -192,6 +242,9 @@ void idt_init(void);
 void print_idt_entry0(void);
 void print_idt_entry32(void);
 void gdt_init(void);
+// SMP-1: GDT + TSS milik AP (salinan entri kode/data BSP, deskriptor TSS menunjuk ke tss).
+void gdt_build_ap(struct gdt_entry gdt[7], struct tss *tss, uint64_t rsp0, uint64_t ist1);
+void gdt_load_ap(struct gdt_entry gdt[7]);
 void print_bmahOS_gdt(void);
 void idt_load(void);
 void read_idtr(void);
@@ -564,11 +617,52 @@ int filter_check(const volatile uint8_t *ip_src, uint8_t proto, uint16_t dport);
 int filter_ipv4(const volatile uint8_t *buf, uint32_t ihl, uint32_t payload_len); // 1 lolos
 int filter_execute(const volatile uint8_t *cmd, uint32_t len);                    // 1 = ditangani
 
+// ---- smp.c (F7 SMP-1: AP hidup, IPI, per-CPU; task tetap hanya di BSP) ----
+#define MAX_CPUS          8
+#define SMP_VEC_IPI_TEST  240   // IPI uji: AP menaikkan ipi_rx lalu EOI
+#define SMP_VEC_STOP      241   // IPI berhenti (panic): cli; hlt selamanya
+typedef struct {
+    volatile uint32_t go;       // OFFSET 0 (dibaca smp_park_stub): != 0 = AP boleh lanjut
+    uint32_t index;
+    uint32_t lapic_id;
+    volatile uint32_t online;
+    volatile uint64_t ipi_rx;   // hanya ditulis CPU ini
+    volatile uint64_t ipi_tx;   // hanya ditulis CPU ini (IPI yang ia kirim)
+    uint64_t stack_top;         // stack kernel AP (guard di bawahnya)
+    uint64_t df_top;            // stack IST1 (#DF)
+    struct gdt_entry gdt[7];    // AP saja; BSP memakai bmahOS_gdt/bmahOS_tss
+    struct tss tss;
+} cpu_t;
+extern cpu_t g_cpus[MAX_CPUS];
+extern volatile uint32_t g_smp_ncpu, g_smp_online, g_smp_halted;
+void smp_init(void);                 // kmain: sesudah LAPIC + IDT + sti, sebelum task
+int smp_park_aps(void);              // kmain, SEBELUM nx_harden_higher_half: 1 = semua AP parkir di stub .text
+int cpu_index(void);                 // indeks CPU (dari ID LAPIC); 0 sebelum SMP siap; MAX_CPUS = ID tidak dikenal
+void smp_panic_report(void);         // panic_begin: cetak berapa CPU lain yang berhenti
+extern volatile uint64_t g_smp_stray;   // IRQ timer/NIC masuk ke CPU selain BSP (diabaikan)
+uint64_t smp_metric_stray(void);
+void smp_ipi_rx(void);               // irq_handler: vektor SMP_VEC_IPI_TEST
+void smp_stop_self(void) __attribute__((noreturn));   // irq_handler: vektor SMP_VEC_STOP
+void smp_panic_stop_others(void);    // panic_begin: sekali, kirim IPI berhenti
+uint64_t smp_metric_cpus(void);
+uint64_t smp_metric_online(void);
+uint64_t smp_metric_ipi_tx(void);
+uint64_t smp_metric_ipi_rx(void);
+void smp_list(void (*out)(const char *));   // perintah `cpu`
+extern void isr_spurious(void);
+
 // ---- apic.c (Local APIC + IOAPIC) ----
 #define LAPIC_VIRT  0xFFFF910000000000ULL
 #define IOAPIC_REDTBL_BASE  0x10
 
 void lapic_send_eoi(void);
+// SMP-1: ID LAPIC CPU yang menjalankan, SVR (software enable) untuk AP, IPI fixed.
+// lapic_send_ipi: 0 = terkirim, -1 = status delivery tidak bersih dalam batas putaran (LAPIC belum dipetakan -> -1).
+extern volatile int g_lapic_ready;
+uint32_t lapic_id_self(void);
+void lapic_enable_this_cpu(void);
+int lapic_send_ipi(uint32_t lapic_id, uint8_t vector);
+int lapic_send_ipi_others(uint8_t vector);   // semua CPU kecuali pengirim (shorthand)
 uint32_t ioapic_read(uint32_t reg);
 void ioapic_write(uint32_t reg, uint32_t value);
 void apic_enable_local_apic(uint64_t pml4_phys);

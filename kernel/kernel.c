@@ -68,6 +68,13 @@ void boot_cmdline_init(void)
             (s && s[n]) ? " (terpotong)" : "");
 }
 
+// F7 SMP-1: Limine MP (flags 0 = xAPIC, tanpa x2APIC). Dipakai smp.c.
+__attribute__((used, section(".limine_requests")))
+volatile struct limine_mp_request mp_request = {
+    .id = LIMINE_MP_REQUEST_ID,
+    .flags = 0,
+};
+
 extern void irq32(void);
 extern void irq33(void);
 
@@ -1023,7 +1030,11 @@ void kmain(void)
     serial_write("\r\n");
 
     vmm_dump_pml4(pml4_phys);
-    nx_harden_higher_half(pml4_phys);
+    // SMP-1: semua AP dipindah dari parkir Limine (alias HHDM) ke stub .text kernel SEBELUM
+    // HHDM diberi NX; bila ada yang belum masuk, NX HHDM tidak dipasang (sudah dicatat di log).
+    if (smp_park_aps()) {
+        nx_harden_higher_half(pml4_phys);
+    }
     uint64_t test_frame_phys = pmm_alloc();
     serial_write("VMM test: allocated physical frame: ");
     serial_write_hex(test_frame_phys);
@@ -1210,7 +1221,7 @@ void kmain(void)
         e1000_send_test_packet();
         e1000_send_arp_request();
     }
-    ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, 0);
+    ioapic_map_and_configure(pml4_phys, g_irq0_gsi, 32, (uint8_t)lapic_id_self());   // SMP-1: LAPIC ID BSP
 #ifndef BMAHOS_NOIRQ
     e1000_irq_experiment();
 #else
@@ -1249,6 +1260,8 @@ void kmain(void)
         serial_write("APIC IRQ0 test: FAIL (timer_ticks tidak naik -- hardware delivery masih belum sampai ke CPU)\r\n");
     }
     serial_write("\r\n");
+
+    smp_init();   // F7 SMP-1: AP hidup + uji IPI (task tetap di BSP)
 
     sock_init();   // P5-1: sebelum task user pertama (sendto butuh halaman TX)
 

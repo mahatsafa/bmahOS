@@ -85,7 +85,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
         cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks config tls "
-                 "netcon logdisk wd pci acpi waktu filter dns pantau dhcp soket app ota\n");
+                 "netcon logdisk wd pci acpi waktu filter dns pantau dhcp soket app ota cpu\n");
         cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti set "
                  "filter tambah|hapus|kosong waktu sinkron dns <nama> pantau ping|tcp|dns|hapus|syslog "
                  "ota terima\n");
@@ -158,7 +158,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
     } else if (net_cmd_is(cmd, len, "log")) {
         // Salin di bawah irq_save supaya konsisten terhadap penulisan
         // ring dari konteks lain (tanpa I/O di dalam bagian ini).
-        uint64_t lf = irq_save();
+        uint64_t lf = serial_lock();   // SMP-1: ring log ditulis lewat serial_putc (kunci serial)
         uint64_t avail = g_log_total < LOG_RING_SIZE ? g_log_total : LOG_RING_SIZE;
         uint64_t want = avail < 1200 ? avail : 1200;
         uint32_t start = (uint32_t)((g_log_head + LOG_RING_SIZE - want) &
@@ -180,7 +180,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
             cmd_putc((ch == '\n' || (ch >= 32 && ch < 127)) ? ch : '?');
         }
 
-        irq_restore(lf);
+        serial_unlock(lf);
 
         if (g_cmd_len == 0) {
             cmd_puts("(log kosong)\n");
@@ -364,6 +364,8 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         } else {
             cmd_puts("ERR: format: pci [mulai]\n");
         }
+    } else if (net_cmd_is(cmd, len, "cpu")) {
+        smp_list(cmd_puts);   // SMP-1 (hanya baca)
     } else if (net_cmd_is(cmd, len, "wd")) {
         watchdog_status();   // R5
     } else if (net_cmd_is(cmd, len, "app")) {

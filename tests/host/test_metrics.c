@@ -43,6 +43,11 @@ uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail, g_heap_bad_free;
 uint64_t g_slab_alloc, g_slab_free, g_slab_fail, g_slab_pages, g_slab_bad_free, g_slab_uaf;   // F7
 uint64_t g_res_fd_deny, g_res_sys_deny, g_res_wr_deny, g_res_cpu_win, g_res_killed, g_sched_aged;   // F7 tugas
 uint64_t g_ip6_ignored;
+uint64_t smp_metric_cpus(void) { return 2; }   // F7 SMP-1
+uint64_t smp_metric_online(void) { return 2; }
+uint64_t smp_metric_ipi_tx(void) { return 3; }
+uint64_t smp_metric_ipi_rx(void) { return 3; }
+uint64_t smp_metric_stray(void) { return 0; }
 uint64_t g_ip6_rx, g_ip6_drop, g_ip6_off, g_ip6_nxt_drop, g_ip6_tcp_drop;   // F7 IPv6
 uint64_t g_ip6_rate_drop, g_ip6_badsum, g_icmp6_echo, g_nd_ns_rx, g_nd_na_tx;
 uint64_t g_nd_na_rx, g_nd_bad, g_nd_evict, g_ip6_dad_conflict, g_udp6_echo;
@@ -149,7 +154,7 @@ static int walk(const char *pfx, int seen[], uint32_t *maxlen)
 
 static void test_table(void)
 {
-    CHECK(METRICS_N == 162);   // P7-2: + 3 ota_*, P7-4: + app_versi, F7: + 6 slab_* + heap_bad_free, F7 tugas: + 5 res_* + sched_aged, F7 IPv6: + ip6_up + 15 ip6_/icmp6_/nd_/udp6_
+    CHECK(METRICS_N == 167);   // P7-2: + 3 ota_*, P7-4: + app_versi, F7: + 6 slab_* + heap_bad_free, F7 tugas: + 5 res_* + sched_aged, F7 IPv6: + ip6_up + 15 ip6_/icmp6_/nd_/udp6_
     CHECK_STR(g_metrics[0].name, "uptime_ticks");
     CHECK_STR(g_metrics[77].name, "priv_hmac");     // 78 kunci lama di depan
     CHECK_STR(g_metrics[78].name, "uptime_s");
@@ -166,7 +171,9 @@ static void test_table(void)
     CHECK_STR(g_metrics[137].name, "slab_uaf");
     CHECK_STR(g_metrics[144].name, "sched_aged");
     CHECK_STR(g_metrics[145].name, "ip6_up");   // F7 IPv6
-    CHECK_STR(g_metrics[METRICS_N - 1].name, "ip6_ignored");   // kunci baru di akhir
+    CHECK_STR(g_metrics[161].name, "ip6_ignored");
+    CHECK_STR(g_metrics[162].name, "smp_cpus");   // F7 SMP-1
+    CHECK_STR(g_metrics[METRICS_N - 1].name, "smp_irq_stray");   // kunci baru di akhir
     int ok_chars = 1, ok_len = 1, ok_uniq = 1, ok_kind = 1;
     for (uint32_t i = 0; i < METRICS_N; i++) {
         const char *n = g_metrics[i].name;
@@ -273,7 +280,8 @@ static void test_prefix(void)
               "res_fd_deny=0\nres_sys_deny=0\nres_wr_deny=0\nres_cpu_win=0\nres_killed=0\nsched_aged=0\n"
               "ip6_up=0\nip6_rx=0\nip6_drop=0\nip6_off=0\nip6_nxt_drop=0\nip6_tcp_drop=0\nip6_rate_drop=0\n"
               "ip6_badsum=0\nicmp6_echo=0\nnd_ns_rx=0\nnd_na_tx=0\nnd_na_rx=0\nnd_bad=0\nnd_evict=0\n"
-              "ip6_dad_conflict=0\nudp6_echo=0\nip6_ignored=0\n");
+              "ip6_dad_conflict=0\nudp6_echo=0\nip6_ignored=0\n"
+              "smp_cpus=2\nsmp_online=2\nsmp_ipi_tx=3\nsmp_ipi_rx=3\nsmp_irq_stray=0\n");
     CHECK_STR(run(" 111"), "kmalloc=0\nkfree=0\nkfree_noop=0\nkmalloc_fail=0\n"
               "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
               "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n"
@@ -283,7 +291,8 @@ static void test_prefix(void)
               "res_fd_deny=0\nres_sys_deny=0\nres_wr_deny=0\nres_cpu_win=0\nres_killed=0\nsched_aged=0\n"
               "ip6_up=0\nip6_rx=0\nip6_drop=0\nip6_off=0\nip6_nxt_drop=0\nip6_tcp_drop=0\nip6_rate_drop=0\n"
               "ip6_badsum=0\nicmp6_echo=0\nnd_ns_rx=0\nnd_na_tx=0\nnd_na_rx=0\nnd_bad=0\nnd_evict=0\n"
-              "ip6_dad_conflict=0\nudp6_echo=0\nip6_ignored=0\n");
+              "ip6_dad_conflict=0\nudp6_echo=0\nip6_ignored=0\n"
+              "smp_cpus=2\nsmp_online=2\nsmp_ipi_tx=3\nsmp_ipi_rx=3\nsmp_irq_stray=0\n");
     CHECK_STR(run(" sock_"), "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
               "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n"
               "sock_connect=0\n");
@@ -292,6 +301,7 @@ static void test_prefix(void)
     CHECK_STR(run(" heap_bad"), "heap_bad_free=0\n");
     CHECK_STR(run(" res_"), "res_fd_deny=0\nres_sys_deny=0\nres_wr_deny=0\nres_cpu_win=0\nres_killed=0\n");   // F7 tugas
     CHECK_STR(run(" sched_"), "sched_aged=0\n");
+    CHECK_STR(run(" smp_"), "smp_cpus=2\nsmp_online=2\nsmp_ipi_tx=3\nsmp_ipi_rx=3\nsmp_irq_stray=0\n");   // F7 SMP-1
     CHECK_STR(run(" icmp6_"), "icmp6_echo=0\n");   // F7 IPv6
     CHECK_STR(run(" nd_"), "nd_ns_rx=0\nnd_na_tx=0\nnd_na_rx=0\nnd_bad=0\nnd_evict=0\n");
     CHECK_STR(run(" app_"), "app_loaded=0\napp_size=0\napp_exit=0\napp_versi=0\n");   // P5-4, P7-4
@@ -308,7 +318,7 @@ static void test_bad_args(void)
 {
     static const char *const bad[] = {
         " ", "  ", " tcp_  1", "  tcp_", " tcp_ ", " 1 2", " 1 tcp_", " tcp_ udp_",
-        " TCP_", " tcp-", " 162", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
+        " TCP_", " tcp-", " 167", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
         " tcp_\t", " -1",
     };
     set_all(0);

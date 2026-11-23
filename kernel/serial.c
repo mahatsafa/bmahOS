@@ -17,8 +17,56 @@ void serial_init(void)
 // task saat jatah log paket per detik habis (lihat net_rx_dispatch()).
 volatile int g_serial_mute = 0;
 
+// SMP-1: kunci serial reentran. Pemilik = indeks CPU; CPU yang sama boleh masuk lagi (serial_write ->
+// serial_putc, kprintf -> serial_putc). Interrupt lokal dimatikan selama dipegang, jadi ISR di CPU
+// yang sama tidak pernah menunggu kunci yang dipegang kode yang ia interupsi.
+static spinlock_t g_serial_lock = SPINLOCK_INIT;
+static volatile int g_serial_owner = -1;
+static uint32_t g_serial_depth;
+
+uint64_t serial_lock(void)
+{
+    uint64_t flags = irq_save();
+    int me = cpu_index();
+
+    // me == MAX_CPUS (ID LAPIC tidak dikenal) tidak pernah dianggap pemilik: tanpa reentran.
+    if (me < MAX_CPUS && g_serial_owner == me && g_serial_depth > 0) {
+        g_serial_depth++;
+    } else {
+        spin_lock(&g_serial_lock);
+        g_serial_owner = me;
+        g_serial_depth = 1;
+    }
+    return flags;
+}
+
+void serial_unlock(uint64_t flags)
+{
+    // Defensif: hanya pemilik yang melepas (setelah serial_lock_reset di panic, CPU lain
+    // yang masih menelepon unlock tidak boleh merusak kunci pemenang panic).
+    if (g_serial_depth == 0 || g_serial_owner != cpu_index()) {
+        irq_restore(flags);
+        return;
+    }
+    if (--g_serial_depth == 0) {
+        g_serial_owner = -1;
+        spin_unlock(&g_serial_lock);
+    }
+    irq_restore(flags);
+}
+
+// Panic: CPU lain mungkin berhenti sambil memegang kunci. Dipanggil dengan interrupt mati.
+void serial_lock_reset(void)
+{
+    g_serial_lock.v = 0;
+    g_serial_owner = -1;
+    g_serial_depth = 0;
+}
+
 void serial_putc(char c)
 {
+    uint64_t sl = serial_lock();
+
     if (!g_serial_mute) {
         while (!(inb(COM1 + 5) & 0x20))
             ;
@@ -26,12 +74,11 @@ void serial_putc(char c)
         outb(COM1, (uint8_t)c);
     }
 
-    uint64_t lf = irq_save();
     if (!g_serial_mute) {
         fbcon_putc(c);   // P1: layar ikut UART (termasuk mute B4b)
     }
     log_capture(c);
-    irq_restore(lf);
+    serial_unlock(sl);
 }
 
 // D5: hanya ke UART (tidak masuk ring log), untuk baris AUDIT. Ikut g_serial_mute.
@@ -41,7 +88,7 @@ void serial_write_nolog(const char *s)
         return;
     }
 
-    uint64_t flags = irq_save();
+    uint64_t flags = serial_lock();
 
     while (*s) {
         while (!(inb(COM1 + 5) & 0x20))
@@ -50,7 +97,7 @@ void serial_write_nolog(const char *s)
         outb(COM1, (uint8_t)*s++);
     }
 
-    irq_restore(flags);
+    serial_unlock(flags);
 }
 
 // Versi TANPA lock -- dipakai internal oleh fungsi lain yang SUDAH
@@ -70,9 +117,9 @@ static void serial_write_nolock(const char *s)
 // di tengah-tengah string.
 void serial_write(const char *s)
 {
-    uint64_t flags = irq_save();
+    uint64_t flags = serial_lock();
     serial_write_nolock(s);
-    irq_restore(flags);
+    serial_unlock(flags);
 }
 
 void serial_write_hex(uint64_t value)
@@ -82,7 +129,7 @@ void serial_write_hex(uint64_t value)
     // Lock SEKALI untuk seluruh "0x" + digit-digitnya -- kalau tidak,
     // ada celah antara serial_write("0x") selesai dan loop digit mulai,
     // di mana task lain bisa menyelip di tengah angka hex.
-    uint64_t flags = irq_save();
+    uint64_t flags = serial_lock();
 
     serial_write_nolock("0x");
 
@@ -92,5 +139,5 @@ void serial_write_hex(uint64_t value)
         serial_putc(hex[digit]);
     }
 
-    irq_restore(flags);
+    serial_unlock(flags);
 }
