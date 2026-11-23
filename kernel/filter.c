@@ -8,6 +8,9 @@
 // FILTER_MGMT_PORT (TLS 7780) selalu lolos, supaya admin tidak bisa mengunci
 // diri sendiri dari jarak jauh. Paket yang ditolak dibuang diam-diam (tanpa
 // RST/ICMP), hanya dihitung.
+// F7: aturan HANYA untuk IPv4 (filter_ipv4). IPv6 (ip6.c, bawaan mati) tidak melewati
+// filter ini; ia punya kebijakan tetap sendiri (ICMPv6 echo/ND + UDP echo 7777, sisanya
+// dibuang) dan echo=0 mematikan echo IPv6 juga.
 //
 // Sintaks satu aturan (juga satu baris FILTER.CFG, '#' = komentar):
 //   <izinkan|tolak> <semua|tcp|udp|icmp> <semua|a.b.c.d[/n]> [port A[-B]] [laju N]

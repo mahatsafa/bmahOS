@@ -1,4 +1,4 @@
-// R7: fuzz net_rx_dispatch (Ethernet/ARP/IPv4/ICMP/UDP/TCP, CLI 7779, TLS 7780)
+// R7: fuzz net_rx_dispatch (Ethernet/ARP/IPv4/IPv6/ICMP/ICMPv6/UDP/TCP, CLI 7779, TLS 7780)
 // dengan stub dan pembangun frame dari tests/host/test_net.c.
 // Input = deret rekaman [op][panjang 2 byte BE][frame], maks FZ_FRAMES frame:
 //   op bit0   : betulkan checksum IP/ICMP/UDP/TCP (fix_csums)
@@ -66,6 +66,8 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
     (void)argv;
     tls_files(T_KEYA, sizeof(T_KEYA), T_CERTA, sizeof(T_CERTA));
     FUZZ_ASSERT(tls_enabled());
+    ip6_bring_up();   // F7: IPv6 aktif (template 9..13 + mutasi)
+    FUZZ_ASSERT(ip6_up_metric() == 1);
     return 0;
 }
 

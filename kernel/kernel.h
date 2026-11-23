@@ -918,6 +918,25 @@ uint32_t net_udp_build(uint8_t *p, const volatile uint8_t *dst_mac, const volati
                        uint16_t sport, uint16_t dport, uint32_t plen);
 void net_tcp_tick(void);
 int net_poll(void);
+uint32_t net_sum16(const volatile uint8_t *p, uint32_t len, uint32_t sum);
+
+// ---- ip6.c (F7: IPv6 dasar, link-local, ICMPv6 + UDP echo 7777) ----
+extern uint32_t g_ip6_cfg;       // CONFIG.CFG ipv6 (bawaan 0; berlaku saat boot)
+extern uint8_t g_ip6_ll[16];
+void ip6_init(void);             // net task, sesudah config_load
+void ip6_poll(void);             // loop net task (DAD)
+void ip6_rx(volatile uint8_t *buf, uint32_t len);   // EtherType 0x86DD
+void ip6_fmt(char *out, uint32_t max, const volatile uint8_t *a);   // out >= 40 byte
+const char *ip6_state_name(void);
+int ip6_active(void);            // 1 bila ip6_init menyalakan (DAD/aktif/konflik)
+int ip6_neigh_count(void);
+int ip6_neigh_get(int idx, uint8_t ip[16], uint8_t mac[6]);
+uint16_t ip6_l4_checksum(const volatile uint8_t *src, const volatile uint8_t *dst, uint8_t nxt,
+                         const volatile uint8_t *l4, uint32_t len);
+uint64_t ip6_up_metric(void);
+extern uint64_t g_ip6_rx, g_ip6_drop, g_ip6_off, g_ip6_nxt_drop, g_ip6_tcp_drop;
+extern uint64_t g_ip6_rate_drop, g_ip6_badsum, g_icmp6_echo, g_nd_ns_rx, g_nd_na_tx;
+extern uint64_t g_nd_na_rx, g_nd_bad, g_nd_evict, g_ip6_dad_conflict, g_udp6_echo;
 
 // ---- kernel.c (dipakai modul lain) ----
 #define NET_UDP_CMD_PORT 7778

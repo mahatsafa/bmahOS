@@ -431,7 +431,7 @@ static int net_udp_src_budget_ok(const volatile uint8_t *ip)
     return 1;
 }
 
-static uint32_t net_sum16(const volatile uint8_t *p, uint32_t len, uint32_t sum)
+uint32_t net_sum16(const volatile uint8_t *p, uint32_t len, uint32_t sum)
 {
     while (len > 1) {
         sum += ((uint32_t)p[0] << 8) | (uint32_t)p[1];
@@ -2575,6 +2575,8 @@ static void net_rx_dispatch(volatile uint8_t *buf, uint32_t len)
     } else if (ethertype == 0x0800) {
         g_net_rx_ipv4++;
         net_handle_ipv4(buf, len);
+    } else if (ethertype == 0x86DD) {
+        ip6_rx(buf, len);   // F7: IPv6 (ip6.c); nonaktif -> hanya dihitung ip6_off
     } else {
         g_net_rx_other++;
     }

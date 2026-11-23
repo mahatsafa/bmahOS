@@ -7,7 +7,7 @@
 #include "test.h"
 #include "../../kernel/config.c"
 
-#define NC_DEF "netcon=0\nnetcon_host=1\nnetcon_port=6666\ndhcp=0\n"   // + P3-4 dhcp
+#define NC_DEF "netcon=0\nnetcon_host=1\nnetcon_port=6666\ndhcp=0\nipv6=0\n"   // + P3-4 dhcp, F7 ipv6
 
 // ---- stub kernel ----
 uint32_t g_cli_idle_s = CFG_CLI_IDLE_DEF;
@@ -199,7 +199,7 @@ static void test_load(void)
     CHECK(g_net_echo == 1 && g_cli_idle_s == 300 && g_net_src_rate == 20);
     CHECK(strstr(g_serial_cap,
                  "CONFIG: sumber=bawaan (tidak ada file) cli_idle=300 udp_rate=20 echo=1 "
-                 "cli_plain=1 udp_admin=1 netcon=0 netcon_host=1 netcon_port=6666 dhcp=0\r\n"));
+                 "cli_plain=1 udp_admin=1 netcon=0 netcon_host=1 netcon_port=6666 dhcp=0 ipv6=0\r\n"));
     CHECK_STR(run("config"),
               "config: sumber=bawaan (tidak ada file)\ncli_idle=300\nudp_rate=20\necho=1\n"
               "cli_plain=1\nudp_admin=1\n" NC_DEF);
@@ -211,7 +211,7 @@ static void test_load(void)
     CHECK(g_cli_idle_s == 600 && g_net_echo == 0 && g_net_src_rate == 20);
     CHECK(strstr(g_serial_cap, "CONFIG: sumber=disk cli_idle=600 udp_rate=20 echo=0 "
                                "cli_plain=1 udp_admin=1 netcon=0 netcon_host=1 "
-                               "netcon_port=6666 dhcp=0\r\n"));
+                               "netcon_port=6666 dhcp=0 ipv6=0\r\n"));
     CHECK_STR(run("config"), "config: sumber=disk\ncli_idle=600\nudp_rate=20\necho=0\n"
               "cli_plain=1\nudp_admin=1\n" NC_DEF);
 
@@ -222,7 +222,7 @@ static void test_load(void)
     CHECK(g_cli_idle_s == 300 && g_net_echo == 1 && g_net_src_rate == 20);
     CHECK(strstr(g_serial_cap, "CONFIG: sumber=bawaan (ditolak baris 3: nilai di luar rentang) "
                                "cli_idle=300 udp_rate=20 echo=1 cli_plain=1 udp_admin=1 "
-                               "netcon=0 netcon_host=1 netcon_port=6666 dhcp=0\r\n"));
+                               "netcon=0 netcon_host=1 netcon_port=6666 dhcp=0 ipv6=0\r\n"));
     CHECK(strncmp(run("config"), "config: sumber=bawaan (ditolak baris 3: nilai di luar rentang)\n"
                   "cli_idle=300\n", 76) == 0);
 
@@ -279,7 +279,7 @@ static void test_set(void)
     // salah: tidak menulis, tidak mengubah
     CHECK_STR(run("set nama x"),
               "ERR: config: kunci tak dikenal (cli_idle udp_rate echo cli_plain udp_admin "
-              "netcon netcon_host netcon_port dhcp)\n");
+              "netcon netcon_host netcon_port dhcp ipv6)\n");
     CHECK_STR(run("set echo 2"), "ERR: config: format: set echo 0..1|-\n");
     CHECK_STR(run("set cli_idle 29"), "ERR: config: format: set cli_idle 30..3600|-\n");
     CHECK_STR(run("set cli_idle"), "ERR: config: format: set cli_idle 30..3600|-\n");
@@ -356,10 +356,34 @@ static void test_dhcp_key(void)
     CHECK(g_dhcp_cfg == 1 && strstr(g_file, "\nnetcon_port=6666\ndhcp=1\n") != NULL);
     serial_capture_reset();
     config_load();
-    CHECK(g_dhcp_cfg == 1 && strstr(g_serial_cap, "netcon_port=6666 dhcp=1\r\n") != NULL);
+    CHECK(g_dhcp_cfg == 1 && strstr(g_serial_cap, "netcon_port=6666 dhcp=1 ipv6=0\r\n") != NULL);
     CHECK_STR(run("set dhcp -"), "OK dhcp=0 (tersimpan)\n");
     CHECK(g_dhcp_cfg == 0);
-    CHECK(strstr(run("set dhcpx 1"), "netcon_port dhcp)") != NULL);
+    CHECK(strstr(run("set dhcpx 1"), "netcon_port dhcp ipv6)") != NULL);
+}
+
+// F7: kunci ipv6 (0/1, bawaan MATI; berlaku saat boot, dibaca ip6_init).
+static void test_ipv6_key(void)
+{
+    uint32_t v[CFG_NKEYS], line;
+    const char *why;
+
+    CHECK(CFG_NKEYS == 10);
+    CHECK(parse("ipv6=1\n", v, &line, &why) && v[9] == 1 && v[8] == 0 && v[0] == 300);
+    CHECK(parse("dhcp=1\n", v, &line, &why) && v[9] == 0);
+    CHECK(rejected("ipv6=2\n", 1, "nilai di luar rentang"));
+    CHECK(rejected("ipv6=1\nipv6=0\n", 2, "kunci ganda"));
+    set_file(NULL);
+    config_load();
+    CHECK(g_ip6_cfg == 0);
+    CHECK_STR(run("set ipv6 1"), "OK ipv6=1 (tersimpan)\n");
+    CHECK(g_ip6_cfg == 1 && strstr(g_file, "\ndhcp=0\nipv6=1\n") != NULL);
+    serial_capture_reset();
+    config_load();
+    CHECK(g_ip6_cfg == 1 && strstr(g_serial_cap, "dhcp=0 ipv6=1\r\n") != NULL);
+    CHECK_STR(run("set ipv6 2"), "ERR: config: format: set ipv6 0..1|-\n");
+    CHECK_STR(run("set ipv6 -"), "OK ipv6=0 (tersimpan)\n");
+    CHECK(g_ip6_cfg == 0);
 }
 
 // D9: cli_plain/udp_admin dan pengaman jalur admin terakhir.
@@ -388,7 +412,7 @@ static void test_plain_admin(void)
     CHECK(g_cli_plain == 1 && g_udp_admin == 0);
     CHECK(strstr(g_serial_cap, "CONFIG: TLS nonaktif, cli_plain dipaksa 1") &&
           strstr(g_serial_cap, "sumber=disk cli_idle=300 udp_rate=20 echo=1 cli_plain=1 "
-                               "udp_admin=0 netcon=0 netcon_host=1 netcon_port=6666 dhcp=0\r\n"));
+                               "udp_admin=0 netcon=0 netcon_host=1 netcon_port=6666 dhcp=0 ipv6=0\r\n"));
 
     // Tanpa TLS, set yang menutup jalur terakhir ditolak, tanpa tulis.
     g_writes = 0;
@@ -415,6 +439,7 @@ int main(void)
     test_plain_admin();
     test_netcon_keys();
     test_dhcp_key();
+    test_ipv6_key();
     return test_done("config");
 }
 #endif

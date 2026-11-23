@@ -521,6 +521,7 @@ static void net_task_entry(void)
     // C3a: butuh interrupt aktif (memakai task_sleep), ~0,5 s.
     ktimer_selftest();
     dhcp_init();     // P3-4: sebelum modul lain mengirim
+    ip6_init();      // F7: IPv6 link-local + DAD (bila ipv6=1)
     netcon_init();   // R2
     sntp_init();     // P3-2
     dns_init();      // P3-3
@@ -555,6 +556,7 @@ static void net_task_entry(void)
         ktimer_run();
         netcon_poll();
         dhcp_poll();      // P3-4
+        ip6_poll();       // F7: DAD IPv6
         sntp_poll();      // P3-2
         dns_poll();       // P3-3
         monitor_poll();   // P6-1

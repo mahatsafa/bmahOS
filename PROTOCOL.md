@@ -181,7 +181,7 @@ Hanya root directory (cluster root pertama), nama 8.3 `A-Z 0-9 _ -` (huruf kecil
 ## Konfigurasi persisten (D7)
 
 File `CONFIG.CFG` di root FAT32, dibaca sekali saat boot (serial: `CONFIG: sumber=... cli_idle=..
-udp_rate=.. echo=.. cli_plain=.. udp_admin=.. netcon=.. netcon_host=.. netcon_port=.. dhcp=..`). Teks ASCII, satu `kunci=nilai` per baris (LF; CR di akhir baris dibuang), baris
+udp_rate=.. echo=.. cli_plain=.. udp_admin=.. netcon=.. netcon_host=.. netcon_port=.. dhcp=.. ipv6=..`). Teks ASCII, satu `kunci=nilai` per baris (LF; CR di akhir baris dibuang), baris
 kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 
 | Kunci | Rentang | Default | Arti |
@@ -195,6 +195,7 @@ kosong dan `#...` diabaikan, maks 512 byte, angka desimal tanpa nol di depan.
 | `netcon_host` | 1..254 | 1 | R2: tujuan 192.168.50.`netcon_host` |
 | `netcon_port` | 1024..65535 | 6666 | R2: port UDP tujuan |
 | `dhcp` | 0..1 | 0 | P3-4: 1: alamat dari server DHCP mulai boot berikutnya (lihat DHCP) |
+| `ipv6` | 0..1 | 0 | F7: 1: IPv6 link-local + ICMPv6 + UDP echo 7777 mulai boot berikutnya (lihat IPv6) |
 
 - D9 pengaman: tanpa TLS aktif, `cli_plain=0` + `udp_admin=0` bersamaan menutup semua jalur admin jaringan.
   `set` yang menghasilkan kombinasi itu ditolak (`ERR: config: TLS nonaktif, ...`); file di disk dengan
@@ -335,6 +336,24 @@ register umum dump panic), maks 160 karakter.
   diubah lewat `tulis`/`hapus`/`ganti`.
 - Saat boot: `P4: filter sumber=disk aturan=N`, `P4: filter tanpa aturan (tanpa file|tanpa disk|galat baca
   disk)`, atau `P4: FILTER.CFG ditolak baris N (alasan), tanpa aturan`.
+
+## IPv6 `ipv6` (F7)
+
+- Bawaan MATI (`ipv6=0`); `set ipv6 1` lalu reboot. Serial: `IPv6: nonaktif (ipv6=0 bawaan; ...)` atau
+  `IPv6: link-local fe80::.. , DAD mulai (2 probe, jeda 100 tick)` lalu `IPv6: DAD selesai, fe80::.. aktif` (atau
+  `IPv6: DAD GAGAL: ... IPv6 dinonaktifkan`).
+- Alamat: fe80::/64 + EUI-64 dari MAC (bit U/L dibalik, ff:fe di tengah). Tanpa SLAAC global, DHCPv6, RA/RS.
+- Diterima hanya tujuan: alamat kita, ff02::1, solicited-node kita (ff02::1:ffXX:XXXX); sumber fe80::/10 (atau `::` untuk NS DAD).
+  Muatan 1..1460 byte, hop limit != 0. Next header 58 (ICMPv6) dan 17 (UDP) saja; 6 (TCP) dihitung `ip6_tcp_drop`, lainnya
+  (ekstensi, fragmen) `ip6_nxt_drop`; tanpa balasan/RST.
+- ICMPv6: echo request (kode 0, ke unicast kita) -> echo reply; NS (hop 255, kode 0, target kita) -> NA (S|O, TLLA) ke MAC SLLA,
+  NS dari `::` -> NA (O) ke ff02::1; NA/NS selama DAD untuk alamat kita = konflik; tipe lain (RA, RS, Redirect, MLD) diabaikan.
+  Checksum pseudo-header wajib (`ip6_badsum`).
+- UDP: hanya port 7777 (`echo=1`), panjang UDP = muatan IPv6, checksum wajib (nol dibuang). Tidak ada UDP 7778, soket user, TCP.
+- Batas laju: per sumber (`udp_rate`, tabel 8 slot IPv6 sendiri) lalu global 100/s, sebelum checksum (`ip6_rate_drop`).
+- `ip`: baris `ip6: <alamat> (<aktif|DAD|nonaktif (DAD konflik)>) tetangga=N/8` + satu baris `  <alamat> <mac>` per tetangga; `stats`: baris `ip6:`.
+- Metrics (akhir tabel): ip6_up, ip6_rx, ip6_drop, ip6_off, ip6_nxt_drop, ip6_tcp_drop, ip6_rate_drop, ip6_badsum, icmp6_echo,
+  nd_ns_rx, nd_na_tx, nd_na_rx, nd_bad, nd_evict, ip6_dad_conflict, udp6_echo.
 
 ## DHCP `dhcp` (P3-4)
 

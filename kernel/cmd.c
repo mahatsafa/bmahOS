@@ -121,6 +121,40 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
             }
         }
         cmd_putc('\n');
+        // F7: IPv6 (bawaan mati). Tetangga: cache diagnostik dari NS (maks 8).
+        if (ip6_active()) {
+            char a[40];
+
+            ip6_fmt(a, sizeof(a), g_ip6_ll);
+            cmd_puts("ip6: ");
+            cmd_puts(a);
+            cmd_puts(" (");
+            cmd_puts(ip6_state_name());
+            cmd_puts(") tetangga=");
+            cmd_putdec((uint64_t)ip6_neigh_count());
+            cmd_puts("/8\n");
+            for (int i = 0; i < 8; i++) {
+                uint8_t nip[16], nmac[6];
+
+                if (!ip6_neigh_get(i, nip, nmac)) {
+                    break;
+                }
+                ip6_fmt(a, sizeof(a), nip);
+                cmd_puts("  ");
+                cmd_puts(a);
+                cmd_putc(' ');
+                for (int j = 0; j < 6; j++) {
+                    cmd_puthex8(nmac[j]);
+                    if (j < 5) {
+                        cmd_putc(':');
+                    }
+                }
+                cmd_putc('\n');
+            }
+        } else {
+            cmd_puts(g_ip6_cfg ? "ip6: nonaktif (ipv6=1 berlaku setelah reboot)\n"
+                               : "ip6: nonaktif (bawaan; set ipv6 1, lalu reboot)\n");
+        }
     } else if (net_cmd_is(cmd, len, "log")) {
         // Salin di bawah irq_save supaya konsisten terhadap penulisan
         // ring dari konteks lain (tanpa I/O di dalam bagian ini).
@@ -232,6 +266,20 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(g_net_rx_errors);
         cmd_puts(" ring=");
         cmd_putdec(E1000_RX_RING_SIZE);
+        cmd_puts("\nip6: ");
+        cmd_puts(ip6_state_name());
+        cmd_puts(" rx=");
+        cmd_putdec(g_ip6_rx);
+        cmd_puts(" dibuang=");
+        cmd_putdec(g_ip6_drop + g_ip6_nxt_drop + g_ip6_tcp_drop + g_ip6_rate_drop + g_ip6_badsum);
+        cmd_puts(" echo=");
+        cmd_putdec(g_icmp6_echo);
+        cmd_puts(" udp_echo=");
+        cmd_putdec(g_udp6_echo);
+        cmd_puts(" nd_ns=");
+        cmd_putdec(g_nd_ns_rx);
+        cmd_puts(" nd_na=");
+        cmd_putdec(g_nd_na_tx);
         cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "metrics") ||
                (len > 8 && net_cmd_is(cmd, 8, "metrics "))) {

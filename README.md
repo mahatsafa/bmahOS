@@ -302,7 +302,7 @@ TLS 7780 (D9): pin = sha256 `TLSCERT.DER` (juga di serial `TLS: aktif port 7780 
   1 detik lalu eksponensial (maks 8 detik, 5 kali, lalu RST), tanpa pengukuran RTT. Penutupan FIN dua arah:
   klien menutup -> bmahOS membalas FIN setelah echo habis (port langsung bebas); koneksi diam 30 detik ditutup
   dengan FIN, TIME_WAIT hanya 2 detik (bukan 2*MSL) dan selama itu memakai satu slot. Belum ada persist timer
-  (data tertahan jendela 0 diputus RST setelah 30 detik). Belum ada DHCP atau IPv6
+  (data tertahan jendela 0 diputus RST setelah 30 detik). IPv6 hanya dasar (F7, bawaan mati `ipv6=0`: link-local, ICMPv6 echo/ND, UDP echo 7777; tanpa TCP, SLAAC, DHCPv6)
 
 ## Catatan pengembangan
 

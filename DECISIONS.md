@@ -703,3 +703,32 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - `sched_aged` tidak dijadikan syarat nol di PROD: penuaan sah saat handshake TLS/ECDSA/OTA (net task memakai CPU lama).
 - `tasks` memberi penanda "...(terpotong)" bila sisa keluaran kurang dari satu baris (pola audit_dump).
 
+
+## 2026-11-23 (F7: IPv6 dasar)
+
+- **Lingkup minimal, bawaan MATI.** `ipv6=0..1` di CONFIG.CFG (kunci ke-10, berlaku saat boot seperti `dhcp`): permukaan serangan baru
+  baru ada bila admin menyalakannya. Alternatif (bawaan nyala) ditolak: tidak ada kebutuhan mendesak dan parser baru memperluas
+  permukaan. Yang dikerjakan: EtherType 0x86DD, header tetap 40 byte, link-local EUI-64 + DAD, ICMPv6 echo + ND (NS/NA), UDP echo 7777.
+  Sengaja TIDAK: TCP IPv6 (TCB, tabel batas per IP, CLI/TLS/OTA semuanya berkunci IPv4 4 byte; menambah TCP berarti memperluas
+  semua itu), SLAAC global/RA, DHCPv6, MLD, fragmen/header ekstensi, UDP 7778 dan soket user (tidak ada jalur admin lewat IPv6),
+  ND aktif (tidak ada pengirim paket IPv6 yang berinisiatif), Path MTU. Alasan: satu tabel/parser kecil yang bisa diaudit.
+- **Dipisah dari IPv4, bukan digeneralisasi.** `ip6.c` modul baru dipanggil dari `net_rx_dispatch` untuk 0x86DD; tidak ada perubahan
+  jalur IPv4. Refactor terpisah (0c6f47e, perilaku sama): `net_src_budget_take(tabel, n, kunci, panjang)` dengan slot `ip[16]`;
+  IPv4 memakai pembungkus 4 byte, IPv6 tabel 8 slotnya sendiri (banjir alamat IPv6 palsu tidak menggusur slot IPv4). Jatah GLOBAL
+  100/s dibagi dengan IPv4 (`net_udp_budget_ok`); batas laju dijalankan SEBELUM checksum dan balasan.
+- **Packet filter P4 tidak diperluas ke IPv6; IPv6 punya kebijakan tetap.** `filter_ipv4` hanya IPv4. Dicatat eksplisit di komentar
+  filter.c, THREAT_MODEL (item 26), PROTOCOL; `echo=0` mematikan echo IPv6 juga. Alternatif (aturan v6 di FILTER.CFG) ditolak:
+  sintaks/penyimpanan/uji baru untuk layanan tunggal.
+- **Hanya tetangga se-link:** sumber harus fe80::/10 (atau `::` untuk NS DAD); global, multicast, loopback, alamat kita sendiri dibuang.
+  Echo tidak dijawab ke multicast (tanpa penguatan). UDP wajib checksum (nol dibuang) dan panjang UDP = muatan IPv6.
+- **E1000 tidak diubah:** RCTL sudah UPE|MPE (semua unicast/multicast diterima), jadi tabel MTA tidak perlu; filter tujuan di perangkat lunak
+  (alamat kita, ff02::1, solicited-node kita). Konsekuensi: lalu lintas host lain terlihat tetapi diabaikan tanpa dihitung.
+- **Tabel tetangga 8 entri = cache diagnostik** (`ip`), bukan dasar keputusan: balasan memakai MAC dari SLLA / frame. Dibuat hanya dari
+  NS ber-SLLA yang ditujukan ke kita; NA hanya memperbarui entri yang sudah ada; penuh -> korban `at` terkecil (`nd_evict`). Alasan
+  dipertahankan: diminta ROADMAP/tugas dan murah (~40 baris) tetapi tidak menambah wewenang bagi penyerang.
+- **DAD:** 2 probe NS dari `::` jeda 100 tick, lalu aktif; NA/NS-DAD untuk alamat kita selama DAD -> `IP6_CONFLICT`, IPv6 nonaktif + log
+  (IPv4 tak terpengaruh). Tanpa jeda acak RFC 4862 dan tanpa pengecekan tautan naik (batas diketahui).
+- **Fuzz:** `fuzz_net` memakai IPv6 aktif + 5 template; menemukan baca-lewat-batas di `ip6_udp` (header UDP dibaca sebelum cek muatan >= 8)
+  dalam 2 menit pertama; diperbaiki, seed di tests/fuzz/regress/net/udp6-pendek. Pelajaran sama dengan sntp_rx (R7-3).
+- **Belum terbukti:** VMware (MLD snooping tak ada di VMnet2; Windows memakai alamat sementara/privasi untuk sumber global tetapi link-local
+  untuk fe80), perilaku dengan router/RA nyata, DAD saat tautan lambat naik, perangkat keras asli.

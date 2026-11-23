@@ -247,7 +247,7 @@ Wi-Fi tidak direncanakan.
 
 ### Fase 7: Opsional, tanpa urutan
 
-SSH, SMP (N2840 punya 2 core), IPv6, SMEP/SMAP bila CPU mendukung (selesai di branch f7-smep), slab allocator (selesai di branch f7-slab), prioritas task dan batas
+SSH, SMP (N2840 punya 2 core), IPv6 dasar (selesai di branch f7-ipv6: link-local + ICMPv6 + UDP echo, bawaan mati; tanpa TCP/SLAAC/DHCPv6), SMEP/SMAP bila CPU mendukung (selesai di branch f7-smep), slab allocator (selesai di branch f7-slab), prioritas task dan batas
 sumber daya per task (selesai di branch f7-tugas), Secure Boot, port library TLS.
 
 ## 6. Pengecualian IoT
@@ -262,6 +262,7 @@ menjalankan beban kerja IoT, cukup tulis program user-space di atas socket API (
   (tanpa batas umur koneksi; diputuskan di D4).
 - Batas laju per IP bisa dikelabui IP palsu; banjir CHAL dari 16 IP palsu atau lebih masih bisa menggusur nonce sah.
 - Balasan perintah berupa teks polos (keaslian terjamin, kerahasiaan tidak) sampai D8.
+- IPv6 (F7): hanya link-local, ICMPv6 echo/ND, UDP echo 7777; bawaan mati; tanpa TCP, SLAAC, DHCPv6, MLD, fragmen/ekstensi; packet filter P4 hanya IPv4.
 - Hanya driver E1000 dan AHCI; belum berjalan di perangkat keras asli.
 
 ## 8. Dokumen pendamping

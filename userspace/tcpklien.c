@@ -242,7 +242,7 @@ __attribute__((section(".text.start"), noreturn)) void _start(void)
     bm_i64 u;
 
     uji_boot();
-    u = bm_socket(BM_SOCK_UDP);
+    u = bm_socket_ulang(BM_SOCK_UDP);
     if (u < 0 || bm_bind(u, PORT) != 0) {
         tulis_angka("P5: tcpklien soket UDP gagal ", u);
         bm_exit();
@@ -250,7 +250,7 @@ __attribute__((section(".text.start"), noreturn)) void _start(void)
     tulis_angka("P5: tcpklien connect soket UDP -> ", bm_connect(u, BM_ADDR(192, 168, 50, 1, 80), 0));
 
     // .255 ditolak; sebelum loop net task jalan hasilnya -100: ulangi.
-    bm_i64 t = bm_socket(BM_SOCK_TCP);
+    bm_i64 t = bm_socket_ulang(BM_SOCK_TCP);
     bm_i64 r;
 
     for (int i = 0; i < 300; i++) {

@@ -42,6 +42,10 @@ uint64_t g_pmm_allocs, g_pmm_frees, g_pmm_fail, g_pmm_bad_free;
 uint64_t g_kmalloc_n, g_kfree_n, g_kfree_noop, g_kmalloc_fail, g_heap_bad_free;
 uint64_t g_slab_alloc, g_slab_free, g_slab_fail, g_slab_pages, g_slab_bad_free, g_slab_uaf;   // F7
 uint64_t g_res_fd_deny, g_res_sys_deny, g_res_wr_deny, g_res_cpu_win, g_res_killed, g_sched_aged;   // F7 tugas
+uint64_t g_ip6_rx, g_ip6_drop, g_ip6_off, g_ip6_nxt_drop, g_ip6_tcp_drop;   // F7 IPv6
+uint64_t g_ip6_rate_drop, g_ip6_badsum, g_icmp6_echo, g_nd_ns_rx, g_nd_na_tx;
+uint64_t g_nd_na_rx, g_nd_bad, g_nd_evict, g_ip6_dad_conflict, g_udp6_echo;
+uint64_t ip6_up_metric(void) { return 0; }
 uint64_t g_sock_rx, g_sock_tx, g_sock_drop, g_sock_err, g_sock_noarp;
 uint64_t g_sock_tcp_accept, g_sock_tcp_rx, g_sock_tcp_tx, g_sock_tcp_reset;   // P5-2
 uint64_t g_sock_connect;   // P5-3
@@ -144,7 +148,7 @@ static int walk(const char *pfx, int seen[], uint32_t *maxlen)
 
 static void test_table(void)
 {
-    CHECK(METRICS_N == 145);   // P7-2: + 3 ota_*, P7-4: + app_versi, F7: + 6 slab_* + heap_bad_free, F7 tugas: + 5 res_* + sched_aged
+    CHECK(METRICS_N == 161);   // P7-2: + 3 ota_*, P7-4: + app_versi, F7: + 6 slab_* + heap_bad_free, F7 tugas: + 5 res_* + sched_aged, F7 IPv6: + ip6_up + 15 ip6_/icmp6_/nd_/udp6_
     CHECK_STR(g_metrics[0].name, "uptime_ticks");
     CHECK_STR(g_metrics[77].name, "priv_hmac");     // 78 kunci lama di depan
     CHECK_STR(g_metrics[78].name, "uptime_s");
@@ -159,7 +163,9 @@ static void test_table(void)
     CHECK_STR(g_metrics[131].name, "app_versi");   // P7-4
     CHECK_STR(g_metrics[132].name, "slab_alloc");   // F7
     CHECK_STR(g_metrics[137].name, "slab_uaf");
-    CHECK_STR(g_metrics[METRICS_N - 1].name, "sched_aged");   // kunci baru di akhir
+    CHECK_STR(g_metrics[144].name, "sched_aged");
+    CHECK_STR(g_metrics[145].name, "ip6_up");   // F7 IPv6
+    CHECK_STR(g_metrics[METRICS_N - 1].name, "udp6_echo");   // kunci baru di akhir
     int ok_chars = 1, ok_len = 1, ok_uniq = 1, ok_kind = 1;
     for (uint32_t i = 0; i < METRICS_N; i++) {
         const char *n = g_metrics[i].name;
@@ -263,14 +269,20 @@ static void test_prefix(void)
               "sock_connect=0\napp_loaded=0\napp_size=0\napp_exit=0\n"
               "ota_terima=0\nota_ok=0\nota_gagal=0\napp_versi=0\n"
               "slab_alloc=0\nslab_free=0\nslab_fail=0\nslab_pages=0\nslab_bad_free=0\nslab_uaf=0\nheap_bad_free=0\n"
-              "res_fd_deny=0\nres_sys_deny=0\nres_wr_deny=0\nres_cpu_win=0\nres_killed=0\nsched_aged=0\n");
+              "res_fd_deny=0\nres_sys_deny=0\nres_wr_deny=0\nres_cpu_win=0\nres_killed=0\nsched_aged=0\n"
+              "ip6_up=0\nip6_rx=0\nip6_drop=0\nip6_off=0\nip6_nxt_drop=0\nip6_tcp_drop=0\nip6_rate_drop=0\n"
+              "ip6_badsum=0\nicmp6_echo=0\nnd_ns_rx=0\nnd_na_tx=0\nnd_na_rx=0\nnd_bad=0\nnd_evict=0\n"
+              "ip6_dad_conflict=0\nudp6_echo=0\n");
     CHECK_STR(run(" 111"), "kmalloc=0\nkfree=0\nkfree_noop=0\nkmalloc_fail=0\n"
               "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
               "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n"
               "sock_connect=0\napp_loaded=0\napp_size=0\napp_exit=0\n"
               "ota_terima=0\nota_ok=0\nota_gagal=0\napp_versi=0\n"
               "slab_alloc=0\nslab_free=0\nslab_fail=0\nslab_pages=0\nslab_bad_free=0\nslab_uaf=0\nheap_bad_free=0\n"
-              "res_fd_deny=0\nres_sys_deny=0\nres_wr_deny=0\nres_cpu_win=0\nres_killed=0\nsched_aged=0\n");
+              "res_fd_deny=0\nres_sys_deny=0\nres_wr_deny=0\nres_cpu_win=0\nres_killed=0\nsched_aged=0\n"
+              "ip6_up=0\nip6_rx=0\nip6_drop=0\nip6_off=0\nip6_nxt_drop=0\nip6_tcp_drop=0\nip6_rate_drop=0\n"
+              "ip6_badsum=0\nicmp6_echo=0\nnd_ns_rx=0\nnd_na_tx=0\nnd_na_rx=0\nnd_bad=0\nnd_evict=0\n"
+              "ip6_dad_conflict=0\nudp6_echo=0\n");
     CHECK_STR(run(" sock_"), "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
               "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n"
               "sock_connect=0\n");
@@ -279,6 +291,8 @@ static void test_prefix(void)
     CHECK_STR(run(" heap_bad"), "heap_bad_free=0\n");
     CHECK_STR(run(" res_"), "res_fd_deny=0\nres_sys_deny=0\nres_wr_deny=0\nres_cpu_win=0\nres_killed=0\n");   // F7 tugas
     CHECK_STR(run(" sched_"), "sched_aged=0\n");
+    CHECK_STR(run(" icmp6_"), "icmp6_echo=0\n");   // F7 IPv6
+    CHECK_STR(run(" nd_"), "nd_ns_rx=0\nnd_na_tx=0\nnd_na_rx=0\nnd_bad=0\nnd_evict=0\n");
     CHECK_STR(run(" app_"), "app_loaded=0\napp_size=0\napp_exit=0\napp_versi=0\n");   // P5-4, P7-4
     CHECK_STR(run(" ota_"), "ota_terima=0\nota_ok=0\nota_gagal=0\n");   // P7-2
     CHECK_STR(run(" zzz"), "ERR: metrics: tidak ada kunci yang cocok\n");
@@ -293,7 +307,7 @@ static void test_bad_args(void)
 {
     static const char *const bad[] = {
         " ", "  ", " tcp_  1", "  tcp_", " tcp_ ", " 1 2", " 1 tcp_", " tcp_ udp_",
-        " TCP_", " tcp-", " 145", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
+        " TCP_", " tcp-", " 161", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
         " tcp_\t", " -1",
     };
     set_all(0);

@@ -285,14 +285,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=145   # F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
+R3_N=161   # F7 IPv6: + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir sched_aged" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^sched_aged="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir udp6_echo" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^udp6_echo="'
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -1208,6 +1208,16 @@ check "P5-4: tanpa APP.BIN: baris serial, app (+ baris baru P7-4 dev), metrics a
 sleep 1.2   # jendela batas laju baru (lihat di atas)
 # P3-4: dhcp=1 untuk boot kedua (qemu-rawnet.py berperan sebagai server DHCP, lalu
 # mengembalikan dhcp=0); boot ini tetap memakai IP statis sampai reboot.
+IP6_IP="$($BM ip 2>&1)"
+sleep 1.2
+IP6_SET="$($BM "set ipv6 1" 2>&1)"
+sleep 1.2
+IP6_IP2="$($BM ip 2>&1)"
+sleep 1.2
+check "F7 IPv6: bawaan mati: serial nonaktif + CONFIG ipv6=0, ip: nonaktif, ip6_up=0 ip6_rx=0" \
+    'grep -aq "^IPv6: nonaktif (ipv6=0 bawaan" "$LOG" && grep -aq "dhcp=0 ipv6=0" "$LOG" && [ "$IP6_IP" = "$(printf "ip: 192.168.50.200\nip6: nonaktif (bawaan; set ipv6 1, lalu reboot)")" ] && echo "$METRICS" | grep -q "^ip6_up=0$" && echo "$METRICS" | grep -q "^ip6_rx=0$"'
+check "F7 IPv6: set ipv6 1 tersimpan; ip: tetap nonaktif sampai reboot" \
+    '[ "$IP6_SET" = "OK ipv6=1 (tersimpan)" ] && [ "$IP6_IP2" = "$(printf "ip: 192.168.50.200\nip6: nonaktif (ipv6=1 berlaku setelah reboot)")" ]'
 DH_SET="$($BM "set dhcp 1" 2>&1)"
 DH_ST="$($BM dhcp 2>&1)"
 check "P3-4: set dhcp 1 tersimpan; tetap IP statis sampai reboot" \
@@ -1239,9 +1249,9 @@ check "D6: fsck.fat -n bersih setelah tulis (FAT, dir, FSInfo)" \
     'fsck.fat -n "$DISK" >"$WORK/fsck.out" 2>&1'
 check "D6: mtype dari host = isi yang ditulis kernel; KEY.TXT tidak berubah" \
     'mtype -i "$DISK" ::CATATAN.TXT | cmp -s - "$WORK/catatan.want" && mtype -i "$DISK" ::PANJANG.TXT | cmp -s - "$WORK/panjang.want" && mtype -i "$DISK" ::KEY.TXT | cmp -s - "$KEY"'
-printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\ncli_plain=1\nudp_admin=1\nnetcon=0\nnetcon_host=1\nnetcon_port=6666\ndhcp=1\n' \
+printf '# bmahOS CONFIG.CFG (ditulis oleh perintah set)\ncli_idle=600\nudp_rate=20\necho=1\ncli_plain=1\nudp_admin=1\nnetcon=0\nnetcon_host=1\nnetcon_port=6666\ndhcp=1\nipv6=1\n' \
     > "$WORK/config.want"
-sed 's/^dhcp=1$/dhcp=0/' "$WORK/config.want" > "$WORK/config2.want"   # P3-4: rawnet set dhcp 0
+sed 's/^dhcp=1$/dhcp=0/; s/^ipv6=1$/ipv6=0/' "$WORK/config.want" > "$WORK/config2.want"   # P3-4/F7: rawnet set dhcp 0, set ipv6 0
 mcopy -n -i "$DISK" ::LOG.BIN "$WORK/log1.bin" 2>/dev/null
 python3 "$ROOT/tools/logdump.py" "$WORK/log1.bin" > "$WORK/log1.txt" 2>&1
 echo "info  R4: $(python3 "$ROOT/tools/logdump.py" --status "$WORK/log1.bin" 2>&1)"

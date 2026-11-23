@@ -149,6 +149,7 @@ WEAK int monitor_execute(const volatile uint8_t *cmd, uint32_t len)
 
 // P3-4: dhcp.c hanya di uji dhcp.
 WEAK uint32_t g_dhcp_cfg = 0;
+WEAK uint32_t g_ip6_cfg = 0;   // F7: ip6.c hanya di-#include test_net
 
 WEAK int dhcp_waiting(void)
 {

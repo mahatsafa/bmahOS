@@ -44,6 +44,7 @@ Satu header bersama: `kernel/kernel.h`. Aturannya: simbol yang hanya dipakai di 
 | `crypto.c` | SHA-256, HMAC-SHA256, `ct_memeq` (perbandingan waktu-konstan), self-test vektor resmi | — |
 | `entropy.c` | kolam entropi (jitter TSC dari IRQ timer/E1000 dan RX, rdseed/rdrand), HMAC-DRBG SP 800-90A, `entropy_get` (0 = belum cukup, pemanggil menolak), self-test CAVP | crypto, cpufeat |
 | `auth.c` | kunci dari `KEY.TXT`, nonce (tabel 16 slot, isi dari `entropy_get`), verifikasi HMAC, perintah berprivilege, reboot, pintu UDP 7778 | crypto, entropy, fat32, cmd |
+| `ip6.c` | F7: IPv6 dasar, bawaan mati (`ipv6=1`, berlaku saat boot): link-local EUI-64 + DAD (2 probe), header tetap 40 byte (tanpa ekstensi/fragmen/TCP), ICMPv6 echo + ND (NS/NA, hop 255), UDP echo 7777 (checksum wajib), tabel tetangga 8 entri (cache diagnostik), batas laju per sumber 16 byte (tabel 8 slot sendiri) + global, counter `ip6_*`/`icmp6_*`/`nd_*`/`udp6_*` | net (`net_src_budget_take`, `net_udp_budget_ok`, `net_sum16`), e1000, pmm, kprintf |
 | `config.c` | D7: `CONFIG.CFG` (parser gagal tertutup, `config_load` saat boot, perintah `config`/`set`, tulis lewat `fat32_replace_name`); nilai runtime `g_cli_idle_s`/`g_net_src_rate`/`g_net_echo` ada di net.c | fat32, fscmd, cmd, kprintf |
 | `watchdog.c` | R5: watchdog perangkat lunak (`watchdog_pet` dari loop net task, `watchdog_check` dari IRQ timer, batas 1000 tick -> dump lewat panic.c + reboot; trace dari frame interrupt atau konteks `context_switch` tersimpan; perintah `wd`, uji `wdtest loop/blok` build dev) | panic, sched, ktimer, cmd, kprintf |
 | `fbcon.c` | P1: konsol framebuffer (request framebuffer Limine, font 8x16 `fbfont.h`, alamat baris pakai `pitch`, warna dari mask/shift, gulir setengah layar dengan salinan 64-bit; dicerminkan dari `serial_putc` di bawah `irq_save`, ikut mute B4b; tanpa framebuffer/mode lain -> nonaktif) | serial, kprintf, klib |
@@ -103,6 +104,7 @@ stack, heap, dan MMIO diberi NX.
 - Semua jaringan (RX, protokol, perintah, TCP) berjalan hanya di net task, jadi tidak ada lock di stack
   jaringan. Bagian yang dipakai bersama interrupt memakai `irq_save`/`irq_restore`.
 - Jalur paket masuk: `e1000` RX ring → `net_poll` → `net_rx_dispatch` → ARP / IPv4 → ICMP / UDP / TCP →
+  (F7: EtherType 0x86DD → `ip6_rx` → ICMPv6 / UDP echo, hanya bila `ipv6=1`)
   (UDP 7778) `net_cmd_handle` → `auth` → `cmd`.
 
 ## 6. Pengujian

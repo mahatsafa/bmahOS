@@ -291,6 +291,22 @@ static const metric_t g_metrics[] = {
     M64("res_cpu_win", g_res_cpu_win),
     M64("res_killed", g_res_killed),
     M64("sched_aged", g_sched_aged),
+    MFN("ip6_up", ip6_up_metric),            // F7 IPv6: 1 bila DAD selesai
+    M64("ip6_rx", g_ip6_rx),
+    M64("ip6_drop", g_ip6_drop),
+    M64("ip6_off", g_ip6_off),
+    M64("ip6_nxt_drop", g_ip6_nxt_drop),
+    M64("ip6_tcp_drop", g_ip6_tcp_drop),
+    M64("ip6_rate_drop", g_ip6_rate_drop),
+    M64("ip6_badsum", g_ip6_badsum),
+    M64("icmp6_echo", g_icmp6_echo),
+    M64("nd_ns_rx", g_nd_ns_rx),
+    M64("nd_na_tx", g_nd_na_tx),
+    M64("nd_na_rx", g_nd_na_rx),
+    M64("nd_bad", g_nd_bad),
+    M64("nd_evict", g_nd_evict),
+    M64("ip6_dad_conflict", g_ip6_dad_conflict),
+    M64("udp6_echo", g_udp6_echo),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

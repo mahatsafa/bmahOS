@@ -170,7 +170,7 @@ host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
                      $(KERNEL_DIR)/tls.c   # C3c: timer retransmisi, D9b: TLS 7780
 host_libs_net      = $(HOST_BEARSSL_LIB)   # '=': didefinisikan di bawah
-host_deps_net     := $(KERNEL_DIR)/net.c $(KERNEL_DIR)/netcon.c $(KERNEL_DIR)/sock.c   # di-#include oleh test_net.c (akses static)
+host_deps_net     := $(KERNEL_DIR)/net.c $(KERNEL_DIR)/netcon.c $(KERNEL_DIR)/sock.c $(KERNEL_DIR)/ip6.c   # di-#include oleh test_net.c (akses static)
 host_srcs_auth    := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/audit.c $(KERNEL_DIR)/kprintf.c
 host_deps_auth    := $(KERNEL_DIR)/auth.c  # di-#include oleh test_auth.c
 host_srcs_entropy := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/kprintf.c

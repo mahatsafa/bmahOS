@@ -55,6 +55,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 |---|---|---|
 | Parser ARP/IP/ICMP/UDP | Baca di luar batas, panjang palsu | Validasi panjang ketat; fuzzing (R7) |
 | Parser TCP + mesin keadaan | Banjir SYN, keadaan menggantung, nomor urut | Batas tabel, timeout (C5), aritmetika nomor urut bertanda, retransmisi terbatas (5x lalu RST, C3c), setiap keadaan penutupan punya batas waktu (C3d), batas 2000 segmen/s per koneksi dan 10 ACK duplikat/s (C4), tabel 4 TCB, maks 2 per IP, SYN_RCVD tertua digusur saat penuh (C5a), timeout hanya diperpanjang kemajuan, bukan ACK duplikat/keepalive/SYN ulang/RST salah (C5b) |
+| IPv6 (F7, bawaan MATI) | Parser header IPv6 / ICMPv6 / opsi ND (baca di luar batas, opsi panjang 0), spoofing ND (NA palsu, DAD DoS dengan NA/NS palsu), banjir dari alamat sumber tak terbatas, pantulan multicast, TCP/UDP tak terjaga filter P4 | Bawaan mati (`ipv6=0`, nyala = `set ipv6 1` + reboot); hanya link-local fe80::/10 (sumber lain dibuang, jadi hanya tetangga se-link), header tetap tanpa ekstensi/fragmen (dibuang + counter), TCP IPv6 tidak ada (dibuang tanpa RST), UDP hanya echo 7777 (bukan 7778/soket user: tanpa jalur admin lewat IPv6), echo tidak dijawab ke multicast, ND wajib hop 255 + checksum pseudo-header, opsi ND dipindai dengan batas, tabel tetangga 8 entri dibuat hanya dari NS ber-SLLA (korban tertua) dan tidak dipakai untuk keputusan apa pun, batas laju per sumber (tabel 8 slot terpisah dari IPv4) + global SEBELUM checksum dan balasan, fuzz_net mencakup IPv6 |
 | Protokol perintah | Replay, penebakan nonce, banjir CHAL | HMAC-SHA256, nonce sekali pakai, tabel nonce 16 slot, maks 4 per IP, batas laju per IP dan global |
 | Login + shell TCP 7779 (D1, D2) | Replay bukti login/perintah, tebak HMAC, sesi menggantung, baris raksasa, sisip segmen setelah login, keluaran besar menahan memori | Nonce per koneksi dari DRBG, pesan "<nonce> tcp-login" dan "<nonce> tcp-cmd <n> <perintah>" berbeda dari UDP dan satu sama lain, 1 percobaan login per koneksi lalu FIN, login maks 10 s, baris maks 128 byte, perbandingan ct_memeq; D2: tiap perintah ditandatangani dengan nomor urut per koneksi (perintah sisipan/diulang/diubah -> ERR lalu FIN), keluaran maks 1432 byte per koneksi (statis), baris berikut tidak dibaca sampai keluaran habis; D4: peran dari kunci (KEYRO.TXT = read-only, daftar putih perintah, perintah ditandatangani kunci peran), maks 2 koneksi 7779, sesi login ditutup 300 s tanpa perintah sah. Balasan tidak ditandatangani dan teks polos (D8) |
 | TLS 7780 (D9, BearSSL) | Parser record/handshake (ClientHello, alert), sertifikat palsu, downgrade, banjir handshake (CPU), kebocoran kunci sesi | Pustaka teruji (BearSSL, constant-time, tanpa alokasi), versi dipatok + test_crypto upstream di host-test; hanya TLS 1.2 dan 2 suite AEAD ECDHE (forward secrecy), tanpa renegosiasi/resumption; klien mem-pin sha256 sertifikat; maks 2 TCB 7780, slot statis dihapus saat lepas; error -> RST; login HMAC tetap di dalam TLS. Belum: batas laju handshake per IP selain batas SYN umum |
@@ -201,6 +202,14 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    yang muncul belakangan sudah terlanjur dikukuhkan. Penanda uji `P7UJI:panik` ada juga di PROD: hanya
    berlaku di image bertanda tangan sah, dan pemegang kunci memang bisa menandatangani kernel apa pun.
    `ota coba`/`ota sah`/`ota batal` khusus admin; peran read-only hanya `ota`.
+
+26. IPv6 (F7, bawaan mati): packet filter P4 tidak berlaku (hanya `filter_ipv4`); kebijakan IPv6 tetap di ip6.c dan `echo=0` mematikan
+   echo IPv6 juga. Penyerang se-link yang memalsukan NA/NS DAD saat boot bisa membuat IPv6 nonaktif (DAD konflik; IPv4 tidak terpengaruh);
+   setelah DAD selesai NA palsu tidak mengubah apa pun selain MAC entri tetangga yang sudah ada (cache diagnostik). Banjir dari ribuan
+   alamat fe80 palsu menggusur slot tabel sumber IPv6 (8) dan menghabiskan jatah global 100/s yang dibagi dengan IPv4 (counter
+   `udp_dropped` ikut naik); tabel IPv4 tidak tersentuh. Tanpa MLD: switch dengan MLD snooping bisa tidak meneruskan NS ke
+   solicited-node (bmahOS tidak mengirim laporan MLD); tanpa RA/SLAAC global, DHCPv6, jalur admin, TCP. Firmware (OVMF) dapat memakai EUI-64 yang
+   sama sebelum boot. DAD hanya 2 probe 1 detik; tautan yang belum naik saat probe membuat DAD lolos tanpa bukti.
 
 ## 7. Aturan pengembangan yang menurunkan risiko
 

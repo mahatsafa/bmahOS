@@ -26,7 +26,7 @@ HOST_MAC = bytes.fromhex("020000000001")
 GUEST_IP = bytes([192, 168, 50, 200])
 CMD_PORT = 7778
 ECHO_PORT = 7777
-NC_DEF = "netcon=0\nnetcon_host=1\nnetcon_port=6666\ndhcp=0\n"   # + P3-4 (set dhcp 0)
+NC_DEF = "netcon=0\nnetcon_host=1\nnetcon_port=6666\ndhcp=0\nipv6=1\n"   # + P3-4 (set dhcp 0), F7 (ipv6=1 sampai test_ipv6)
 NC_MAC = bytes.fromhex("020000000099")
 DHCP_SRV = bytes([192, 168, 50, 1])
 BCAST_MAC = b"\xff" * 6
@@ -219,6 +219,156 @@ class Client:
             if nxt is None:
                 return out
         return None
+
+
+OUR6 = bytes.fromhex("fe800000000000005054" "00fffe123456")
+SN6 = bytes.fromhex("ff0200000000000000000001ff123456")
+ALL6 = bytes.fromhex("ff020000000000000000000000000001")
+SN_MAC = bytes.fromhex("3333ff123456")
+
+
+def peer6(n):
+    return bytes.fromhex("fe800000000000000000000000000000")[:15] + bytes([n])
+
+
+def ip6_cs(src, dst, nxt, l4):
+    return csum16(src + dst + struct.pack("!IBBBB", len(l4), 0, 0, 0, nxt) + l4)
+
+
+def ip6_frame(src, dst, nxt, l4, hop=64, dst_mac=GUEST_MAC, plen=None):
+    hdr = struct.pack("!IHBB", 0x60000000, len(l4) if plen is None else plen, nxt, hop) + src + dst
+    f = dst_mac + HOST_MAC + b"\x86\xdd" + hdr + l4
+    return f + b"\0" * max(0, 60 - len(f))
+
+
+def icmp6_frame(src, dst, typ, body, hop=64, bad=False, dst_mac=GUEST_MAC):
+    l4 = bytes([typ, 0, 0, 0]) + body
+    c = ip6_cs(src, dst, 58, l4) ^ (0x5A5A if bad else 0)
+    return ip6_frame(src, dst, 58, l4[:2] + struct.pack("!H", c) + l4[4:], hop, dst_mac)
+
+
+def udp6_frame(src, dst, sport, dport, data, bad=False):
+    u = struct.pack("!HHHH", sport, dport, 8 + len(data), 0) + data
+    c = ip6_cs(src, dst, 17, u) or 0xFFFF
+    if bad:
+        c ^= 0x5A5A
+    return ip6_frame(src, dst, 17, u[:6] + struct.pack("!H", c) + u[8:])
+
+
+def is6(f, nxt, typ=None):
+    return (len(f) >= 62 and f[12:14] == b"\x86\xdd" and f[20] == nxt and
+            (typ is None or f[54] == typ))
+
+
+def ip6_valid(f):
+    plen = struct.unpack("!H", f[18:20])[0]
+    return ip6_cs(f[22:38], f[38:54], f[20], f[54:54 + plen]) == 0
+
+
+def test_ipv6_dad(frames, log):
+    """F7 IPv6: dua probe DAD (NS dari ::) ke solicited-node, lalu 'DAD selesai' di serial."""
+    ns = [f for f in frames if is6(f, 58, 135)]
+    # >= 2: firmware (OVMF) bisa ikut mengirim NS DAD dengan EUI-64 yang sama sebelum kernel boot.
+    ok = (len(ns) >= 2 and all(f[0:6] == SN_MAC and f[22:38] == bytes(16) and f[38:54] == SN6 and
+                               f[21] == 255 and f[62:78] == OUR6 and ip6_valid(f) for f in ns))
+    check("F7 IPv6: boot: >= 2 probe DAD (NS dari :: ke ff02::1:ff12:3456, hop 255, target "
+          "fe80::5054:ff:fe12:3456, checksum sah)", ok, repr(len(ns)))
+    text = open(log, "rb").read()
+    check("F7 IPv6: serial: link-local + DAD mulai + DAD selesai aktif",
+          b"IPv6: link-local fe80::5054:ff:fe12:3456, DAD mulai" in text and
+          b"IPv6: DAD selesai, fe80::5054:ff:fe12:3456 aktif" in text)
+
+
+def test_ipv6(net, cli):
+    """F7 IPv6 (ipv6=1 dari boot pertama): ping6, ND, UDP echo, penolakan, batas laju."""
+    m0 = cli.metrics()
+    if m0 is None:
+        check("F7 IPv6: metrics sebelum uji", False)
+        return
+    a, b, c, d = peer6(1), peer6(2), peer6(3), peer6(4)
+    isecho = lambda f: is6(f, 58, 129)
+    net.drain()
+
+    # ping6: reply ke MAC pengirim, sumber kita, data sama, checksum sah.
+    net.send(icmp6_frame(a, OUR6, 128, b"\xbe\xef\x00\x01halo ping6"))
+    r = net.collect(3, isecho, limit=1)
+    check("F7 IPv6: echo request -> echo reply (MAC pengirim, hop 64, id/seq/data sama, checksum)",
+          len(r) == 1 and r[0][0:6] == HOST_MAC and r[0][22:38] == OUR6 and r[0][38:54] == a and
+          r[0][21] == 64 and r[0][58:72] == b"\xbe\xef\x00\x01halo ping6" and
+          ip6_valid(r[0]), repr(r[:1]))
+    # Rusak: checksum salah, hop NS != 255, tujuan multicast, TCP, header ekstensi, terpotong.
+    net.send(icmp6_frame(b, OUR6, 128, b"\0\1\0\1x", bad=True))
+    net.send(icmp6_frame(b, ALL6, 128, b"\0\1\0\2x"))
+    net.send(ip6_frame(b, OUR6, 6, bytes(20)))
+    net.send(ip6_frame(b, OUR6, 44, bytes(16)))
+    net.send(ip6_frame(b, OUR6, 58, bytes(8), plen=400))
+    net.send(icmp6_frame(b, OUR6, 135, bytes(4) + OUR6, hop=254))
+    got = net.collect(1.5, lambda f: is6(f, 58) or is6(f, 17))
+    check("F7 IPv6: checksum salah, multicast, TCP, fragmen, terpotong, NS hop 254: tanpa balasan",
+          not got, repr(got[:1]))
+
+    # NS dari tetangga dengan SLLA -> NA S|O dengan TLLA kita ke MAC SLLA.
+    slla = HOST_MAC
+    net.send(icmp6_frame(c, SN6, 135, bytes(4) + OUR6 + b"\x01\x01" + slla, hop=255,
+                         dst_mac=SN_MAC))
+    na = net.collect(3, lambda f: is6(f, 58, 136), limit=1)
+    check("F7 IPv6: NS (SLLA) -> NA (S|O, target kita, TLLA = MAC kita, hop 255, ke MAC SLLA)",
+          len(na) == 1 and na[0][0:6] == slla and na[0][21] == 255 and na[0][58] == 0x60 and
+          na[0][62:78] == OUR6 and na[0][78:80] == b"\x02\x01" and na[0][80:86] == GUEST_MAC and
+          na[0][38:54] == c and ip6_valid(na[0]), repr(na[:1]))
+    # NS untuk alamat lain: diam.
+    net.send(icmp6_frame(c, SN6, 135, bytes(4) + peer6(99) + b"\x01\x01" + slla, hop=255,
+                         dst_mac=SN_MAC))
+    net.send(icmp6_frame(c, SN6, 135, bytes(4) + OUR6 + b"\x01\x00" + slla, hop=255,
+                         dst_mac=SN_MAC))   # panjang opsi 0: rusak
+    got = net.collect(1.0, lambda f: is6(f, 58, 136))
+    check("F7 IPv6: NS untuk alamat lain / opsi rusak: tanpa NA", not got, repr(got[:1]))
+    # NA tak diminta tidak membuat entri tetangga; Redirect diabaikan.
+    net.send(icmp6_frame(d, ALL6, 136, b"\x20\0\0\0" + d + b"\x02\x01" + slla, hop=255))
+    net.send(icmp6_frame(d, OUR6, 137, bytes(36), hop=255))
+
+    # UDP echo 7777.
+    net.send(udp6_frame(a, OUR6, 5151, 7777, b"gema v6"))
+    r = net.collect(3, lambda f: is6(f, 17), limit=1)
+    check("F7 IPv6: UDP echo 7777: port ditukar, payload sama, checksum sah",
+          len(r) == 1 and struct.unpack("!HH", r[0][54:58]) == (7777, 5151) and
+          r[0][62:69] == b"gema v6" and r[0][22:38] == OUR6 and ip6_valid(r[0]), repr(r[:1]))
+    net.send(udp6_frame(b, OUR6, 5152, 7777, b"salah", bad=True))
+    net.send(udp6_frame(b, OUR6, 5153, 7778, b"uptime"))
+    net.send(udp6_frame(b, ALL6, 5154, 7777, b"mcast"))
+    got = net.collect(1.5, lambda f: is6(f, 17))
+    check("F7 IPv6: UDP checksum salah, port 7778 (perintah), tujuan multicast: tanpa balasan",
+          not got, repr(got[:1]))
+
+    # Batas laju per sumber (20/s): banjir 40 echo dari satu sumber.
+    time.sleep(1.2)
+    fl = peer6(50)
+    for i in range(40):
+        net.send(icmp6_frame(fl, OUR6, 128, b"\0\1" + struct.pack("!H", i) + b"f"))
+    n = len(net.collect(4, isecho))
+    check("F7 IPv6: banjir 40 echo dari satu sumber dibalas 20..30", 20 <= n <= 30, "balasan %d" % n)
+
+    time.sleep(1.2)
+    m1 = cli.metrics()
+    ipo = cli.cmd("ip")
+    if m1 is None:
+        check("F7 IPv6: metrics sesudah uji", False)
+        return
+    dl = lambda k: m1[k] - m0[k]
+    check("F7 IPv6: metrics: icmp6_echo >= 21, nd_na_tx 1, nd_bad >= 2, ip6_tcp_drop 1, "
+          "ip6_nxt_drop 1, ip6_badsum >= 2, udp6_echo 1, ip6_rate_drop >= 10, ip6_up 1",
+          dl("icmp6_echo") >= 21 and dl("nd_na_tx") == 1 and dl("nd_bad") >= 2 and
+          dl("ip6_tcp_drop") == 1 and dl("ip6_nxt_drop") == 1 and dl("ip6_badsum") >= 2 and
+          dl("udp6_echo") == 1 and dl("ip6_rate_drop") >= 10 and m1["ip6_up"] == 1 and
+          m1["ip6_dad_conflict"] == 0, repr({k: dl(k) for k in m1 if k.startswith(("ip6_", "icmp6", "nd_", "udp6"))}))
+    check("F7 IPv6: perintah ip: alamat link-local aktif + tetangga (hanya dari NS, bukan NA)",
+          ipo is not None and "ip6: fe80::5054:ff:fe12:3456 (aktif) tetangga=1/8\n" in ipo and
+          "  fe80::3 02:00:00:00:00:01\n" in ipo, repr(ipo))
+    r = cli.cmd("set ipv6 0")
+    r2 = cli.cmd("config")
+    check("F7 IPv6: set ipv6 0 tersimpan (berlaku boot berikutnya; CONFIG.CFG kanonik lagi)",
+          r == "OK ipv6=0 (tersimpan)\n" and r2 is not None and r2.endswith("dhcp=0\nipv6=0\n"),
+          repr((r, r2)))
 
 
 def test_fs_persist(net, cli):
@@ -1248,7 +1398,8 @@ def main():
             # rdseed/rdrand itu terjadi sebelum net task jalan, jadi tunggu keduanya.
             if os.path.exists(log):
                 text = open(log, "rb").read()
-                if b"net task dimulai" in text and b"Entropi: siap" in text:
+                if (b"net task dimulai" in text and b"Entropi: siap" in text and
+                        b"IPv6: link-local" in text):
                     break
             if time.time() > end:
                 print("timeout menunggu boot (rawnet)")
@@ -1256,6 +1407,10 @@ def main():
             time.sleep(0.5)
 
         net = Net(sock, ("127.0.0.1", qemu_port))
+        # F7 IPv6: probe DAD sudah/akan dikirim; kumpulkan semua frame 3,5 s (DISCOVER DHCP
+        # berikutnya datang tiap 2/4/8 s), baru kosongkan.
+        pre = net.collect(3.5, lambda f: True)
+        test_ipv6_dad(pre, log)
         net.drain()
         cli = Client(net, key, bytes([192, 168, 50, 1]))
 
@@ -1294,6 +1449,8 @@ def main():
         test_tcp_table(net, cli)
         time.sleep(1.2)
         test_cli_limit(net, cli)
+        time.sleep(1.2)
+        test_ipv6(net, cli)
 
         text = open(log, "rb").read().decode(errors="replace")
         check("rawnet: tanpa exception di log",
