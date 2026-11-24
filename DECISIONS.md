@@ -732,3 +732,45 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
   dalam 2 menit pertama; diperbaiki, seed di tests/fuzz/regress/net/udp6-pendek. Pelajaran sama dengan sntp_rx (R7-3).
 - **Belum terbukti:** VMware (MLD snooping tak ada di VMnet2; Windows memakai alamat sementara/privasi untuk sumber global tetapi link-local
   untuk fe80), perilaku dengan router/RA nyata, DAD saat tautan lambat naik, perangkat keras asli.
+
+## 2026-11-24 (F7: SSH; rencana disetujui pengguna, "setuju semua")
+
+- **SSH-2 minimal ditulis sendiri di kernel, primitif dari BearSSL.** Ini mengubah penolakan SSH di D8: alasan D8 (SSH
+  butuh libc/POSIX) berlaku untuk pustaka server yang ada (Dropbear, wolfSSH, TinySSH semuanya butuh proses/libc/pty), jadi
+  yang ditulis adalah lapisan protokol (RFC 4253/4252/4254), bukan primitif. Tidak ada primitif kripto baru: X25519
+  (`br_ec_c25519_m64`), ECDSA P-256 (`ecdsa_i31`), SHA-256, ChaCha20 (`chacha20_ct`), Poly1305 (`poly1305_ctmulq`), AES-128
+  CTR + GHASH (`aes_ct64`, `ghash_ctmul64`), HMAC_DRBG BearSSL di-seed `entropy_get`. Ditolak: menunda sampai userspace
+  bisa menjalankan Dropbear/TinySSH (berbulan-bulan: fork/exec/pty/libc). Risiko yang diterima: kesalahan komposisi
+  protokol oleh kita (dimitigasi: profil sempit, uji interop OpenSSH di `make test`, fuzz parser, review Opus).
+- **Profil sempit** (selain ini ditolak saat negosiasi):
+  kex `curve25519-sha256` (+ alias `curve25519-sha256@libssh.org`) dan `kex-strict-s-v00@openssh.com` (mitigasi Terrapin,
+  dipakai bila klien menawarkan `kex-strict-c-v00@openssh.com`; klien tanpa strict kex (OpenSSH < 9.6 tanpa
+  backport; versi `ssh.exe` Windows pengguna BELUM dicek) tetap diterima tetapi HANYA dengan `aes128-gcm@openssh.com`: Terrapin mengenai chacha20-poly1305 dan mode
+  EtM, bukan GCM);
+  kunci host `ecdsa-sha2-nistp256`; cipher `chacha20-poly1305@openssh.com` dan `aes128-gcm@openssh.com` (MAC implisit);
+  tanpa CBC/CTR+HMAC, tanpa kompresi, tanpa `ext-info`, tanpa rekey (koneksi ditutup setelah 2^28 paket atau 1 GB per arah;
+  KEXINIT kedua dari klien -> disconnect). Ed25519 tidak ada di BearSSL: kunci host dan kunci pengguna hanya P-256
+  (dependensi baru seperti Monocypher ditolak untuk sekarang).
+- **Port TCP 22** (`ssh admin@192.168.50.200` tanpa `-p`). Seperti 7780: selalu lolos filter P4 (jalur admin), entropi
+  belum siap -> SYN dibuang, tanpa kunci host -> SYN dibalas RST (gagal tertutup). Maks 2 sesi SSH (TCB port 22), aturan
+  penggusuran SYN_RCVD sama dengan 7779/7780; memakai tabel TCB umum. Login (kex + auth) harus selesai dalam 10 s sejak
+  ESTABLISHED; idle sesi = `cli_idle` seperti 7779/7780.
+- **Autentikasi: hanya `publickey`** (`ecdsa-sha2-nistp256`). Daftar kunci di disk: `SSHADM.PUB` (peran admin) dan
+  `SSHRO.PUB` (peran read-only), format satu baris `authorized_keys` per kunci (maks 4 kunci per file, baris lain
+  diabaikan dengan catatan serial). Kunci yang ada di kedua file -> SSHRO.PUB ditolak seluruhnya (seperti KEY == KEYRO
+  di D4), admin tetap jalan. Nama pengguna diabaikan (dicatat di audit, maks 16 byte). Maks 4
+  percobaan userauth per koneksi, lalu disconnect. Metode `none`/`password`/`keyboard-interactive` dijawab FAILURE
+  "publickey". Kunci HMAC (KEY.TXT) TIDAK dipakai SSH.
+- **Kunci host `SSHKEY.DER`** (EC P-256, DER SEC1 atau PKCS#8, dibuat openssl di CentOS), terpisah dari TLSKEY.DER supaya
+  identitas bisa diganti/dicabut sendiri-sendiri. Fingerprint `SHA256:<base64>` gaya OpenSSH di serial dan perintah `ssh`.
+  SSHKEY.DER, SSHADM.PUB, SSHRO.PUB dilindungi dari `baca`/`tulis`/`hapus`/`ganti` (ganti = tulis disk saat VM mati).
+- **Kanal: satu `session` per koneksi**, request `exec` (satu perintah, keluaran, `exit-status`, EOF, CLOSE) dan `shell`
+  (baris per baris, tanpa pty: `pty-req` dijawab FAILURE bila want-reply, `env`/`x11`/`agent`/port forwarding ditolak).
+  Perintah melewati jalur yang sama dengan 7779/7780 (daftar putih peran, `priv_cmd_execute`, keluaran maks
+  CMD_OUT_MAX), tanpa HMAC per perintah (kanal SSH sudah terautentikasi + MAC). Audit: kanal baru `ssh` (login, perintah,
+  gagal). Jendela kanal kecil (pengiriman ke kita <= 4 KB) supaya buffer statis.
+- **Memori statis**: per sesi buffer paket masuk 35000 byte (minimum RFC 4253 6.1), keluar ~4 KB, konteks kex sementara;
+  2 sesi ~80 KB .bss. Kex (X25519 + ECDSA sign) sinkron di net task seperti handshake TLS.
+- **Tahapan**: SSH-0 dokumen (ini), SSH-1 transport (versi, KEXINIT, kex, NEWKEYS, cipher, strict kex; uji host vektor +
+  `ssh` OpenSSH di qemu-smoke), SSH-2 userauth + kanal + audit + metrics `ssh_*` + perintah `ssh`, SSH-3 klien/dokumen +
+  uji VMware dengan `ssh.exe` Windows. Pola: Sonnet implementasi di branch `f7-ssh`, Opus review, uji VMware, merge ff.

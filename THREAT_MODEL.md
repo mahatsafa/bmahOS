@@ -73,6 +73,7 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
 | Soket TCP user (P5-2) | Peer menghabiskan slot koneksi atau memori; program menahan koneksi; data ke program | 2 slot TCB khusus (terpisah dari CLI/TLS/echo), SYN_RCVD tertua digusur, sisanya RST; ring statis 1024 + 1024 byte per koneksi (jendela = ruang ring masuk); TCB hanya diubah net task, syscall hanya menyentuh ring; fd milik task pembuat, ditutup saat task mati (FIN, atau RST bila data belum dibaca); listen ditutup -> koneksi yang belum di-accept di-RST; pointer user dicek; segmen lewat filter P4 dan batas per koneksi seperti port sistem |
 | Klien SNTP (P3-2), DNS (P3-3), DHCP (belum) | Balasan palsu menggeser jam / meracuni cache, parser nama DNS (pointer kompresi) | SNTP dan DNS hanya atas perintah admin, server di /24 sendiri, port sumber acak, SNTP: nonce 8 byte (transmit = originate), mode/versi/LI/stratum dicek; DNS: ID acak, pertanyaan harus identik, nama answer hanya dilompati (pointer tidak diikuti), batas label/panjang, cache statis 8 entri dengan TTL 5..3600 s; balasan lain diabaikan dan dihitung, batas waktu 3 s |
 | Sumber daya per task user (F7) | APP.BIN menguras CPU, membanjiri syscall (tiap panggilan jalan dengan interrupt mati; nomor tak dikenal mencetak serial), membanjiri SYS_WRITE (UART polling), menghabiskan 4 soket global, menunda net task | Prioritas: net task tertinggi, task user terendah, penuaan 20 tick mencegah kelaparan; per jendela 100 tick: CPU 50 tick (lewat = tidak dijadwalkan), syscall 500 dan byte tulis 4096 (lewat = -122 tanpa efek), soket 2 per task; 5 jendela beruntun melanggar (syscall/tulis lewat jatah atau syscall tak sah; CPU habis hanya dibatasi) = task dihentikan; baris log syscall ditolak dibatasi 4 per task per jendela; satu baris log per jenis, counter `res_*`. Sisa: CPU dicuplik per tick (task yang tidur tepat sebelum tick lolos), batas tidak bisa disetel dari disk, memori user tetap 2 halaman dari spawn |
+| SSH port 22 (F7) | Parser paket SSH (panjang, padding, string bersarang), downgrade/Terrapin, tebak kunci pengguna, MITM koneksi pertama, banjir kex | Profil tetap (curve25519-sha256, ecdsa-sha2-nistp256, chacha20-poly1305 hanya dengan strict kex, aes128-gcm); paket masuk maks 35000 byte, panjang/padding dicek sebelum dekripsi selesai dipakai, MAC diverifikasi sebelum isi diproses; hanya publickey P-256 dari SSHADM.PUB/SSHRO.PUB, maks 4 percobaan, login 10 s; maks 2 sesi; perintah lewat daftar putih peran + audit kanal `ssh`; tanpa pty/forwarding/agent/rekey; kunci host dan daftar kunci dilindungi dari perintah fs |
 | Jalur OTA | Kernel palsu | Tanda tangan digital + slot A/B + rollback (P7) |
 
 ## 5. Properti keamanan yang dituju
@@ -214,6 +215,14 @@ Parser adalah permukaan serangan terbesar karena memproses byte dari luar:
    solicited-node (bmahOS tidak mengirim laporan MLD); QEMU dan VMware tidak terpengaruh karena E1000 menerima multicast/promiscuous; tanpa RA/SLAAC global, DHCPv6, jalur admin, TCP. Firmware (OVMF) dapat memakai EUI-64 yang
    sama sebelum boot. DAD hanya 2 probe 1 detik; tautan yang belum naik saat probe membuat DAD lolos tanpa bukti.
 
+27. SSH port 22 (F7): lapisan protokol SSH-2 ditulis sendiri (primitif BearSSL); bug komposisi (urutan nomor paket, hash
+   pertukaran, batas panjang) adalah risiko utama, dimitigasi profil sempit + uji interop OpenSSH + fuzz. Kunci host
+   SSHKEY.DER dan daftar kunci pengguna SSHADM.PUB/SSHRO.PUB tersimpan polos di disk (penulis disk = admin, bagian 8).
+   Klien wajib memverifikasi fingerprint kunci host saat pertama kali (TOFU, `known_hosts`); tanpa itu MITM di LAN
+   pada koneksi pertama mungkin. Klien tanpa strict kex hanya mendapat aes128-gcm (Terrapin). Kex X25519 + tanda tangan
+   ECDSA dihitung sinkron di net task (banjir koneksi memperlambat jaringan; dibatasi 2 sesi + batas SYN per IP + batas
+   login 10 s). Port 22 selalu lolos filter P4. Tanpa rekey: koneksi diputus sebelum batas nomor paket/byte.
+
 ## 7. Aturan pengembangan yang menurunkan risiko
 
 - Semua panjang dari luar divalidasi **sebelum** dipakai untuk mengindeks atau menyalin.
@@ -248,7 +257,7 @@ Jika mesin ditempatkan di lokasi yang tidak aman secara fisik, putuskan ulang ba
 |---|---|
 | Di mana kunci HMAC disimpan dan bagaimana diganti? | D8: file di disk, ganti saat VM mati; ganti jarak jauh setelah D9 |
 | Perlukah satu kunci per pengguna/peran? | D4: satu kunci per peran (admin, read-only); per pengguna menyusul D5/D7 |
-| Enkripsi lewat SSH atau lapisan sendiri di atas library teruji? | D8: TLS 1.2 BearSSL (DECISIONS 2026-10-13) |
+| Enkripsi lewat SSH atau lapisan sendiri di atas library teruji? | D8: TLS 1.2 BearSSL (DECISIONS 2026-10-13); F7 SSH: SSH-2 minimal di kernel, port 22, publickey (DECISIONS 2026-11-24) |
 | Perlukah Secure Boot untuk mesin yang dipakai? | H0 |
 | Apakah jaringan tempat mesin berada dianggap tepercaya sebagian? | Sebelum P4 |
 

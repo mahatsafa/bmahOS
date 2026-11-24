@@ -120,6 +120,34 @@ dari `BMAHOS_TLS_PIN`; pin beda -> kode keluar 2 tanpa login) dan `client/bmtcp.
 dari `$BmPinFile`, default `%USERPROFILE%\.bmahos\tlspin.txt`). Uji: `tests/tls-login.py`, pcap di `make test`
 (`tests/pcap-check.py`: payload 7780 tanpa teks polos).
 
+## TCP 22: SSH-2 (F7, rencana SSH-0; implementasi SSH-1..SSH-3)
+
+Server SSH-2 minimal di kernel (net task), primitif BearSSL. Keputusan dan alasan: DECISIONS 2026-11-24.
+
+- Banner server `SSH-2.0-bmahOS_<versi>`; baris sebelum banner klien diabaikan (maks 8 baris, 255 byte).
+- Algoritme (selain ini -> disconnect "tidak ada algoritme yang cocok"):
+  - kex: `curve25519-sha256`, `curve25519-sha256@libssh.org`; `kex-strict-s-v00@openssh.com` diiklankan.
+  - kunci host: `ecdsa-sha2-nistp256` (SSHKEY.DER).
+  - cipher: `chacha20-poly1305@openssh.com` (hanya bila klien menawarkan `kex-strict-c-v00@openssh.com`),
+    `aes128-gcm@openssh.com`. MAC: tidak ada (implisit AEAD). Kompresi: `none`.
+- Paket masuk maks 35000 byte; KEXINIT kedua (rekey) -> disconnect; batas 2^28 paket atau 1 GB per arah -> disconnect.
+- Userauth: hanya `publickey` `ecdsa-sha2-nistp256` (query tanpa tanda tangan dijawab PK_OK), kunci dari
+  `SSHADM.PUB` (admin) / `SSHRO.PUB` (read-only), format `authorized_keys`, maks 4 kunci per file. Maks 4 percobaan,
+  batas 10 s sejak TCP ESTABLISHED sampai USERAUTH_SUCCESS. Nama pengguna bebas (dicatat di audit).
+- Kanal: satu `session`; `exec` = satu perintah (keluaran, `exit-status` 0 OK / 1 ERR, EOF, CLOSE); `shell` = baris
+  per baris tanpa pty dan tanpa echo, prompt `bmahOS> `, `exit` menutup. Perintah sama dengan 7779/7780 (peran
+  menentukan daftar putih), tanpa HMAC per perintah. `pty-req`, `env`, `x11-req`, forwarding, `auth-agent` ditolak.
+- Maks 2 sesi; entropi belum siap -> SYN dibuang; tanpa SSHKEY.DER sah -> port 22 tertutup (RST).
+
+Membuat kunci (CentOS/Windows; kunci privat pengguna tidak pernah keluar dari klien):
+
+```
+openssl ecparam -name prime256v1 -genkey -noout -outform DER -out SSHKEY.DER   # kunci host, ke disk bmahOS
+ssh-keygen -t ecdsa -b 256 -f ~/.ssh/bmahos_admin                               # kunci pengguna
+cat ~/.ssh/bmahos_admin.pub > SSHADM.PUB                                        # ke disk bmahOS
+ssh -i ~/.ssh/bmahos_admin admin@192.168.50.200 uptime
+```
+
 ## Audit log (D5)
 
 Perintah `audit` dan `audit gagal` (hanya admin: UDP 7778 jalur nonce atau sesi TCP admin;
