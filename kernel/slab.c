@@ -39,6 +39,7 @@ static uint64_t g_slab_base;
 static uint64_t g_slab_pml4;
 
 uint64_t g_slab_alloc, g_slab_free, g_slab_fail, g_slab_pages, g_slab_bad_free, g_slab_uaf;
+uint64_t g_slab_leak;   // SMP-2: frame yang dibocorkan karena shootdown TLB tidak lengkap
 
 static uint32_t slab_size_of(uint32_t c)
 {
@@ -221,8 +222,13 @@ int slab_free(void *p)
             }
         }
         if (other) {
-            vmm_unmap(g_slab_pml4, slab_vaddr(c, n));
-            pmm_free(pg->phys);
+            if (vmm_unmap(g_slab_pml4, slab_vaddr(c, n))) {
+                pmm_free(pg->phys);
+            } else {
+                // SMP-2: ada CPU yang belum membatalkan TLB: frame dibocorkan (bukan dipakai ulang).
+                g_slab_leak++;
+                kprintf("slab: frame dibocorkan (shootdown TLB tidak lengkap), total %lu\r\n", g_slab_leak);
+            }
             pg->phys = 0;
             pg->mapped = 0;
             g_slab_pages--;

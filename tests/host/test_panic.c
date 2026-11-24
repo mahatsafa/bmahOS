@@ -255,6 +255,19 @@ static void test_cmd(void)
     CHECK(g_panic_test_kind == 4);
     CHECK(exec("panic stackx") == 0);
 
+    // SMP-2 (dev): "panic ap" hanya bila AP menjalankan task; tidak memakai timer uji.
+    g_smp_sched_ok = 0;
+    CHECK(exec("panic ap") == 1);
+    CHECK_STR(g_out, "ERR: AP tidak menjalankan task\n");
+    CHECK(g_panic_ap_arm == 0);
+    g_smp_sched_ok = 1;
+    CHECK(exec("panic ap") == 1);
+    CHECK_STR(g_out, "panic: uji AP aktif (menunggu task user di AP)\n");
+    CHECK(g_panic_ap_arm == 1);
+    CHECK(exec("panic apx") == 0);
+    g_panic_ap_arm = 0;
+    g_smp_sched_ok = 0;
+
     g_panic_test_kind = -1;
     CHECK(exec("panic assert") == 1);
     CHECK_STR(g_out, "panic: uji assert dalam 1 detik\n");

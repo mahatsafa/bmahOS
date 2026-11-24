@@ -271,6 +271,26 @@ IRQ 33, 1
 # SMP-1: IPI uji dan IPI berhenti (panic). Nomor irq = nomor vektor (irq_handler memakai >= 240).
 IRQ 240, 240
 IRQ 241, 241
+# SMP-2: tick timer LAPIC (AP), IPI resched, IPI TLB shootdown.
+IRQ 239, 239
+IRQ 242, 242
+IRQ 243, 243
+
+# SMP-2: jendela idle BKL. Dipanggil TANPA BKL dan IF=0 (cpu_idle_once). Interrupt yang menyela
+# di bkl_idle_hlt atau bkl_idle_after (RIP tersimpan = salah satu label) diselesaikan ISR yang
+# melepas BKL lagi saat kembali ke sini (bkl_isr_leave). Jangan sisipkan instruksi di antara label.
+.global bkl_idle_wait
+.type bkl_idle_wait, @function
+bkl_idle_wait:
+    sti
+.global bkl_idle_hlt
+bkl_idle_hlt:
+    hlt
+.global bkl_idle_after
+bkl_idle_after:
+    cli
+    ret
+.size bkl_idle_wait, .-bkl_idle_wait
 
 # SMP-1: vektor spurious LAPIC (SVR = 0xFF). Interrupt spurious tidak boleh di-EOI; cukup kembali.
 .global isr_spurious

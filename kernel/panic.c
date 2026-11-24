@@ -19,7 +19,11 @@ extern char __text_end[];
 
 static volatile int g_panic_depth = 0;
 // SMP-1: CPU yang pertama panic (cmpxchg). CPU lain yang panic bersamaan langsung berhenti.
-static volatile int g_panic_cpu = -1;
+volatile int g_panic_cpu = -1;   // SMP-2: dibaca handler NMI (trap.c)
+volatile int g_panic_skip_io = 0;
+#ifndef BMAHOS_PROD
+volatile int g_panic_ap_arm = 0;   // SMP-2 (dev): lihat panic_test_execute
+#endif   // SMP-2: 1 = flush disk/NIC dilewati (BKL dipegang CPU lain saat panic)
 
 static const char *const g_exc_names[32] = {
     "#DE pembagian nol", "#DB debug", "NMI", "#BP breakpoint",
@@ -139,9 +143,7 @@ void panic_begin(void)
 
     if (!__atomic_compare_exchange_n(&g_panic_cpu, &expected, me, 0, __ATOMIC_SEQ_CST,
                                      __ATOMIC_SEQ_CST) && expected != me) {
-        for (;;) {
-            __asm__ volatile("cli; hlt");
-        }
+        smp_stop_self();   // SMP-2: dihitung sebagai CPU yang berhenti; tidak kembali
     }
     g_panic_depth++;
 
@@ -151,6 +153,14 @@ void panic_begin(void)
     serial_lock_reset();
     if (g_panic_depth == 1) {
         smp_panic_report();
+        // SMP-2: CPU lain yang memegang BKL baru saja dihentikan NMI di tengah kode kernel, mungkin di tengah
+        // operasi AHCI/E1000. Menyentuh perangkat itu lagi (flush log) bisa menggantung: dilewati.
+        int owner = g_bkl.owner;
+
+        if (owner >= 0 && owner != me) {
+            g_panic_skip_io = 1;
+            kprintf("PANIC: flush disk/NIC dilewati (BKL dipegang CPU %d saat panic)\r\n", owner);
+        }
     }
 
     if (g_panic_depth == 2) {
@@ -414,6 +424,17 @@ int panic_test_execute(const volatile uint8_t *cmd, uint32_t len)
     static const char *const cmds[7] = { "panic pf", "panic df", "panic ud", "panic assert",
                                          "panic stack", "panic smep", "panic smap" };
 
+    // SMP-2 (dev): "panic ap" = panic dipicu dari AP. Syscall dev SYS_CPU yang pertama kali dijalankan di CPU
+    // selain BSP (task uji cpuuji) memanggil panic_msg. Menguji panic di AP (NMI ke BSP, pemilik panic = AP).
+    if (net_cmd_is(cmd, len, "panic ap")) {
+        if (!g_smp_sched_ok) {
+            cmd_puts("ERR: AP tidak menjalankan task\n");
+            return 1;
+        }
+        g_panic_ap_arm = 1;
+        cmd_puts("panic: uji AP aktif (menunggu task user di AP)\n");
+        return 1;
+    }
     for (int i = 0; i < 7; i++) {
         if (!net_cmd_is(cmd, len, cmds[i])) {
             continue;

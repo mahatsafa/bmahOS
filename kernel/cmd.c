@@ -419,6 +419,10 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
                 cmd_puts(" strike=");
                 cmd_putdec(tasks[i].res_strikes);
             }
+            if (tasks[i].running_on >= 0) {   // SMP-2: CPU yang sedang menjalankan task ini
+                cmd_puts(" on=");
+                cmd_putdec((uint64_t)tasks[i].running_on);
+            }
             if (i == current_index) {
                 cmd_puts(" (menjalankan perintah ini)");
             }

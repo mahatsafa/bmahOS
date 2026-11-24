@@ -313,6 +313,10 @@ static const metric_t g_metrics[] = {
     MFN("smp_ipi_tx", smp_metric_ipi_tx),    // jumlah per-CPU
     MFN("smp_ipi_rx", smp_metric_ipi_rx),
     MFN("smp_irq_stray", smp_metric_stray),   // IRQ timer/NIC yang salah masuk ke AP (harus 0)
+    MFN("smp_switch_ap", smp_metric_switch_ap),   // F7 SMP-2: context switch di semua AP (> 0 = AP menjalankan task)
+    MFN("smp_tlb_shootdown", smp_metric_tlb),     // shootdown sinkron yang dikirim (ke >= 1 CPU)
+    MFN("smp_resched_ipi", smp_metric_resched),   // IPI resched ke AP idle
+    MFN("smp_bkl_spin", smp_metric_bkl_spin),     // putaran menunggu BKL (kasar, semua CPU)
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

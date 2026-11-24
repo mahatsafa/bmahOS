@@ -269,6 +269,9 @@ void netcon_poll(void)
 // Dari panic_begin/panic_finish (interrupt mati, net task tidak jalan).
 void netcon_panic_flush(void)
 {
+    if (g_panic_skip_io) {
+        return;   // SMP-2: BKL dipegang CPU lain saat panic: NIC mungkin terpotong di tengah operasi
+    }
     if (!g_netcon_on || g_nc_page_phys == 0 || !g_nc_mac_ok) {
         return;
     }

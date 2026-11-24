@@ -59,7 +59,8 @@ void vmm_map(uint64_t pml4, uint64_t va, uint64_t pa, uint64_t flags)
     g_maps++;
 }
 
-void vmm_unmap(uint64_t pml4, uint64_t va)
+int g_unmap_rc = 1;   // SMP-2: 0 = shootdown tidak lengkap (frame tak boleh dibebaskan)
+int vmm_unmap(uint64_t pml4, uint64_t va)
 {
     (void)pml4;
     if (!g_vmapped[pidx(va)]) {
@@ -67,6 +68,7 @@ void vmm_unmap(uint64_t pml4, uint64_t va)
     }
     g_vmapped[pidx(va)] = 0;
     g_unmaps++;
+    return g_unmap_rc;
 }
 
 static void reset(uint64_t frames)

@@ -19,12 +19,8 @@ static volatile struct limine_hhdm_request hhdm_request = {
 
 uint64_t hhdm_offset = 0;
 
-// Address space YANG DIPAKAI SEMUA task saat ini (kernel maupun
-// user) -- arsitektur sekarang belum isolasi per-proses (ditunda ke
-// Layer 8+, lihat catatan rencana). Diisi sekali di kmain() dari
-// read_cr3(), dipakai syscall (mis. sys_write) untuk validasi
-// pointer user lewat is_valid_user_ptr().
-uint64_t g_current_pml4_phys = 0;
+// SMP-2: g_current_pml4_phys kini makro (kernel.h): PML4 task yang berjalan di CPU ini
+// (tasks[cur_task_index()].pml4_phys), dipakai syscall untuk validasi pointer user.
 // Checkpoint spawn: PML4 kernel ASLI (hasil read_cr3() sekali di awal
 // boot), TIDAK PERNAH berubah setelah diisi -- beda dari
 // g_current_pml4_phys yang berubah tiap schedule() mengikuti task
@@ -445,12 +441,12 @@ void e1000_irq_service(void)
 // tidak pernah idle. Akan diganti IRQ E1000 via IOAPIC.
 // Task idle: tidak pernah blok. Task kernel baru mulai dengan IF=0 (lihat
 // Net-7), jadi sti dulu; hlt berhenti sampai interrupt berikutnya (tick).
+// SMP-2: idle tiap CPU memakai cpu_idle_once (bkl.c): lepas BKL, sti; hlt, ambil BKL lagi. Task dimulai
+// dengan BKL milik CPU ini (diwarisi context_switch) dan IF tak tentu: cpu_idle_once melakukan cli dulu.
 static void idle_task_entry(void)
 {
-    __asm__ volatile ("sti");
-
     for (;;) {
-        __asm__ volatile ("hlt");
+        cpu_idle_once();
     }
 }
 
@@ -494,6 +490,7 @@ extern const uint8_t user_udpgema_start[], user_udpgema_end[];   // userbin.S (P
 extern const uint8_t user_tcpgema_start[], user_tcpgema_end[];   // P5-2
 extern const uint8_t user_tcpklien_start[], user_tcpklien_end[];   // P5-3
 extern const uint8_t user_batas_start[], user_batas_end[];   // F7 (dev)
+extern const uint8_t user_cpuuji_start[], user_cpuuji_end[];   // SMP-2 (dev)
 
 static void net_task_entry(void)
 {
@@ -1023,7 +1020,6 @@ void kmain(void)
     }
 
     uint64_t pml4_phys = read_cr3();
-    g_current_pml4_phys = pml4_phys;
     g_kernel_pml4_phys = pml4_phys;
     serial_write("CR3 (PML4 physical addr): ");
     serial_write_hex(pml4_phys);
@@ -1370,7 +1366,29 @@ void kmain(void)
         // jatah soket task uji diturunkan ke 1 supaya jalur penolakan jatah teruji di QEMU.
         spawn(user_batas_start, (size_t)(user_batas_end - user_batas_start))->fd_max = 1;
     }
+    // SMP-2 (dev): task user CPU-bound yang melaporkan CPU-nya (syscall dev SYS_CPU = 13); dengan -smp 2
+    // bukti task user benar-benar jalan di AP. Paling akhir supaya slot lain tidak bergeser.
+    if (task_count < MAX_TASKS) {
+        spawn(user_cpuuji_start, (size_t)(user_cpuuji_end - user_cpuuji_start));
+    }
 #endif
+
+    // SMP-2: task idle untuk tiap AP yang akan menjalankan scheduler (timer LAPIC terkalibrasi). Dibuat
+    // PALING AKHIR supaya nomor slot lain tidak bergeser.
+    for (uint32_t i = 1; i < g_smp_ncpu && g_smp_sched_ok; i++) {
+        if (!g_cpus[i].online) {
+            continue;
+        }
+        if (task_count >= MAX_TASKS) {
+            kprintf("Idle: slot task penuh, CPU %u tanpa task idle (tidak menjalankan task)\r\n", i);
+            break;
+        }
+        task_create(&tasks[task_count], idle_task_entry, 4096);
+        tasks[task_count].prio = PRIO_IDLE;
+        g_cpus[i].idle = task_count;
+        kprintf("Idle: task idle CPU %u dibuat di slot %lu\r\n", i, (uint64_t)task_count);
+        task_count++;
+    }
 
     static task_t kernel_dummy_task;
     // current_index WAJIB di-set sebelum switch pertama -- kalau
@@ -1378,13 +1396,19 @@ void kmain(void)
     // akan baca task_count masih 0 dan tidak melakukan apa-apa (aman,
     // guard menangani ini), tapi index harus tetap benar sebelum
     // context_switch pertama terjadi.
-    current_index = 0;
+    g_cpus[0].current = 0;
+    g_cpus[0].idle = g_idle_index;
+    g_cpus[0].cr3 = tasks[0].pml4_phys;
+    tasks[0].running_on = 0;
     // scheduler_started WAJIB true SEBELUM context_switch pertama --
     // sejak titik ini, RSP yang berjalan adalah RSP task_a yang valid
     // (hasil task_create()), BUKAN lagi stack kmain(). Kalau timer
     // masuk setelah ini, schedule() boleh mulai menyimpan/memuat
     // context task dengan aman.
+    __asm__ volatile ("cli");   // SMP-2: tick tak boleh menyelip antara sched_on dan context_switch pertama
     scheduler_started = true;
+    g_cpus[0].sched_on = 1;
+    smp_sched_release();   // SMP-2: AP yang punya idle task boleh masuk scheduler
     context_switch(&kernel_dummy_task.rsp, tasks[0].rsp, tasks[0].pml4_phys);
 
     serial_write("ERROR: kembali ke kmain() setelah task selesai (tidak diharapkan)\r\n");

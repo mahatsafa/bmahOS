@@ -27,9 +27,15 @@ WEAK uint64_t serial_lock(void) { return 0; }
 WEAK void serial_unlock(uint64_t flags) { (void)flags; }
 WEAK void serial_lock_reset(void) {}
 WEAK int cpu_index(void) { return 0; }
+WEAK int tlb_shootdown(uint64_t pml4_phys, uint64_t vaddr, uint32_t npages) { (void)pml4_phys; (void)vaddr; (void)npages; return 1; }   // SMP-2
 WEAK void smp_panic_stop_others(void) {}
+WEAK void smp_stop_self(void) { abort(); }   // SMP-2: panic kedua / NMI; tak dipanggil di host
 WEAK void smp_panic_report(void) {}
 WEAK volatile uint64_t timer_ticks = 0;
+WEAK bkl_t g_bkl = { 0, 0, -1 };   // SMP-2
+WEAK volatile int g_panic_skip_io = 0;
+WEAK volatile int g_smp_sched_ok = 0;
+WEAK uint64_t g_bsp_bkl_wait_tsc = 0;
 
 WEAK void serial_putc(char c)
 {

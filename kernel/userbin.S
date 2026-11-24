@@ -20,4 +20,9 @@ user_tcpklien_end:
 user_batas_start:
     .incbin "build/user/batas.bin"   // F7 (dev): pelanggar batas sumber daya
 user_batas_end:
+    .global user_cpuuji_start
+    .global user_cpuuji_end
+user_cpuuji_start:
+    .incbin "build/user/cpuuji.bin"   // SMP-2 (dev): lapor CPU lewat syscall 13
+user_cpuuji_end:
     .section .note.GNU-stack,"",@progbits

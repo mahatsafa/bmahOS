@@ -34,7 +34,12 @@ _Static_assert(
 #define SYS_SEND     10
 #define SYS_RECV     11
 #define SYS_CONNECT  12   // P5-3: klien TCP
+#ifndef BMAHOS_PROD
+#define SYS_CPU      13   // SMP-2 (dev): indeks CPU yang menjalankan syscall (bukti task user jalan di AP)
+#define SYSCALL_COUNT 14
+#else
 #define SYSCALL_COUNT 13
+#endif
 
 static uint64_t sys_test(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4)
 {
@@ -118,6 +123,19 @@ typedef struct {
     bool has_user_ptr;  // arg0=user_ptr, arg1=len; validate before dispatch
 } syscall_desc_t;
 
+#ifndef BMAHOS_PROD
+// SMP-2 (dev): rdtscp (TSC_AUX = indeks CPU, tak bisa diubah ring 3) lewat cpu_index(). Tunduk pada jatah
+// syscall per jendela seperti syscall lain.
+static uint64_t sys_cpu(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4;
+    if (g_panic_ap_arm && cpu_index() != 0) {
+        panic_msg("uji panic dari AP (syscall dev)");   // SMP-2: perintah dev `panic ap`
+    }
+    return (uint64_t)cpu_index();
+}
+#endif
+
 static const syscall_desc_t syscall_table[SYSCALL_COUNT] = {
     [SYS_TEST]  = { sys_test,  false },
     [SYS_WRITE] = { sys_write, true  },
@@ -132,6 +150,9 @@ static const syscall_desc_t syscall_table[SYSCALL_COUNT] = {
     [SYS_SEND]     = { sock_sys_send,     false },
     [SYS_RECV]     = { sock_sys_recv,     false },
     [SYS_CONNECT]  = { sock_sys_connect,  false },
+#ifndef BMAHOS_PROD
+    [SYS_CPU]      = { sys_cpu,           false },
+#endif
 };
 
 // Dispatch syscall (int 0x80). context->rax = nomor syscall saat
@@ -222,7 +243,7 @@ static void syscall_handler(struct exception_context *context)
     );
 }
 
-void exception_dispatcher(struct exception_context *context)
+static void exception_body(struct exception_context *context)
 {
     if (context->vector == 128)
     {
@@ -248,13 +269,38 @@ void exception_dispatcher(struct exception_context *context)
     // R1: dump register + stack trace + reboot otomatis (panic.c).
     panic_exception(context);
 }
+
+// SMP-2: semua exception/syscall berjalan di bawah BKL (bkl.c). NMI TIDAK mengambil BKL: bila ada
+// panic di CPU lain, CPU ini berhenti selamanya (smp_stop_self); NMI di luar panic ke jalur lama.
+void exception_dispatcher(struct exception_context *context)
+{
+    // Sudah ada panic: CPU lain (NMI atau exception sendiri) berhenti, TANPA mengambil BKL (pemiliknya
+    // mungkin sudah dihentikan NMI: menunggu BKL = berputar selamanya). CPU pemilik panic (exception
+    // bersarang di dalam panic handler) langsung ke exception_body supaya jaminan reboot R1 tetap ada.
+    int pc = g_panic_cpu;
+
+    if (pc >= 0) {
+        if (pc != cpu_index()) {
+            smp_stop_self();   // tidak kembali
+        }
+        exception_body(context);
+        return;
+    }
+    if (context->vector == 2) {
+        exception_body(context);   // NMI biasa tanpa panic: jalur lama (panic)
+        return;
+    }
+    bkl_isr_enter();
+    exception_body(context);
+    bkl_isr_leave(context);
+}
 volatile uint64_t timer_ticks = 0;
 
 // Dipanggil dari irq_common_stub (kernel/interrupt.S) untuk SEMUA
 // IRQ. Beda dari exception_dispatcher: TIDAK boleh halt permanen,
 // dan WAJIB kirim EOI ke PIC di akhir supaya interrupt berikutnya
 // bisa masuk.
-void irq_handler(struct exception_context *context)
+static void irq_body(struct exception_context *context)
 {
     uint64_t irq_num = context->vector;
     int res_kill = 0;
@@ -268,6 +314,40 @@ void irq_handler(struct exception_context *context)
     if (irq_num == SMP_VEC_STOP) {
         smp_stop_self();   // tidak kembali
     }
+    if (irq_num == SMP_VEC_TLB) {   // SMP-2: tanpa BKL; hanya invlpg + ack
+        tlb_ipi_rx();
+        lapic_send_eoi();
+        return;
+    }
+    if (irq_num == SMP_VEC_RESCHED) {   // SMP-2: bangunkan CPU idle (BKL sudah diambil wrapper)
+        smp_resched_rx();
+        lapic_send_eoi();
+        schedule();
+        return;
+    }
+    if (irq_num == SMP_VEC_LTIMER) {   // SMP-2: tick lokal AP (~100 Hz). BSP tetap memakai IRQ0 PIT.
+        cpu_t *c = this_cpu();
+        int ci = (int)c->index;
+        int kill = 0;
+
+        if (ci != 0 && c->sched_on) {
+            size_t cur = c->current;
+
+            c->ltick++;
+            if (cur < task_count) {
+                // Jatah CPU task user dihitung di CPU yang menjalankannya (cuplik current per CPU).
+                kill = res_tick(&tasks[cur], cur, timer_ticks, (context->cs & 3) == 3) == RES_KILL;
+            }
+            lapic_send_eoi();
+            if (kill) {
+                task_exit();   // batas sumber daya dilanggar terus (tidak kembali)
+            }
+            schedule();
+        } else {
+            lapic_send_eoi();
+        }
+        return;
+    }
 
     // SMP-1: IRQ timer/NIC hanya boleh sampai ke BSP (IOAPIC diarahkan ke ID LAPIC BSP).
     // Bila masuk ke CPU lain: hitung (smp_irq_stray), EOI, abaikan (jangan menyentuh task/scheduler).
@@ -279,6 +359,7 @@ void irq_handler(struct exception_context *context)
 
     if (irq_num == 0) {
         timer_ticks++;
+        g_cpus[0].ltick++;
         metrics_cpu_tick(current_index == g_idle_index);   // R3
         entropy_event(ENTROPY_SRC_TIMER, 0);
         net_rx_tick_wake();
@@ -432,4 +513,38 @@ static void trigger_overflow(void)
     // pernah mengirimnya lewat jalur lain), tapi sengaja tidak
     // ditest aktif karena tidak ada mekanisme software valid untuk
     // memicunya di long mode.
+}
+
+// SMP-2: vektor yang tidak menyentuh data bersama tidak mengambil BKL (bkl.c, I5). Resched/tick
+// LAPIC hanya bila scheduler CPU ini sudah hidup (sebelum itu: abaikan, EOI saja).
+static int irq_wants_bkl(uint64_t v)
+{
+    switch (v) {
+    case SMP_VEC_IPI_TEST:
+    case SMP_VEC_STOP:
+    case SMP_VEC_TLB:
+        return 0;
+    case SMP_VEC_RESCHED:
+    case SMP_VEC_LTIMER:
+        return this_cpu()->sched_on;
+    default:
+        break;
+    }
+    if (v <= 1 && g_smp_online > 1 && cpu_index() != 0) {
+        return 0;   // IRQ liar di AP: hitung + EOI saja (irq_body)
+    }
+    return 1;
+}
+
+void irq_handler(struct exception_context *context)
+{
+    int bkl = irq_wants_bkl(context->vector);
+
+    if (bkl) {
+        bkl_isr_enter();
+    }
+    irq_body(context);
+    if (bkl) {
+        bkl_isr_leave(context);
+    }
 }

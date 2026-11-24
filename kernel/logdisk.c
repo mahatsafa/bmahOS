@@ -294,8 +294,8 @@ void logdisk_poll(void)
 // Dilewati bila disk sedang dipakai (panic di tengah I/O) atau bersarang.
 void logdisk_sync(int panic)
 {
-    if (g_ld_state != LD_ON || g_ld_in_sync || g_ahci_busy) {
-        return;
+    if (g_ld_state != LD_ON || g_ld_in_sync || g_ahci_busy || g_panic_skip_io) {
+        return;   // g_panic_skip_io (SMP-2): BKL dipegang CPU lain saat panic, AHCI mungkin terpotong
     }
     g_ld_in_sync = 1;
     for (int i = 0; i < LD_SYNC_MAX; i++) {

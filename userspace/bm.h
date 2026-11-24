@@ -22,6 +22,7 @@ typedef long bm_i64;
 #define BM_SYS_SEND     10
 #define BM_SYS_RECV     11
 #define BM_SYS_CONNECT  12   // P5-3: TCP klien
+#define BM_SYS_CPU      13   // SMP-2 (hanya build dev): indeks CPU yang menjalankan syscall
 
 #define BM_SOCK_TCP     1
 #define BM_SOCK_UDP     2
@@ -113,6 +114,12 @@ static inline bm_i64 bm_sendto(bm_i64 fd, const void *buf, bm_u64 len, bm_u64 ad
 static inline bm_i64 bm_recvfrom(bm_i64 fd, void *buf, bm_u64 cap, bm_u64 *from, bm_u64 timeout)
 {
     return bm_sys5(BM_SYS_RECVFROM, (bm_u64)fd, (bm_u64)buf, cap, (bm_u64)from, timeout);
+}
+
+// SMP-2 (hanya kernel dev): indeks CPU yang menjalankan syscall ini; di build PROD -1 (syscall tak dikenal).
+static inline bm_i64 bm_cpu(void)
+{
+    return bm_sys5(BM_SYS_CPU, 0, 0, 0, 0, 0);
 }
 
 static inline bm_i64 bm_close(bm_i64 fd)

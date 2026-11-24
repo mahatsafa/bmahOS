@@ -290,14 +290,14 @@ extern uint64_t kheap_mapped_end;
 // satu halaman guard yang tidak dipetakan; stack tidak pernah dibebaskan.
 #define KSTACK_START      (KHEAP_START + 0x4000000000ULL)   // kheap + 256 GB
 #define KSTACK_REGION     0x100000ULL                       // 1 MB virtual
-#define KSTACK_MAX_STACKS 16
+#define KSTACK_MAX_STACKS 26   // SMP-2: 16 -> 26 (dev dengan PROG.BIN sudah 16/16; + cpuuji + 7 idle AP = 24 <= 26)
 #define KSTACK_PAD        16   // byte nol di puncak: rsp0 = dasar + ukuran - KSTACK_PAD
 uint64_t kstack_alloc(uint64_t size);   // alamat dasar (rendah), 0 = gagal
 int kstack_guard_find(uint64_t addr, uint64_t *lo, uint64_t *top);
 uint64_t read_cr3(void);
 void vmm_dump_pml4(uint64_t pml4_phys);
 void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t flags);
-void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr);
+int vmm_unmap(uint64_t pml4_phys, uint64_t vaddr);   // SMP-2: 0 = shootdown belum lengkap, frame JANGAN dibebaskan
 int vmm_nx_of(uint64_t pml4_phys, uint64_t vaddr);
 uint64_t vmm_alloc_user_frame(void);
 uint64_t vmm_phys_of(uint64_t pml4_phys, uint64_t vaddr);
@@ -618,9 +618,13 @@ int filter_ipv4(const volatile uint8_t *buf, uint32_t ihl, uint32_t payload_len)
 int filter_execute(const volatile uint8_t *cmd, uint32_t len);                    // 1 = ditangani
 
 // ---- smp.c (F7 SMP-1: AP hidup, IPI, per-CPU; task tetap hanya di BSP) ----
+struct exception_context;
 #define MAX_CPUS          8
+#define SMP_VEC_LTIMER    239   // SMP-2: tick timer LAPIC lokal AP (~100 Hz); BSP tetap PIT/IRQ0
 #define SMP_VEC_IPI_TEST  240   // IPI uji: AP menaikkan ipi_rx lalu EOI
-#define SMP_VEC_STOP      241   // IPI berhenti (panic): cli; hlt selamanya
+#define SMP_VEC_STOP      241   // (SMP-1, tak dipakai lagi: panic berhenti lewat NMI)
+#define SMP_VEC_RESCHED   242   // SMP-2: bangunkan CPU idle supaya menjalankan schedule()
+#define SMP_VEC_TLB       243   // SMP-2: TLB shootdown (handler TIDAK mengambil BKL)
 typedef struct {
     volatile uint32_t go;       // OFFSET 0 (dibaca smp_park_stub): != 0 = AP boleh lanjut
     uint32_t index;
@@ -632,6 +636,19 @@ typedef struct {
     uint64_t df_top;            // stack IST1 (#DF)
     struct gdt_entry gdt[7];    // AP saja; BSP memakai bmahOS_gdt/bmahOS_tss
     struct tss tss;
+    // ---- SMP-2: scheduler per CPU. Semua field ini ditulis hanya oleh pemegang BKL, kecuali
+    // sched_go (BSP, atomik) dan kick (atomik). ----
+    volatile uint32_t halted;   // SMP-2: sudah dihitung di g_smp_halted (sekali per CPU)
+    volatile uint32_t sched_go; // BSP: AP boleh masuk scheduler (idle task AP sudah dibuat)
+    volatile uint32_t sched_on; // CPU ini menjalankan scheduler
+    volatile uint32_t kick;     // IPI resched sudah terkirim dan belum diterima (batasi banjir IPI)
+    size_t current;             // slot task yang berjalan di CPU ini
+    size_t idle;                // slot task idle CPU ini ((size_t)-1 = belum ada)
+    uint64_t cr3;               // CR3 yang dimuat CPU ini (untuk keputusan shootdown)
+    uint64_t switches;          // context switch di CPU ini
+    uint64_t ltick;             // tick lokal (BSP: tick PIT; AP: tick timer LAPIC)
+    uint64_t bkl_spin;          // putaran menunggu BKL (kasar)
+    uint64_t resched_rx;        // IPI resched yang diterima
 } cpu_t;
 extern cpu_t g_cpus[MAX_CPUS];
 extern volatile uint32_t g_smp_ncpu, g_smp_online, g_smp_halted;
@@ -643,13 +660,88 @@ extern volatile uint64_t g_smp_stray;   // IRQ timer/NIC masuk ke CPU selain BSP
 uint64_t smp_metric_stray(void);
 void smp_ipi_rx(void);               // irq_handler: vektor SMP_VEC_IPI_TEST
 void smp_stop_self(void) __attribute__((noreturn));   // irq_handler: vektor SMP_VEC_STOP
-void smp_panic_stop_others(void);    // panic_begin: sekali, kirim IPI berhenti
+void smp_panic_stop_others(void);    // panic_begin: sekali, NMI ke CPU lain, tunggu berbatas TSC
+extern volatile int g_panic_cpu;     // panic.c: CPU pemilik panic, -1 = tidak ada panic
 uint64_t smp_metric_cpus(void);
 uint64_t smp_metric_online(void);
 uint64_t smp_metric_ipi_tx(void);
 uint64_t smp_metric_ipi_rx(void);
 void smp_list(void (*out)(const char *));   // perintah `cpu`
 extern void isr_spurious(void);
+// SMP-2
+uint64_t smp_metric_switch_ap(void);
+uint64_t smp_metric_tlb(void);
+uint64_t smp_metric_resched(void);
+uint64_t smp_metric_bkl_spin(void);
+extern volatile int g_smp_sched_ok;     // 1 = timer LAPIC terkalibrasi, AP boleh menjalankan task
+void smp_sched_release(void);           // kmain: beri tanda go ke AP (sesudah scheduler_started)
+void smp_kick_idle(int user);           // IPI resched ke CPU idle: user=1 semua CPU lain, user=0 hanya BSP (task kernel)
+void smp_resched_rx(void);              // irq_handler: vektor SMP_VEC_RESCHED
+void smp_ltimer_start(void);            // AP: nyalakan timer LAPIC periodik
+int tlb_shootdown(uint64_t pml4_phys, uint64_t vaddr, uint32_t npages);   // sinkron, berbatas waktu; 0 = ada CPU belum ack (JANGAN bebaskan frame)
+void tlb_service(void);                 // CPU tujuan: invlpg + ack. TIDAK mengambil BKL
+void tlb_ipi_rx(void);                  // irq_handler: vektor SMP_VEC_TLB
+extern void smp_ap_idle_start(cpu_t *c);   // smp.c: AP masuk scheduler (tidak kembali)
+static inline uint64_t tsc_read(void)
+{
+#ifdef BMAHOS_HOST_TEST
+    return 0;
+#else
+    uint32_t lo, hi;
+
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+#endif
+}
+extern volatile uint32_t g_tscaux_ok;   // 1 = cpu_index() memakai TSC_AUX (rdtscp)
+
+// ---- bkl.c (SMP-2: Big Kernel Lock) ----
+typedef struct {
+    volatile uint32_t next;     // tiket berikutnya
+    volatile uint32_t serving;  // tiket yang sedang dilayani
+    volatile int owner;         // indeks CPU pemilik, -1 = bebas
+} bkl_t;
+#define BKL_INIT_BSP { 1, 0, 0 }   // BSP memegang sejak boot (tiket 0 sudah terpakai, dilayani 0)
+// tsc_limit > 0: menyerah (return 0, tiket tak dipakai lagi: pemanggil WAJIB panic) bila menunggu lebih dari
+// sekian siklus TSC. 0 = tanpa batas. Return 1 = kunci didapat.
+int bkl_core_lock(bkl_t *l, int cpu, void (*poll)(void), uint64_t *spins, uint64_t tsc_limit);
+void bkl_core_unlock(bkl_t *l, int cpu);
+int bkl_core_held(const bkl_t *l, int cpu);
+int bkl_exit_releases(uint64_t cs, uint64_t rip, uint64_t idle_lo, uint64_t idle_hi);
+extern bkl_t g_bkl;
+// SMP-2 (review): permintaan TLB shootdown dengan nomor urut (seqlock) dan ack per CPU yang membawa nomor urut:
+// CPU tujuan tidak pernah membaca va/npages dua permintaan yang bercampur, dan ack lama tidak bisa dihitung
+// untuk permintaan baru. seq genap = stabil, ganjil = sedang ditulis. Murni (diuji host).
+typedef struct {
+    volatile uint32_t busy;
+    volatile uint64_t seq;
+    uint64_t va;
+    uint32_t npages;
+    volatile uint32_t need;                 // bitmask CPU yang harus menjawab
+    volatile uint64_t ack[MAX_CPUS];        // nomor urut permintaan yang terakhir dijawab tiap CPU
+} tlbreq_t;
+uint64_t tlbreq_begin(tlbreq_t *r, uint64_t va, uint32_t npages, uint32_t mask);   // return seq genap
+int tlbreq_take(tlbreq_t *r, int cpu, uint64_t *va, uint32_t *npages, uint64_t *seq);   // 1 = harus flush lalu ack
+void tlbreq_ack(tlbreq_t *r, int cpu, uint64_t seq);
+uint32_t tlbreq_missing(const tlbreq_t *r, uint32_t mask, uint64_t seq);   // CPU dalam mask yang belum menjawab seq
+void tlbreq_end(tlbreq_t *r);
+int smp_halt_mark(volatile uint32_t *flag, volatile uint32_t *counter);   // 1 = pertama kali CPU ini ditandai berhenti
+cpu_t *this_cpu(void);             // cpu_t CPU ini; panic bila indeks CPU tak dikenal (bukan jatuh ke CPU 0)
+#ifndef BMAHOS_PROD
+extern volatile int g_panic_ap_arm;    // SMP-2 (dev): "panic ap"
+#endif
+extern volatile int g_panic_skip_io;   // panic.c: flush disk/NIC dilewati (BKL dipegang CPU lain saat panic)
+extern uint64_t g_bsp_bkl_wait_tsc;    // batas tunggu BKL untuk BSP (siklus TSC), 0 = belum terkalibrasi
+void bkl_wait_panic(int owner);        // BSP menunggu BKL terlalu lama: panic jelas
+void bkl_lock(void);               // IF harus 0
+void bkl_unlock(void);
+int bkl_held(void);                // CPU ini pemilik BKL
+void bkl_isr_enter(void);          // awal ISR yang menyentuh data bersama
+void bkl_isr_leave(const struct exception_context *c);   // akhir ISR (sebelum iretq)
+void bkl_idle_wait(void);          // asm: sti; hlt; cli (dipanggil TANPA BKL, IF=0)
+void bkl_to_user(void);            // lepas BKL sebelum enter_usermode (cli dulu)
+void cpu_idle_once(void);          // satu putaran idle: lepas BKL, tidur, ambil lagi
+extern char bkl_idle_hlt[], bkl_idle_after[];
 
 // ---- apic.c (Local APIC + IOAPIC) ----
 #define LAPIC_VIRT  0xFFFF910000000000ULL
@@ -663,6 +755,10 @@ uint32_t lapic_id_self(void);
 void lapic_enable_this_cpu(void);
 int lapic_send_ipi(uint32_t lapic_id, uint8_t vector);
 int lapic_send_ipi_others(uint8_t vector);   // semua CPU kecuali pengirim (shorthand)
+int lapic_send_nmi(uint32_t lapic_id);        // SMP-2: NMI ke satu CPU (panic)
+void lapic_timer_start(uint32_t initial, int periodic, int masked, uint8_t vector);   // SMP-2 (pembagi 16)
+uint32_t lapic_timer_count(void);
+void lapic_timer_stop(void);
 uint32_t ioapic_read(uint32_t reg);
 void ioapic_write(uint32_t reg, uint32_t value);
 void apic_enable_local_apic(uint64_t pml4_phys);
@@ -1070,7 +1166,7 @@ extern uint64_t g_audit_seq;    // audit.c: nomor urut entri terakhir
 void net_udp_send_cmd_reply(volatile uint8_t *req, uint32_t ihl);
 
 // ---- sched.c (task, scheduler, semaphore, user task, spawn) ----
-#define MAX_TASKS 15   // P5-4: 13 -> 14 (slot dev: 8 task uji + udpgema + tcpgema + tcpklien + net + idle
+#define MAX_TASKS 23   // SMP-2: 15 -> 23 (+ task uji cpuuji dev + MAX_CPUS-1 = 7 task idle AP, dibuat paling akhir supaya nomor slot lain tetap). Sebelumnya 15: P5-4: 13 -> 14 (slot dev: 8 task uji + udpgema + tcpgema + tcpklien + net + idle
                       // + APP.BIN; PROD: net + idle + APP.BIN). F7: 14 -> 15 (+ task uji batas, dev,
                       // sesudah APP.BIN supaya nomor slot lain tidak bergeser). KSTACK_MAX_STACKS 16:
                       // build dev dengan PROG.BIN (FAT32-4B) sudah memakai 16/16, tanpa sisa.
@@ -1140,13 +1236,27 @@ typedef struct {
     uint32_t res_supp;       // baris log syscall ditolak yang ditekan sejak baris terakhir
     uint32_t fd_max;         // jatah soket task ini (RES_FD_MAX; dev menurunkan untuk task uji)
     uint64_t cpu_total, sys_total, deny_total;   // seumur task (tampil di `tasks`)
+    // SMP-2: CPU yang sedang menjalankan task ini (-1 = tidak ada). Ditulis hanya di bawah BKL
+    // (schedule). Satu task tidak pernah jalan di dua CPU: prio_pick melewati yang running_on lain.
+    int running_on;
+    // SMP-2: rentang stack kernel task (untuk cur_task_index(): "task saya" dari RSP, tahan migrasi CPU).
+    uint64_t kstk_lo, kstk_hi;
 } task_t;
 
 extern task_t tasks[MAX_TASKS];
 extern size_t task_count;
 extern size_t g_idle_index;
 extern volatile bool scheduler_started;
+#ifndef BMAHOS_HOST_TEST
+// SMP-2: "task yang sedang jalan" per CPU. Dicari dari RSP (tiap task punya stack kernel sendiri), bukan
+// dari indeks CPU: kode kernel boleh dipreempt lalu pindah CPU di tengah ekspresi, tetapi stack-nya ikut.
+// Hanya BACA. Menulis (schedule/kmain) lewat g_cpus[i].current.
+size_t cur_task_index(void);
+#define current_index (cur_task_index())
+#define g_current_pml4_phys (tasks[cur_task_index()].pml4_phys)
+#else
 extern size_t current_index;
+#endif
 extern void context_switch(uint64_t *old_rsp_ptr, uint64_t new_rsp, uint64_t new_pml4_phys);
 void task_create(task_t *task, void (*entry_function)(void), uint64_t stack_size);
 void task_create_user(task_t *task, uint64_t pml4_phys, uint64_t user_code_vaddr, uint64_t user_stack_vaddr, uint64_t kernel_stack_size, const uint8_t *code, size_t code_len);
@@ -1196,6 +1306,7 @@ void task_b_entry(void);
 extern uint64_t g_res_fd_deny, g_res_sys_deny, g_res_wr_deny, g_res_cpu_win, g_res_killed, g_sched_aged;
 void prio_init_task(task_t *t, uint8_t prio, uint64_t now);
 size_t prio_pick(task_t *t, size_t n, size_t cur, size_t idle, uint64_t now);
+size_t prio_pick_cpu(task_t *t, size_t n, size_t cur, size_t idle, uint64_t now, int cpu);   // SMP-2
 void prio_reset(void);
 int res_tick(task_t *t, size_t slot, uint64_t now, int in_user);
 int res_syscall(task_t *t, size_t slot, uint64_t now, int kind, uint64_t len);
@@ -1208,7 +1319,9 @@ const char *prio_name(uint8_t prio);
 
 // ---- kernel.c: dipakai sched.c ----
 extern void enter_usermode(uint64_t entry_vaddr, uint64_t user_stack_top);
+#ifdef BMAHOS_HOST_TEST
 extern uint64_t g_current_pml4_phys;
+#endif
 extern uint64_t g_kernel_pml4_phys;
 
 

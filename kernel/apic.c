@@ -19,6 +19,13 @@
 #define LAPIC_ICR_ASSERT  (1u << 14)
 #define LAPIC_ICR_OTHERS  (3u << 18)
 #define LAPIC_IPI_SPIN    200000
+#define LAPIC_ICR_NMI     (4u << 8)    // SMP-2: delivery mode NMI
+#define LAPIC_REG_LVT_TIMER  0x320
+#define LAPIC_REG_TIMER_INIT 0x380
+#define LAPIC_REG_TIMER_CUR  0x390
+#define LAPIC_REG_TIMER_DIV  0x3E0
+#define LAPIC_LVT_MASK       (1u << 16)
+#define LAPIC_TIMER_PERIODIC (1u << 17)
 
 volatile int g_lapic_ready = 0;   // SMP-1: 1 setelah MMIO LAPIC dipetakan BSP
 
@@ -109,6 +116,52 @@ int lapic_send_ipi_others(uint8_t vector)
     }
     irq_restore(f);
     return rc;
+}
+
+// SMP-2: NMI ke SATU CPU (panic). Delivery mode 100b (NMI); vektor diabaikan CPU. Dikirim satu per satu
+// ke CPU yang sudah online saja: AP yang masih parkir di stub Limine belum punya IDT kita (NMI = triple fault).
+int lapic_send_nmi(uint32_t lapic_id)
+{
+    if (!g_lapic_ready) {
+        return -1;
+    }
+    uint64_t f = irq_save();
+    int rc = lapic_icr_wait();
+
+    if (rc == 0) {
+        lapic_write(LAPIC_REG_ICR_HI, lapic_id << 24);
+        lapic_write(LAPIC_REG_ICR_LO, LAPIC_ICR_ASSERT | LAPIC_ICR_NMI);
+        rc = lapic_icr_wait();
+    }
+    irq_restore(f);
+    return rc;
+}
+
+// SMP-2: timer LAPIC lokal. Pembagi 16 (nilai 0x3). mode: 0 = satu kali, 1 = periodik.
+// masked = 1: hitung tanpa interrupt (kalibrasi). Menulis hitungan awal = mulai menghitung.
+void lapic_timer_start(uint32_t initial, int periodic, int masked, uint8_t vector)
+{
+    if (!g_lapic_ready) {
+        return;
+    }
+    lapic_write(LAPIC_REG_TIMER_DIV, 0x3);
+    lapic_write(LAPIC_REG_LVT_TIMER, (periodic ? LAPIC_TIMER_PERIODIC : 0) |
+                                     (masked ? LAPIC_LVT_MASK : 0) | vector);
+    lapic_write(LAPIC_REG_TIMER_INIT, initial);
+}
+
+uint32_t lapic_timer_count(void)
+{
+    return g_lapic_ready ? lapic_read(LAPIC_REG_TIMER_CUR) : 0;
+}
+
+void lapic_timer_stop(void)
+{
+    if (!g_lapic_ready) {
+        return;
+    }
+    lapic_write(LAPIC_REG_LVT_TIMER, LAPIC_LVT_MASK | SMP_VEC_LTIMER);
+    lapic_write(LAPIC_REG_TIMER_INIT, 0);
 }
 
 uint32_t ioapic_read(uint32_t reg)

@@ -285,14 +285,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=167   # F7 SMP-1: + smp_cpus/smp_online/smp_ipi_tx/smp_ipi_rx/smp_irq_stray, F7 IPv6: + ip6_ignored (review), + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
+R3_N=171   # F7 SMP-2: + smp_switch_ap/smp_tlb_shootdown/smp_resched_ipi/smp_bkl_spin, F7 SMP-1: + smp_cpus/smp_online/smp_ipi_tx/smp_ipi_rx/smp_irq_stray, F7 IPv6: + ip6_ignored (review), + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir smp_irq_stray" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^smp_irq_stray="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir smp_bkl_spin" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^smp_bkl_spin="'
 
 # F7 SMP-1: boot utama pakai -smp 2. AP hidup, IPI uji lulus, metrics + perintah cpu. Baris log
 # kernel diakhiri \r\n: tanpa "$" di grep.
@@ -305,7 +305,40 @@ check "SMP-1: metrics smp_cpus=2 smp_online=2 smp_ipi_tx>=1 smp_ipi_rx>=1" \
 SMP_CPU="$($BM cpu)"
 check "SMP-1: smp_irq_stray=0 (tanpa IRQ timer/NIC salah masuk ke AP)" '[ "$(mval smp_irq_stray)" = 0 ]'
 check "SMP-1: perintah cpu: 2 CPU, BSP + AP online=1" \
-    'echo "$SMP_CPU" | grep -q "^cpu: tercatat=2 aktif=2 maks=8 stray=0" && echo "$SMP_CPU" | grep -q "^cpu 0: lapic=[0-9]* online=1 ipi_rx=0 (BSP)" && echo "$SMP_CPU" | grep -q "^cpu 1: lapic=[0-9]* online=1 ipi_rx=[1-9]"'
+    'echo "$SMP_CPU" | grep -q "^cpu: tercatat=2 aktif=2 maks=8 stray=0" && echo "$SMP_CPU" | grep -q "^cpu 0: lapic=[0-9]* online=1 ipi_rx=0 task=[0-9]* switch=[0-9]* tick=[0-9]* (BSP)" && echo "$SMP_CPU" | grep -q "^cpu 1: lapic=[0-9]* online=1 ipi_rx=[1-9]"'
+
+# F7 SMP-2: scheduler di semua CPU dengan BKL. Timer LAPIC terkalibrasi, AP masuk scheduler, TLB shootdown
+# lulus saat boot; dev: task user uji (userspace/cpuuji.c) benar-benar jalan di AP (syscall dev SYS_CPU
+# membaca TSC_AUX); uji tekanan: ia CPU-bound sementara jaringan tetap responsif.
+check "SMP-2: cpu_index lewat TSC_AUX (rdtscp), timer LAPIC terkalibrasi, AP menjalankan task" \
+    'grep -aq "^SMP: cpu_index lewat TSC_AUX (rdtscp)" "$LOG" && grep -aq "^SMP: timer LAPIC terkalibrasi [0-9]* hitungan per tick (pembagi 16, 100 Hz); AP menjalankan task" "$LOG"'
+check "SMP-2: uji TLB shootdown PASS saat boot (1 AP) + task idle AP + AP masuk scheduler" \
+    'grep -aq "^SMP: uji TLB shootdown PASS (1 AP)" "$LOG" && grep -aq "^Idle: task idle CPU 1 dibuat di slot" "$LOG" && grep -aq "^SMP: AP 1 masuk scheduler (idle slot " "$LOG" && ! grep -aq "SMP: TLB shootdown: CPU mask" "$LOG"'
+if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    SMP2_W=0
+    for i in $(seq 1 120); do
+        grep -aq "^cpuuji: cpu=1" "$LOG" && break
+        sleep 1
+    done
+    # Uji tekanan: cpuuji (CPU-bound, ring 3) jalan di dua CPU, jaringan harus tetap menjawab.
+    SMP2_PING=0
+    for i in $(seq 1 15); do
+        [ "$($BM ping)" = "pong" ] && SMP2_PING=$((SMP2_PING + 1))
+        sleep 1
+    done
+    SMP2_M="$($BM "metrics smp_")"
+    SMP2_CPU="$($BM cpu)"
+    check "SMP-2: dev: task user cpuuji tercetak jalan di CPU 0 dan CPU 1 (kode ring 3 di AP)" \
+        'grep -aq "^cpuuji: cpu=1" "$LOG" && grep -aq "^cpuuji: cpu=0" "$LOG"'
+    check "SMP-2: dev: smp_switch_ap > 0, tick lokal AP > 0, smp_irq_stray=0, tanpa shootdown terlambat" \
+        '[ "$(echo "$SMP2_M" | sed -n "s/^smp_switch_ap=//p")" -gt 0 ] && echo "$SMP2_CPU" | grep -q "^cpu 1: .* switch=[1-9][0-9]* tick=[1-9][0-9]*" && [ "$(echo "$SMP2_M" | sed -n "s/^smp_irq_stray=//p")" = 0 ] && [ "$(echo "$SMP2_M" | sed -n "s/^smp_tlb_shootdown=//p")" -ge 1 ]'
+    check "SMP-2: dev: uji tekanan (cpuuji CPU-bound di AP): 15 ping berurutan menjawab, watchdog tanpa panic" \
+        '[ "$SMP2_PING" -eq 15 ] && ! grep -aq "^PANIC" "$LOG"'
+else
+    SMP2_CPU="$($BM cpu)"
+    check "SMP-2: PROD: tick lokal AP berjalan (timer LAPIC AP hidup), bkl_spin terbaca" \
+        'echo "$SMP2_CPU" | grep -q "^cpu 1: .* tick=[1-9][0-9]*" && echo "$SMP2_CPU" | grep -q "bkl_spin=[0-9]"'
+fi
 
 # R6-1: syscall ditolak (len > SYS_WRITE_MAX, pointer kernel) dan exception dari
 # ring 3 (stack user menabrak guard) hanya menghentikan task itu (build dev).
@@ -1355,7 +1388,7 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
     check "M-NIC: tanpa NIC: task uji jalan setelah net task keluar" \
         'sed -n "/net task berhenti (task_exit)/,\$p" "$BARE" | grep -qE "^Task [AB] selesai"'
 fi
-check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|FATAL -" "$BARE"'
+check "tanpa NIC: tanpa exception"     '! grep -qE "EXCEPTION|#GP|#PF|panic|PANIC|FATAL -" "$BARE"'
 check "D7: tanpa disk: CONFIG: sumber=bawaan (tanpa disk)" \
     'grep -q "CONFIG: sumber=bawaan (tanpa disk) cli_idle=300 udp_rate=20 echo=1" "$BARE"'
 check "P1: tanpa VGA: fbcon nonaktif, boot lanjut" 'grep -aq "P1: fbcon nonaktif (tanpa framebuffer)" "$BARE"'
@@ -1722,8 +1755,11 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         'grep -q "^PANIC: watchdog: net task tanpa tepukan 1001 tick (batas 1000) status=READY berjalan=\(ya\|tidak\)$" "$W"'
     check "R5: blok: tanpa tepukan 1001 tick, BLOCKED, tidak berjalan" \
         'grep -q "^PANIC: watchdog: net task tanpa tepukan 1001 tick (batas 1000) status=BLOCKED berjalan=tidak$" "$W"'
-    check "R5: symbolize: wd_test_spin/wd_test_block + sem_wait, wd_test_fire -> ktimer_run 2x" \
-        'grep -q " wd_test_spin " "$WORK/wd-sym.txt" && grep -q " wd_test_block " "$WORK/wd-sym.txt" && grep -q " sem_wait " "$WORK/wd-sym.txt" && [ "$(grep -c " wd_test_fire " "$WORK/wd-sym.txt")" -eq 2 ] && [ "$(grep -c " ktimer_run " "$WORK/wd-sym.txt")" -eq 2 ]'
+    # SMP-2: pada kasus loop, tick ke-1001 kadang jatuh tepat saat penuaan memberi satu tick ke task user di BSP
+    # (net task bukan current, berjalan=tidak): rantai diambil dari frame tersimpan (schedule <- irq_handler ->
+    # wd_test_fire) tanpa baris wd_test_spin. Keduanya sah (fase penuaan bergeser oleh waktu boot).
+    check "R5: symbolize: wd_test_spin (atau rantai ISR irq_handler)/wd_test_block + sem_wait, wd_test_fire -> ktimer_run 2x" \
+        '{ grep -q " wd_test_spin " "$WORK/wd-sym.txt" || grep -q " irq_handler " "$WORK/wd-sym.txt"; } && grep -q " wd_test_block " "$WORK/wd-sym.txt" && grep -q " sem_wait " "$WORK/wd-sym.txt" && [ "$(grep -c " wd_test_fire " "$WORK/wd-sym.txt")" -eq 2 ] && [ "$(grep -c " ktimer_run " "$WORK/wd-sym.txt")" -eq 2 ]'
     wd_wait_ok() {
         [ "$#" -eq 2 ] || return 1
         for w in "$@"; do
@@ -1807,6 +1843,57 @@ if ! grep -q "PROD: task uji dilewati" "$LOG"; then
         '[ "$(sed -n "s/^PANIC: CR0=.* CR2=0x00007f0000000000 CR3=.* CR4=0x\([0-9a-f]*\)$/\1/p" "$X" | while read v; do [ $(( (0x$v >> 20) & 3 )) -eq 3 ] && echo ok; done | wc -l)" -eq 2 ]'
     check "F7: 2 panic -> 2 reboot otomatis, 3 boot normal (SMEP/SMAP aktif tiap boot), tanpa panic bersarang" \
         '[ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$X")" -eq 2 ] && [ "$(grep -c "^SMEP: aktif$" "$X")" -eq 3 ] && [ "$(grep -c "^SMAP: aktif$" "$X")" -eq 3 ] && ! grep -qE "fault di dalam panic handler|PIT tidak berjalan|PANIC-UJI" "$X"'
+fi
+
+# F7 SMP-2 (review): panic yang dipicu dari AP (build dev). Perintah dev `panic ap` mengaktifkan jebakan di syscall
+# dev SYS_CPU: task uji cpuuji yang pertama kali berjalan di CPU 1 memanggil panic_msg. Pemilik panic = AP; BSP
+# dihentikan lewat NMI; reboot otomatis; boot kedua normal.
+if ! grep -q "PROD: task uji dilewati" "$LOG"; then
+    echo
+    echo "boot SMP-2: uji panic dari AP (~1 menit)..."
+    ALOG="$WORK/serial-ap.log"
+    cp "$OVMF_VARS" "$WORK/vars-ap.fd"
+    "$QEMU" -machine q35 -m 512M -cpu max -smp 2 \
+        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+        -drive if=pflash,format=raw,file="$WORK/vars-ap.fd" \
+        -cdrom "$ISO" \
+        -drive id=d0,file="$DISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
+        -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778 \
+        -device e1000,netdev=n0 \
+        -display none -serial file:"$ALOG" \
+        >"$WORK/qemu-ap.out" 2>&1 &
+    APID=$!
+    ap_wait() {   # POLA N: tunggu POLA muncul >= N kali di ALOG
+        for _ in $(seq 1 "$BOOT_TIMEOUT"); do
+            c="$(grep -ac "$1" "$ALOG" 2>/dev/null)"
+            [ "${c:-0}" -ge "$2" ] && return 0
+            kill -0 "$APID" 2>/dev/null || return 1
+            sleep 1
+        done
+        return 1
+    }
+    AP_REPLY=""
+    if ap_wait "Entropi: siap" 1 && ap_wait "net task dimulai" 1 && ap_wait "SMP: AP 1 masuk scheduler" 1; then
+        sleep 1.2
+        for _ in 1 2 3; do
+            AP_REPLY="$($BM "panic ap" 2>&1)" && break
+            sleep 3
+            grep -a "^AUDIT " "$ALOG" | grep -qF " panic ap" && break
+        done
+        ap_wait "PANIC: reboot otomatis dalam 10 detik" 1
+        ap_wait "ACPI-R: reboot via register reset FADT" 1
+    fi
+    ap_wait "PCI-1: E1000 di" 2
+    kill "$APID" 2>/dev/null
+    wait "$APID" 2>/dev/null
+    tr -d '\r' < "$ALOG" > "$WORK/serial-ap.txt"
+    A="$WORK/serial-ap.txt"
+    echo "balasan: $AP_REPLY"
+    grep -a "^PANIC\|^SMP: CPU lain" "$A" | head -12
+    check "SMP-2: panic dari AP: balasan perintah, baris PANIC menyebut cpu=1 dan pesan uji" \
+        'echo "$AP_REPLY" | grep -q "^panic: uji AP aktif" && grep -q "^PANIC: uji panic dari AP (syscall dev)$" "$A" && grep -q "^PANIC: tick=[0-9]* task=[0-9]* cpu=1$" "$A"'
+    check "SMP-2: panic dari AP: BSP dihentikan lewat NMI (CPU lain dihentikan 1/1), reboot otomatis, boot kedua normal" \
+        'grep -q "^SMP: CPU lain dihentikan 1/1$" "$A" && [ "$(grep -c "^PANIC: reboot otomatis dalam 10 detik$" "$A")" -eq 1 ] && [ "$(grep -c "PCI-1: E1000 di" "$A")" -ge 2 ] && ! grep -qE "fault di dalam panic handler|PIT tidak berjalan" "$A"'
 fi
 
 echo

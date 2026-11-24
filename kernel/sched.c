@@ -58,11 +58,13 @@ void task_create(task_t *task, void (*entry_function)(void), uint64_t stack_size
     task->waiting_for_sem = 0;
     task->is_user_task = false;
     task->rsp0 = stack_top;
+    task->kstk_lo = stack_base;   // SMP-2: cur_task_index() mencari task dari RSP
+    task->kstk_hi = stack_base + stack_size;
     // Layer 8 checkpoint 2: task kernel SENGAJA share PML4 global --
     // tidak ada manfaat isolasi address space untuk task yang tidak
     // pernah masuk ring 3. g_current_pml4_phys sudah diisi di kmain()
     // sebelum task_create() pertama dipanggil.
-    task->pml4_phys = g_current_pml4_phys;
+    task->pml4_phys = g_kernel_pml4_phys;   // SMP-2: dulu g_current_pml4_phys (kini turunan task berjalan)
     prio_init_task(task, PRIO_NORMAL, timer_ticks);   // F7 (net task / idle diubah kmain)
 }
 
@@ -72,7 +74,23 @@ size_t task_count = 0;
 // hanya dipilih scheduler kalau tidak ada task lain yang READY.
 size_t g_idle_index = (size_t)-1;
 volatile bool scheduler_started = false;
-size_t current_index = 0;
+// SMP-2: task berjalan per CPU = g_cpus[i].current (ditulis schedule/kmain di bawah BKL). Pembacaan
+// di mana pun lewat cur_task_index() (makro current_index): dicari dari RSP, tahan migrasi CPU.
+size_t cur_task_index(void)
+{
+    uint64_t sp;
+
+    __asm__ volatile("mov %%rsp, %0" : "=r"(sp));
+    for (size_t i = 0; i < task_count; i++) {
+        if (sp >= tasks[i].kstk_lo && sp < tasks[i].kstk_hi) {
+            return i;
+        }
+    }
+    // Bukan di stack task mana pun (kmain sebelum switch pertama, stack boot AP): catatan CPU ini.
+    int ci = cpu_index();
+
+    return g_cpus[ci < MAX_CPUS ? ci : 0].current;
+}
 
 
 // Dipanggil via ret dari context_switch() -- BUKAN dipanggil biasa,
@@ -92,6 +110,7 @@ static void user_task_trampoline(void)
     uint64_t stack_top = tasks[current_index].user_stack_top;
 
     serial_write("user_task_trampoline(): memanggil enter_usermode()...\r\n");
+    bkl_to_user();   // SMP-2: ring 3 tidak memegang BKL (cli dulu; iretq memulihkan IF=1)
     enter_usermode(entry, stack_top);
 }
 
@@ -195,6 +214,8 @@ void task_create_user(
 
     task->rsp = (uint64_t)sp;
     task->rsp0 = kstack_top;
+    task->kstk_lo = kstack_base;
+    task->kstk_hi = kstack_base + kernel_stack_size;
     task->status = TASK_READY;
     task->waiting_for_sem = 0;
     task->is_user_task = true;
@@ -355,6 +376,8 @@ task_t *spawn(const uint8_t *image, size_t image_len)
 
     task->rsp = (uint64_t)sp;
     task->rsp0 = kstack_top;
+    task->kstk_lo = kstack_base;
+    task->kstk_hi = kstack_base + 4096;
     task->status = TASK_READY;
     task->waiting_for_sem = 0;
     task->is_user_task = true;
@@ -417,116 +440,105 @@ static semaphore_t test_sem = { .count = 1 };
 // context_switch() sendiri, timer dari luar yang memaksa ganti giliran.
 void schedule(void)
 {
+    // SMP-2: scheduler per CPU. Semua state (tasks[], g_cpus[].current, running_on) hanya disentuh
+    // di sini dengan BKL milik CPU ini dan IF=0 (bkl.c, I3).
+    cpu_t *c = this_cpu();   // indeks CPU tak dikenal = panic (bukan jatuh ke CPU 0)
+    int ci = (int)c->index;
+
+    // Guard ganda: (1) belum ada task terdaftar, ATAU (2) scheduler CPU ini belum pernah benar-benar
+    // diserahkan alih (BSP: dari kmain() ke task pertama; AP: smp_ap_idle_start). Tanpa guard (2),
+    // timer yang masuk sebelum context_switch() pertama akan menimpa RSP task yang belum pernah jalan.
+    if (task_count == 0 || !c->sched_on) {
+        return;
+    }
 #ifndef BMAHOS_PROD
     {   // F7 (dev): EFLAGS.AC harus 0 saat pindah task bila SMAP aktif (tidak ada tidur di jendela stac)
         uint64_t fl;
 
         __asm__ volatile("pushfq\n\tpopq %0" : "=r"(fl));
         ASSERT(!g_smap_on || !(fl & (1ULL << 18)));
+        ASSERT(!(fl & (1ULL << 9)));   // SMP-2 (I3): schedule() selalu dengan IF=0
+        ASSERT(bkl_held());            // SMP-2 (I3): dan dengan BKL milik CPU ini
     }
 #endif
-    // Guard ganda: (1) belum ada task terdaftar, ATAU (2) scheduler
-    // belum pernah benar-benar diserahkan alih dari kmain() ke task
-    // pertama. Tanpa guard (2), timer yang masuk di antara
-    // task_count di-set dan context_switch() pertama benar-benar
-    // terjadi akan salah kira RSP kmain() saat itu adalah RSP task
-    // aktif, lalu menimpanya ke tasks[current_index].rsp -- merusak
-    // context task yang sebenarnya belum pernah jalan sama sekali.
-    if (task_count == 0 || !scheduler_started) {
-        return;
-    }
 
-    // Sebelum mencari task berikutnya: bangunkan semua task SLEEPING
-    // yang waktu bangunnya sudah tiba. Scheduler yang bertanggung
-    // jawab menentukan "siapa yang runnable", jadi pengecekan ini
-    // wajar dilakukan di sini, bukan di irq_handler() terpisah.
+    // Sebelum mencari task berikutnya: bangunkan semua task SLEEPING yang waktu bangunnya sudah
+    // tiba. Scheduler yang bertanggung jawab menentukan "siapa yang runnable".
     uint64_t now = timer_ticks;
+    int woke_user = 0, woke_kern = 0;
 
     for (size_t i = 0; i < task_count; i++) {
         if (tasks[i].status == TASK_SLEEPING &&
             now >= tasks[i].wake_at_tick) {
             tasks[i].status = TASK_READY;
             tasks[i].ready_at = now;   // F7: umur antrean mulai dari bangun
+            woke_user |= tasks[i].is_user_task;
+            woke_kern |= !tasks[i].is_user_task;
         }
     }
 
-    // Sama seperti pengecekan SLEEPING di atas: bangunkan task yang
-    // BLOCKED kalau task yang dia tunggu (waiting_for) sudah DEAD.
-    // Scheduler pasif mengecek kondisi eksternal, bukan task_exit()
-    // yang aktif mencari "siapa saja yang menungguku" (itu butuh
-    // reverse-lookup per-task yang lebih kompleks).
+    // Sama seperti pengecekan SLEEPING di atas: bangunkan task yang BLOCKED kalau task yang dia
+    // tunggu (waiting_for) sudah DEAD. waiting_for_sem == 0 WAJIB dicek -- blok ini KHUSUS untuk
+    // task_wait_for(); task yang BLOCKED via sem_wait() hanya dibangunkan sem_post().
     for (size_t i = 0; i < task_count; i++) {
-        // waiting_for_sem == 0 WAJIB dicek -- ini blok KHUSUS untuk
-        // task_wait_for() (menunggu TASK lain mati). Task yang BLOCKED
-        // via sem_wait() (waiting_for_sem != NULL) TIDAK BOLEH kena
-        // logika ini -- field waiting_for milik mereka tidak valid/
-        // relevan (bisa berisi nilai basi dari task_wait_for()
-        // sebelumnya), dan mereka cuma boleh dibangunkan oleh
-        // sem_post() (lihat sem_post()), bukan oleh scan generik ini.
         if (tasks[i].status == TASK_BLOCKED &&
             tasks[i].waiting_for_sem == 0 &&
             tasks[tasks[i].waiting_for].status == TASK_DEAD) {
             tasks[i].status = TASK_READY;
             tasks[i].ready_at = now;
+            woke_user |= tasks[i].is_user_task;
+            woke_kern |= !tasks[i].is_user_task;
         }
+    }
+    if (woke_user) {
+        smp_kick_idle(1);   // SMP-2: CPU idle jangan menunggu tick berikutnya
+    }
+    if (woke_kern) {
+        smp_kick_idle(0);   // task kernel hanya jalan di BSP: bangunkan BSP bila ia idle dan kita di AP
     }
 
     // F7: pilih berdasarkan prioritas + penuaan (prio.c, loop terbatas task_count). Task yang
-    // sedang jalan diberi umur nol dulu: yang menunggu adalah yang lain.
-    tasks[current_index].ready_at = now;
+    // sedang jalan diberi umur nol dulu: yang menunggu adalah yang lain. SMP-2: hanya task yang
+    // tidak sedang berjalan di CPU lain, dan task kernel hanya di BSP (afinitas, prio.c).
+    size_t cur_idx = c->current;
 
-    size_t next_index = prio_pick(tasks, task_count, current_index, g_idle_index, now);
+    tasks[cur_idx].ready_at = now;
 
-    // Tidak ada task layak (semua tidur/blok/DEAD/kena jatah CPU): pindah ke idle bila ada
-    // (kecuali sudah di idle).
+    size_t next_index = prio_pick_cpu(tasks, task_count, cur_idx, c->idle, now, ci);
+
+    // Tidak ada task layak (semua tidur/blok/DEAD/kena jatah CPU/jalan di CPU lain): pindah ke idle
+    // CPU ini bila ada (kecuali sudah di idle).
     if (next_index == (size_t)-1) {
-        if (g_idle_index == (size_t)-1 || current_index == g_idle_index) {
+        if (c->idle == (size_t)-1 || cur_idx == c->idle) {
             return;
         }
-        next_index = g_idle_index;
+        next_index = c->idle;
     }
 
-    // Bug tersembunyi yang baru terungkap lewat task_sleep(): bounded
-    // scan bisa saja "menemukan" task yang SEDANG BERJALAN SEKARANG
-    // (current_index) sebagai satu-satunya TASK_READY, kalau semua
-    // task lain sedang SLEEPING/DEAD. Scheduler tidak membedakan
-    // "sedang jalan" dari "berstatus READY" -- keduanya sama saja di
-    // field status. Tanpa guard ini, context_switch(&tasks[i].rsp,
-    // tasks[i].rsp) akan menyimpan dan memuat RSP dari alamat yang
-    // SAMA, tapi nilai new_rsp sudah "dibekukan" SEBELUM push register
-    // terjadi -- hasilnya RSP dimuat dari titik yang salah, ret
-    // melompat ke alamat sampah (terbukti dari crash RIP=0x0 #PF saat
-    // Task A sleep dan Task B jadi satu-satunya TASK_READY).
-    if (next_index == current_index) {
+    // Task yang SEDANG BERJALAN di CPU ini bisa saja satu-satunya TASK_READY (scheduler tidak
+    // membedakan "sedang jalan" dari "READY"). Tanpa guard ini context_switch(&t.rsp, t.rsp) merusak.
+    if (next_index == cur_idx) {
         return;
     }
 
-    size_t prev_index = current_index;
-    current_index = next_index;
+    size_t prev_index = cur_idx;
 
-    // Swap TSS.RSP0 ke kernel stack task berikutnya SEBELUM context
-    // switch -- kalau task ini (nanti) user task dan trap ke ring 0
-    // via syscall/interrupt, CPU harus menemukan RSP0 milik task
-    // yang benar, bukan sisa milik task sebelumnya.
-    bmahOS_tss.rsp0 = tasks[next_index].rsp0;
+    c->current = next_index;
+    tasks[prev_index].running_on = -1;
+    tasks[next_index].running_on = ci;
+    c->cr3 = tasks[next_index].pml4_phys;
+    c->switches++;
 
-    // Layer 8 checkpoint 2: g_current_pml4_phys MENCERMINKAN task
-    // aktif (cache/mirror), BUKAN source of truth kedua --
-    // tasks[i].pml4_phys tetap satu-satunya tempat state PML4
-    // per-task disimpan. Diupdate di sini, SEBELUM context_switch(),
-    // supaya syscall (is_valid_user_ptr) yang trap segera setelah
-    // switch selalu baca PML4 task yang BENAR sedang berjalan.
-    g_current_pml4_phys = tasks[next_index].pml4_phys;
+    // Swap TSS.RSP0 (TSS MILIK CPU INI: BSP bmahOS_tss, AP g_cpus[i].tss) ke kernel stack task
+    // berikutnya SEBELUM context switch -- trap dari ring 3 harus menemukan RSP0 task yang benar.
+    if (ci == 0) {
+        bmahOS_tss.rsp0 = tasks[next_index].rsp0;
+    } else {
+        c->tss.rsp0 = tasks[next_index].rsp0;
+    }
 
-    // Log HANYA untuk switch yang melibatkan user task -- kalau
-    // dicetak untuk SEMUA switch (termasuk A<->B biasa), log akan
-    // banjir karena schedule() dipanggil tiap tick timer. Ini
-    // pembuktian langsung bahwa TSS.RSP0 benar-benar berubah nilai
-    // setiap kali scheduler masuk/keluar dari task user, BUKAN
-    // sekadar diasumsikan dari kode.
-    // B4b: hanya 16 switch pertama. Dulu dicetak di setiap switch task user
-    // (~400 baris/detik di build dev), melebihi kapasitas UART, sehingga semua
-    // task tertahan di serial_putc() dengan interrupt mati.
+    // Log HANYA untuk switch yang melibatkan user task (supaya tidak banjir). B4b: hanya 16
+    // switch pertama (UART polling dengan interrupt mati). Dibagi semua CPU (di bawah BKL).
     static uint32_t sched_log_left = 16;
 
     if ((tasks[next_index].is_user_task || tasks[prev_index].is_user_task) &&
@@ -537,7 +549,7 @@ void schedule(void)
         serial_write(" next_idx=");
         serial_write_hex(next_index);
         serial_write(" TSS.RSP0=");
-        serial_write_hex(bmahOS_tss.rsp0);
+        serial_write_hex(tasks[next_index].rsp0);
         serial_write("\r\n");
     }
 
@@ -605,6 +617,7 @@ void task_wake(size_t idx)
     if (idx < task_count && tasks[idx].status == TASK_SLEEPING) {
         tasks[idx].status = TASK_READY;
         tasks[idx].ready_at = timer_ticks;
+        smp_kick_idle(tasks[idx].is_user_task);   // SMP-2: CPU idle jangan menunggu tick lokal/PIT
     }
     irq_restore(flags);
 }
@@ -684,6 +697,7 @@ void sem_post(semaphore_t *sem)
             tasks[i].waiting_for_sem == sem) {
             tasks[i].status = TASK_READY;
             tasks[i].ready_at = timer_ticks;
+            smp_kick_idle(tasks[i].is_user_task);   // SMP-2: sem_post dari CPU mana pun
             break;
         }
     }

@@ -429,9 +429,78 @@ static void test_nama(void)
     CHECK_STR(prio_name(99), "?");
 }
 
+// SMP-2: prio_pick_cpu. Task yang berjalan di CPU lain tidak layak; task kernel hanya di CPU 0; idle tak pernah
+// dipilih; cpu < 0 (prio_pick lama) mengabaikan running_on.
+static void test_smp(void)
+{
+    // slot 0 net (tinggi), 1 kernel (normal), 2,3,4 user (rendah), 5 idle CPU 0, 6 idle CPU 1
+    reset(7);
+    tasks[0].prio = PRIO_HIGH;
+    set_user(2);
+    set_user(3);
+    set_user(4);
+    tasks[5].prio = PRIO_IDLE;
+    tasks[6].prio = PRIO_IDLE;
+
+    // AP (cpu 1): hanya task user; kernel dan net task tidak layak walau tingkatnya lebih tinggi.
+    size_t a = prio_pick_cpu(tasks, 7, 6, 6, 1, 1);
+    CHECK(a == 2 || a == 3 || a == 4);
+    // BSP bebas memilih task kernel (tingkat tinggi menang).
+    CHECK(prio_pick_cpu(tasks, 7, 5, 5, 1, 0) == 0);
+
+    // Task 2 dan 3 sedang berjalan di CPU 0 dan 1: CPU lain hanya boleh memilih 4.
+    tasks[2].running_on = 0;
+    tasks[3].running_on = 1;
+    tasks[0].status = TASK_SLEEPING;
+    tasks[1].status = TASK_SLEEPING;
+    size_t b = prio_pick_cpu(tasks, 7, 6, 6, 2, 1);
+    CHECK(b == 3 || b == 4);
+    tasks[4].running_on = 0;
+    // CPU 1 sedang menjalankan 3: tetap layak untuk CPU 1 sendiri, 2 dan 4 milik CPU 0.
+    CHECK(prio_pick_cpu(tasks, 7, 3, 6, 3, 1) == 3);
+    // CPU 2 (AP lain): semua task user ada di CPU lain -> tidak ada yang layak.
+    tasks[3].running_on = 1;
+    CHECK(prio_pick_cpu(tasks, 7, 6, 6, 4, 2) == (size_t)-1);
+    // Task bebas lagi -> layak dipilih CPU mana pun.
+    tasks[2].running_on = -1;
+    CHECK(prio_pick_cpu(tasks, 7, 6, 6, 5, 2) == 2);
+    // prio_pick lama (cpu = -1) mengabaikan running_on.
+    tasks[2].running_on = 7;
+    size_t lama = prio_pick(tasks, 7, 6, 6, 6);
+    CHECK(lama == 2 || lama == 3 || lama == 4);
+    // Task idle (prio IDLE) tak pernah dipilih walau READY dan tak sedang berjalan.
+    tasks[2].status = tasks[3].status = tasks[4].status = TASK_SLEEPING;
+    tasks[5].running_on = -1;
+    CHECK(prio_pick_cpu(tasks, 7, 6, 6, 7, 1) == (size_t)-1);
+    CHECK(prio_pick_cpu(tasks, 7, 5, 5, 7, 0) == (size_t)-1);
+    // prio_init_task: running_on = -1.
+    prio_init_task(&tasks[2], PRIO_LOW, 0);
+    CHECK(tasks[2].running_on == -1);
+}
+
+// Penuaan tidak melewati batas afinitas/running_on: task user yang menunggu lama tetap dipilih AP,
+// tetapi task kernel yang lama menunggu tidak pernah dipilih AP.
+static void test_smp_penuaan(void)
+{
+    reset(5);
+    set_user(1);
+    set_user(2);
+    tasks[4].prio = PRIO_IDLE;
+    tasks[0].ready_at = 0;   // kernel menunggu sangat lama
+    tasks[1].ready_at = 0;
+    tasks[2].ready_at = 90;
+    size_t p = prio_pick_cpu(tasks, 5, 4, 4, 100, 1);
+
+    CHECK(p == 1);   // user terlama (aged); kernel slot 0/3 tak layak di AP
+    tasks[1].running_on = 0;
+    CHECK(prio_pick_cpu(tasks, 5, 4, 4, 100, 1) == 2);
+}
+
 int main(void)
 {
     serial_capture_reset();
+    test_smp();
+    test_smp_penuaan();
     test_tingkat();
     test_bergilir_adil();
     test_penuaan();

@@ -70,6 +70,7 @@ void prio_init_task(task_t *t, uint8_t prio, uint64_t now)
     t->res_flags = 0;
     t->res_supp = 0;
     t->res_logn = 0;
+    t->running_on = -1;   // SMP-2
     t->fd_max = RES_FD_MAX;
     t->cpu_total = 0;
     t->sys_total = 0;
@@ -98,10 +99,26 @@ static void res_roll(task_t *t, uint64_t now)
     t->res_logn = 0;
 }
 
-static int prio_eligible(task_t *t, size_t i, size_t idle, uint64_t now)
+// SMP-2: cpu >= 0 = pemilih untuk CPU itu. Task yang berjalan di CPU LAIN tidak layak (satu task tidak
+// pernah jalan di dua CPU); task idle (prio IDLE) milik CPU masing-masing, tak pernah dipilih di sini;
+// task kernel hanya di BSP (CPU 0): net task dan task kernel lain menyentuh perangkat (NIC/AHCI/PIT),
+// dan jalur tick-wake net task bergantung pada tick BSP. Hanya task user yang bebas pindah ke AP.
+// cpu < 0 = perilaku lama (satu CPU, uji host lama).
+static int prio_eligible(task_t *t, size_t i, size_t idle, uint64_t now, int cpu)
 {
     if (i == idle || t->status != TASK_READY) {
         return 0;
+    }
+    if (cpu >= 0) {
+        if (t->prio == PRIO_IDLE) {
+            return 0;
+        }
+        if (t->running_on >= 0 && t->running_on != cpu) {
+            return 0;
+        }
+        if (cpu != 0 && !t->is_user_task) {
+            return 0;
+        }
     }
     if (t->is_user_task) {
         res_roll(t, now);
@@ -114,7 +131,7 @@ static int prio_eligible(task_t *t, size_t i, size_t idle, uint64_t now)
 
 // Indeks task berikutnya, atau (size_t)-1 bila tak ada yang layak (pemanggil memilih idle).
 // cur = task yang sedang jalan (umurnya dianggap 0 oleh pemanggil, lihat schedule()).
-size_t prio_pick(task_t *t, size_t n, size_t cur, size_t idle, uint64_t now)
+size_t prio_pick_cpu(task_t *t, size_t n, size_t cur, size_t idle, uint64_t now, int cpu)
 {
     size_t best = (size_t)-1;
     size_t aged = (size_t)-1;
@@ -124,7 +141,7 @@ size_t prio_pick(task_t *t, size_t n, size_t cur, size_t idle, uint64_t now)
         return (size_t)-1;
     }
     for (size_t i = 0; i < n; i++) {
-        if (!prio_eligible(&t[i], i, idle, now)) {
+        if (!prio_eligible(&t[i], i, idle, now, cpu)) {
             continue;
         }
         uint64_t w = (i == cur || now < t[i].ready_at) ? 0 : now - t[i].ready_at;
@@ -138,7 +155,7 @@ size_t prio_pick(task_t *t, size_t n, size_t cur, size_t idle, uint64_t now)
         for (size_t k = 1; k <= n; k++) {
             size_t i = (g_last[lvl] + k) % n;
 
-            if (t[i].prio == lvl && prio_eligible(&t[i], i, idle, now)) {
+            if (t[i].prio == lvl && prio_eligible(&t[i], i, idle, now, cpu)) {
                 best = i;
                 break;
             }
@@ -155,6 +172,11 @@ size_t prio_pick(task_t *t, size_t n, size_t cur, size_t idle, uint64_t now)
         g_last[t[pick].prio] = pick;
     }
     return pick;
+}
+
+size_t prio_pick(task_t *t, size_t n, size_t cur, size_t idle, uint64_t now)
+{
+    return prio_pick_cpu(t, n, cur, idle, now, -1);
 }
 
 static void res_log(task_t *t, size_t slot, uint32_t bit, const char *jenis, uint64_t nilai,

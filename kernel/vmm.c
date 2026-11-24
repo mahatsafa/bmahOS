@@ -86,7 +86,7 @@ void vmm_map(uint64_t pml4_phys, uint64_t vaddr, uint64_t paddr, uint64_t flags)
 }
 
 // Hapus pemetaan satu halaman (PTE = 0) + invlpg; tabel perantara tidak dibebaskan.
-void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
+int vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 {
     uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
     uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
@@ -95,17 +95,17 @@ void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
 
     uint64_t *pml4_virt = (uint64_t *)(pml4_phys + hhdm_offset);
     uint64_t pml4_entry = pml4_virt[pml4_idx];
-    if ((pml4_entry & VMM_FLAG_PRESENT) == 0) return;
+    if ((pml4_entry & VMM_FLAG_PRESENT) == 0) return 1;
 
     uint64_t pdpt_phys = pml4_entry & VMM_ENTRY_ADDR_MASK;
     uint64_t *pdpt_virt = (uint64_t *)(pdpt_phys + hhdm_offset);
     uint64_t pdpt_entry = pdpt_virt[pdpt_idx];
-    if ((pdpt_entry & VMM_FLAG_PRESENT) == 0) return;
+    if ((pdpt_entry & VMM_FLAG_PRESENT) == 0) return 1;
 
     uint64_t pd_phys = pdpt_entry & VMM_ENTRY_ADDR_MASK;
     uint64_t *pd_virt = (uint64_t *)(pd_phys + hhdm_offset);
     uint64_t pd_entry = pd_virt[pd_idx];
-    if ((pd_entry & VMM_FLAG_PRESENT) == 0) return;
+    if ((pd_entry & VMM_FLAG_PRESENT) == 0) return 1;
 
     uint64_t pt_phys = pd_entry & VMM_ENTRY_ADDR_MASK;
     uint64_t *pt_virt = (uint64_t *)(pt_phys + hhdm_offset);
@@ -113,6 +113,9 @@ void vmm_unmap(uint64_t pml4_phys, uint64_t vaddr)
     pt_virt[pt_idx] = 0;
 
     __asm__ volatile ("invlpg (%0)" : : "r"(vaddr) : "memory");
+    // SMP-2: CPU lain mungkin masih menyimpan terjemahan ini; frame baru boleh dibebaskan/dipakai
+    // ulang pemanggil SESUDAH fungsi ini kembali, jadi batalkan dulu di CPU lain (sinkron).
+    return tlb_shootdown(pml4_phys, vaddr, 1);
 }
 
 // B3: NX efektif untuk vaddr = OR bit 63 di semua level sampai entri daun

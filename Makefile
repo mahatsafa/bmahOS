@@ -84,7 +84,7 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.S
 USER_CFLAGS := -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -m64 \
                -march=x86-64 -mno-mmx -mno-sse -mno-sse2 -O2 -fno-tree-loop-distribute-patterns \
                -fno-asynchronous-unwind-tables -Wall -Wextra -Werror
-USER_PROGS  := udpgema tcpgema tcpklien batas
+USER_PROGS  := udpgema tcpgema tcpklien batas cpuuji
 
 $(BUILD_DIR)/user/%.elf: userspace/%.c userspace/bm.h userspace/user.ld
 	@mkdir -p $(BUILD_DIR)/user
@@ -164,7 +164,7 @@ HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host -Ithird_party/bearssl/inc
 HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config panic metrics logdisk \
-               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock ota vmm slab slab_prod prio spinlock
+               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock ota vmm slab slab_prod prio spinlock bkl
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
@@ -196,6 +196,8 @@ host_deps_vmm     := $(KERNEL_DIR)/vmm.c       # perbaikan is_valid_user_ptr: di
 host_srcs_pmm     := $(KERNEL_DIR)/kprintf.c
 host_deps_pmm     := $(KERNEL_DIR)/pmm.c tests/host/limine.h   # R6-3: limine.h pengganti
 host_srcs_spinlock := $(KERNEL_DIR)/kprintf.c
+host_srcs_bkl     := $(KERNEL_DIR)/kprintf.c
+host_deps_bkl     := $(KERNEL_DIR)/bkl.c       # SMP-2: di-#include oleh test_bkl.c
 host_srcs_prio    := $(KERNEL_DIR)/kprintf.c
 host_deps_prio    := $(KERNEL_DIR)/prio.c      # F7: di-#include oleh test_prio.c
 host_srcs_slab    := $(KERNEL_DIR)/kprintf.c
