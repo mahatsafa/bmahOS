@@ -164,11 +164,11 @@ HOST_CFLAGS := -std=gnu11 -g -O1 -Wall -Wextra -Werror -fno-omit-frame-pointer \
                -fsanitize=address,undefined -fno-sanitize-recover=all \
                -DBMAHOS_HOST_TEST -I$(KERNEL_DIR) -Itests/host -Ithird_party/bearssl/inc
 HOST_TESTS  := crypto kprintf net auth entropy ktimer audit fat32 config panic metrics logdisk \
-               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock ota vmm slab slab_prod prio spinlock bkl
+               watchdog pmm fbcon pci acpi rtc filter sntp dns monitor dhcp sock ota vmm slab slab_prod prio spinlock bkl ssh
 host_srcs_crypto  := $(KERNEL_DIR)/crypto.c
 host_srcs_kprintf := $(KERNEL_DIR)/kprintf.c
 host_srcs_net     := $(KERNEL_DIR)/ktimer.c $(KERNEL_DIR)/kprintf.c \
-                     $(KERNEL_DIR)/tls.c   # C3c: timer retransmisi, D9b: TLS 7780
+                     $(KERNEL_DIR)/tls.c $(KERNEL_DIR)/ssh.c $(KERNEL_DIR)/sshload.c   # C3c: timer retransmisi, D9b: TLS 7780, F7 SSH-1b
 host_libs_net      = $(HOST_BEARSSL_LIB)   # '=': didefinisikan di bawah
 host_deps_net     := $(KERNEL_DIR)/net.c $(KERNEL_DIR)/netcon.c $(KERNEL_DIR)/sock.c $(KERNEL_DIR)/ip6.c   # di-#include oleh test_net.c (akses static)
 host_srcs_auth    := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/audit.c $(KERNEL_DIR)/kprintf.c
@@ -228,6 +228,9 @@ host_deps_sock    := $(KERNEL_DIR)/sock.c      # P5-1: di-#include oleh test_soc
 host_srcs_ota     := $(KERNEL_DIR)/crypto.c $(KERNEL_DIR)/kprintf.c
 host_libs_ota      = $(HOST_BEARSSL_LIB)
 host_deps_ota     := $(KERNEL_DIR)/ota.c client/ota-sign.py tests/ota/ota-uji.pem   # P7-1: butuh openssl
+host_srcs_ssh     :=
+host_libs_ssh      = $(HOST_BEARSSL_LIB)
+host_deps_ssh     := $(KERNEL_DIR)/ssh.c $(KERNEL_DIR)/ssh.h tests/host/ssh_vec.h   # F7 SSH-1a: di-#include oleh test_ssh.c
 
 # D9a: BearSSL versi host (clang + ASan/UBSan) dan test_crypto upstream untuk
 # implementasi yang dipakai profil TLS D9. -fno-sanitize=function: vtable BearSSL
@@ -275,13 +278,14 @@ host-test: $(addprefix $(HOST_BUILD)/test_,$(HOST_TESTS)) $(HOST_BUILD)/bearssl_
 #   make fuzz [FUZZ_TARGETS="net auth"] [FUZZ_TIME=600]: tiap target FUZZ_TIME detik,
 #     korpus kerja build/fuzz/corpus/X, temuan build/fuzz/crash-X-*, log build/fuzz/X.log
 #   make fuzz-regress: korpus awal + tests/fuzz/regress/X (temuan yang sudah diperbaiki)
-FUZZ_TARGETS ?= net auth config fat32 logdisk dhcp dns sntp filter ota   # + parser Fase 5, P7-1
+FUZZ_TARGETS ?= net auth config fat32 logdisk dhcp dns sntp filter ota ssh   # + parser Fase 5, P7-1
 FUZZ_TIME    ?= 600
 FUZZ_BUILD   := $(BUILD_DIR)/fuzz
 FUZZ_CFLAGS   = $(HOST_CFLAGS) -DBMAHOS_FUZZ -Wno-unused-function -Itests/fuzz
 FUZZ_DEPS    := tests/fuzz/fuzz.h tests/host/stubs.c tests/host/test.h tests/host/drbg_vectors.h \
                 tests/host/tls_test_keys.h $(HDRS)
 fuzz_maxlen_net := 8192
+fuzz_maxlen_ssh := 40000   # paket SSH sampai 35000 byte
 
 $(FUZZ_BUILD)/fuzz_%: tests/fuzz/fuzz_%.c tests/host/test_%.c $(FUZZ_DEPS) $$(host_srcs_$$*) $$(host_deps_$$*) $$(host_libs_$$*)
 	@mkdir -p $(FUZZ_BUILD)
@@ -299,7 +303,7 @@ fuzz-regress: $(addprefix $(FUZZ_BUILD)/regr_,$(FUZZ_TARGETS))
 fuzz: $(addprefix $(FUZZ_BUILD)/fuzz_,$(FUZZ_TARGETS)) $(addprefix $(FUZZ_BUILD)/regr_,$(FUZZ_TARGETS))
 	@fail=0; for t in $(FUZZ_TARGETS); do s=$(FUZZ_BUILD)/seeds/$$t; c=$(FUZZ_BUILD)/corpus/$$t; \
 	    rm -rf $$s; mkdir -p $$s $$c; $(FUZZ_BUILD)/regr_$$t -s $$s || exit 1; \
-	    case $$t in net) ml="-max_len=$(fuzz_maxlen_net)";; *) ml="";; esac; \
+	    case $$t in net) ml="-max_len=$(fuzz_maxlen_net)";; ssh) ml="-max_len=$(fuzz_maxlen_ssh)";; *) ml="";; esac; \
 	    dict=""; [ -f tests/fuzz/$$t.dict ] && dict="-dict=tests/fuzz/$$t.dict"; \
 	    echo ">> fuzz $$t $(FUZZ_TIME) s (log $(FUZZ_BUILD)/$$t.log)"; \
 	    if $(FUZZ_BUILD)/fuzz_$$t -max_total_time=$(FUZZ_TIME) -print_final_stats=1 $$ml $$dict \

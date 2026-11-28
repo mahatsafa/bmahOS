@@ -59,7 +59,7 @@ Belum pernah diuji di hardware asli.
   app.bmo` (atau `mcopy -i disk.img app.bmo ::APP.BIN`), reboot
 - Packet filter (P4): `FILTER.CFG`, maks 16 aturan cocok-pertama
   `<izinkan|tolak> <semua|tcp|udp|icmp> <semua|a.b.c.d[/n]> [port A[-B]] [laju N]` untuk UDP, ICMP, dan
-  SYN TCP baru; TCP 7780 selalu lolos. Perintah `filter`, `filter tambah|hapus <n>|kosong` (admin)
+  SYN TCP baru; TCP 22 dan 7780 selalu lolos. Perintah `filter`, `filter tambah|hapus <n>|kosong` (admin)
 - Storage: AHCI (baca/tulis blok, flush, poll ber-timeout), FAT32 (baca file; D6: tulis file teks
   <= 4096 byte di root directory lewat perintah admin `ls`/`baca`/`tulis`/`tambah`, D7: `hapus`/`ganti`,
   urutan tulis aman saat crash, lihat `PROTOCOL.md`), `spawn()` program dari disk

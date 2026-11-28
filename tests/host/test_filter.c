@@ -183,6 +183,7 @@ static void test_match(void)
     CHECK(filter_check(IP10, 17, 7500) == 0);                 // luar /24 -> aturan 3
     CHECK(filter_check(IP67, 1, 0) == 0);                     // icmp: port tak cocok -> 3
     CHECK(filter_check(IP10, 6, 7780) == 1);                  // TLS admin selalu lolos
+    CHECK(filter_check(IP10, 6, 22) == 1);                    // F7 SSH-1b: TCP 22 juga selalu lolos
     CHECK(filter_check(IP66, 17, 7780) == 0);                 // hanya TCP; UDP 7780 kena aturan 2 (laju habis)
     CHECK(g_filter[0].hits == 1 && g_filter[0].dropped == 1);
     CHECK(g_filter[1].hits == 4 && g_filter[1].dropped == 2);
@@ -293,7 +294,7 @@ static void test_cmds(void)
     g_filter_drop = 0;
 
     CHECK_STR(run("filter"), "filter: aturan=0 dibuang=0 sumber=tanpa file [cocok/dibuang]; "
-                             "tanpa cocok: izinkan; tcp 7780 selalu lolos\n");
+                             "tanpa cocok: izinkan; tcp 22 dan 7780 selalu lolos\n");
     CHECK_STR(run("filterx"), "(tidak ditangani)");
     CHECK_STR(run("filter tambah tolak udp 192.168.50.66 port 7777"),
               "OK filter 1: tolak udp 192.168.50.66/32 port 7777 (tersimpan)\n");
@@ -307,7 +308,7 @@ static void test_cmds(void)
     CHECK(filter_check(IP66, 17, 7777) == 0);
     CHECK(filter_check(IP67, 1, 0) == 1);
     CHECK_STR(run("filter"), "filter: aturan=2 dibuang=1 sumber=disk [cocok/dibuang]; "
-                             "tanpa cocok: izinkan; tcp 7780 selalu lolos\n"
+                             "tanpa cocok: izinkan; tcp 22 dan 7780 selalu lolos\n"
                              "1: tolak udp 192.168.50.66/32 port 7777 [1/1]\n"
                              "2: izinkan icmp semua laju 3 [1/0]\n");
 

@@ -32,6 +32,7 @@ SLPORT="${BMTEST_SYSLOG_PORT:-17514}"   # P6-2: penerima syslog uji
 UPORT="${BMTEST_SOCK_PORT:-17555}"   # P5-1: soket UDP program user (udpgema port 5555)
 TCPORT="${BMTEST_SOCK_TCP_PORT:-17556}"   # P5-2: soket TCP program user (tcpgema port 5556)
 KPORT="${BMTEST_SOCK_KLIEN_PORT:-17557}"   # P5-3: perintah UDP ke tcpklien (port 5557)
+SSHPORT="${BMTEST_SSH_PORT:-17022}"   # F7 SSH-1b: transport SSH-2 port 22
 OPORT="${BMTEST_OTA_PORT:-17781}"   # P7-2: penerimaan file OTA (port 7781)
 BOOT_TIMEOUT="${BMTEST_BOOT_TIMEOUT:-180}"
 
@@ -79,6 +80,16 @@ openssl req -new -x509 -key "$WORK/TLSKEY.DER" -keyform DER -days 3650 \
     -subj /CN=bmahOS-uji -outform DER -out "$WORK/TLSCERT.DER" 2>/dev/null
 mcopy -i "$DISK" "$WORK/TLSKEY.DER" ::TLSKEY.DER
 mcopy -i "$DISK" "$WORK/TLSCERT.DER" ::TLSCERT.DER
+# F7 SSH-1b: kunci host SSH acak per jalan (EC P-256, DER); fingerprint dihitung di luar
+# kernel: kunci publik (openssl) -> blob ssh -> sha256 -> base64 tanpa "=".
+openssl ecparam -name prime256v1 -genkey -noout -outform DER -out "$WORK/SSHKEY.DER" 2>/dev/null
+mcopy -i "$DISK" "$WORK/SSHKEY.DER" ::SSHKEY.DER
+SSHFP="$(openssl ec -inform DER -in "$WORK/SSHKEY.DER" -pubout -outform DER 2>/dev/null | python3 -c '
+import sys, struct, hashlib, base64
+q = sys.stdin.buffer.read()[-65:]
+def s(b): return struct.pack(">I", len(b)) + b
+blob = s(b"ecdsa-sha2-nistp256") + s(b"nistp256") + s(q)
+print("SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("="))')"
 # R4: LOG.BIN 64 KB (128 rekaman) dialokasikan di host; kernel hanya menimpa isinya.
 head -c 65536 /dev/zero > "$WORK/LOG.BIN"
 mcopy -i "$DISK" "$WORK/LOG.BIN" ::LOG.BIN
@@ -114,7 +125,7 @@ cp "$OVMF_VARS" "$WORK/vars.fd"
     -drive if=pflash,format=raw,file="$WORK/vars.fd" \
     -cdrom "$ISO" \
     -drive id=d0,file="$DISK",format=raw,if=none -device ide-hd,drive=d0,bus=ide.1 \
-    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=tcp:127.0.0.1:$TPORT-192.168.50.200:7,hostfwd=tcp:127.0.0.1:$CPORT-192.168.50.200:7779,hostfwd=tcp:127.0.0.1:$SPORT-192.168.50.200:7780,hostfwd=udp:127.0.0.1:$UPORT-192.168.50.200:5555,hostfwd=tcp:127.0.0.1:$TCPORT-192.168.50.200:5556,hostfwd=udp:127.0.0.1:$KPORT-192.168.50.200:5557,hostfwd=tcp:127.0.0.1:$OPORT-192.168.50.200:7781 \
+    -netdev user,id=n0,net=192.168.50.0/24,host=192.168.50.1,hostfwd=udp:127.0.0.1:$PORT-192.168.50.200:7778,hostfwd=tcp:127.0.0.1:$TPORT-192.168.50.200:7,hostfwd=tcp:127.0.0.1:$CPORT-192.168.50.200:7779,hostfwd=tcp:127.0.0.1:$SPORT-192.168.50.200:7780,hostfwd=tcp:127.0.0.1:$SSHPORT-192.168.50.200:22,hostfwd=udp:127.0.0.1:$UPORT-192.168.50.200:5555,hostfwd=tcp:127.0.0.1:$TCPORT-192.168.50.200:5556,hostfwd=udp:127.0.0.1:$KPORT-192.168.50.200:5557,hostfwd=tcp:127.0.0.1:$OPORT-192.168.50.200:7781 \
     -object filter-dump,id=fd0,netdev=n0,file="$WORK/net.pcap" \
     -device e1000,netdev=n0 \
     -display none -serial file:"$LOG" -no-reboot \
@@ -285,14 +296,14 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=171   # F7 SMP-2: + smp_switch_ap/smp_tlb_shootdown/smp_resched_ipi/smp_bkl_spin, F7 SMP-1: + smp_cpus/smp_online/smp_ipi_tx/smp_ipi_rx/smp_irq_stray, F7 IPv6: + ip6_ignored (review), + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
+R3_N=178   # F7 SSH-1b: + 7 ssh_*, F7 SMP-2: + smp_switch_ap/smp_tlb_shootdown/smp_resched_ipi/smp_bkl_spin, F7 SMP-1: + smp_cpus/smp_online/smp_ipi_tx/smp_ipi_rx/smp_irq_stray, F7 IPv6: + ip6_ignored (review), + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
 check "R3: metrics halaman 1 <= 1400 byte, baris akhir metrics_lanjut=" \
     '[ "$(printf "%s\n" "$R3_P1" | wc -c)" -le 1400 ] && echo "$R3_P1" | tail -1 | grep -q "^metrics_lanjut=[0-9]*$"'
-check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir smp_bkl_spin" \
-    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^smp_bkl_spin="'
+check "R3: bmctl metrics (UDP) ikuti halaman: $R3_N kunci unik, akhir ssh_auth_fail" \
+    '[ "$(echo "$R3_ALL" | grep -c "^[a-z0-9_]*=[0-9]*$")" -eq $R3_N ] && [ "$(echo "$R3_ALL" | cut -d= -f1 | sort -u | wc -l)" -eq $R3_N ] && ! echo "$R3_ALL" | grep -q "^metrics_lanjut=" && echo "$R3_ALL" | tail -1 | grep -q "^ssh_auth_fail="'
 
 # F7 SMP-1: boot utama pakai -smp 2. AP hidup, IPI uji lulus, metrics + perintah cpu. Baris log
 # kernel diakhiri \r\n: tanpa "$" di grep.
@@ -503,6 +514,76 @@ check "D9: pcap: payload 7780 tanpa teks polos (banner, login, perintah, keluara
 check "D9: pcap kontrol: payload 7779 memuat teks polos (penangkapan bekerja)" \
     '! python3 "$ROOT/tests/pcap-check.py" "$WORK/net.pcap" 7779 "bmahOS login" >/dev/null'
 check "D9: AUDIT di serial: login lewat tls" 'grep -aq "AUDIT #.* tls admin login" "$LOG"'
+
+# F7 SSH-1b: port 22 (transport SSH-2). Tanpa login sukses di tahap ini: klien OpenSSH harus
+# sampai kex + kunci host + cipher aes128-gcm lalu "Permission denied (publickey)". Jeda 2,5 s
+# antar sambungan: TIME_WAIT 2,5 s dan maks 2 TCB per IP (host slirp = satu IP untuk semua port).
+check "F7 SSH-1b: serial: SSH aktif port 22, fp = fingerprint dihitung di luar kernel" \
+    '[ -n "$SSHFP" ] && grep -aqF "SSH: aktif port 22 fp=$SSHFP" "$LOG"'
+SSH_HAVE=0; command -v ssh >/dev/null 2>&1 && SSH_HAVE=1
+check "F7 SSH-1b: klien ssh (OpenSSH) tersedia di host uji (wajib, tidak dilewati)" '[ "$SSH_HAVE" -eq 1 ]'
+SSHOPT=(-F /dev/null -p "$SSHPORT" -o BatchMode=yes -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile="$WORK/ssh_known" -o IdentitiesOnly=yes -o IdentityAgent=none
+    -o IdentityFile=none
+    -o PubkeyAuthentication=yes -o PreferredAuthentications=publickey
+    -o HostKeyAlgorithms=ecdsa-sha2-nistp256 -o ConnectTimeout=20)
+: > "$WORK/ssh_known"; : > "$WORK/ssh1.log"; : > "$WORK/ssh2.log"
+sleep 2.5
+if [ "$SSH_HAVE" -eq 1 ]; then
+    timeout 40 ssh -vvv "${SSHOPT[@]}" -c aes128-gcm@openssh.com -o KexAlgorithms=curve25519-sha256 \
+        uji@127.0.0.1 true > "$WORK/ssh1.log" 2>&1
+fi
+tr -d '\r' < "$WORK/ssh1.log" > "$WORK/ssh1.txt"
+check "F7 SSH-1b: ssh -vvv: kex curve25519-sha256 + kunci host ecdsa, fp sama dengan serial" \
+    'grep -Eq "kex: algorithm: curve25519-sha256$" "$WORK/ssh1.txt" && grep -q "kex: host key algorithm: ecdsa-sha2-nistp256" "$WORK/ssh1.txt" && grep -q "Server host key: ecdsa-sha2-nistp256 $SSHFP" "$WORK/ssh1.txt"'
+check "F7 SSH-1b: ssh -vvv: cipher aes128-gcm di kedua arah + strict kex" \
+    'grep -q "kex: server->client cipher: aes128-gcm@openssh.com" "$WORK/ssh1.txt" && grep -q "kex: client->server cipher: aes128-gcm@openssh.com" "$WORK/ssh1.txt" && grep -q "will use strict KEX ordering" "$WORK/ssh1.txt"'
+check "F7 SSH-1b: ssh -vvv berakhir Permission denied (publickey), tanpa galat protokol" \
+    'grep -q "Permission denied (publickey)" "$WORK/ssh1.txt" && ! grep -Eqi "Corrupted MAC|message authentication code|Bad packet|connection corrupted|Protocol error" "$WORK/ssh1.txt"'
+sleep 2.5
+if [ "$SSH_HAVE" -eq 1 ]; then
+    timeout 40 ssh -vvv "${SSHOPT[@]}" -c chacha20-poly1305@openssh.com uji@127.0.0.1 true > "$WORK/ssh2.log" 2>&1
+fi
+tr -d '\r' < "$WORK/ssh2.log" > "$WORK/ssh2.txt"
+check "F7 SSH-1b: klien yang hanya menawarkan chacha20-poly1305 ditolak (tanpa kecocokan cipher)" \
+    '[ -s "$WORK/ssh2.txt" ] && grep -q "no matching cipher found. Their offer: aes128-gcm@openssh.com" "$WORK/ssh2.txt" && ! grep -q "Permission denied (publickey)" "$WORK/ssh2.txt"'
+sleep 2.5
+# Koneksi diam (tanpa mengirim apa pun selain membaca banner) diputus <= ~10-15 s (batas 10 s).
+SSH_IDLE="$(python3 - "$SSHPORT" <<'PYEOF'
+import socket, sys, time
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=30)
+t0 = time.time()
+banner = b""
+try:
+    while True:
+        d = s.recv(4096)
+        if not d:
+            break
+        banner += d
+except (ConnectionResetError, socket.timeout):
+    pass
+print("%d %d" % (banner.startswith(b"SSH-2.0-"), round(time.time() - t0)))
+PYEOF
+)"
+echo "info  SSH koneksi diam: banner/detik = $SSH_IDLE"
+check "F7 SSH-1b: koneksi diam menerima banner SSH-2.0 lalu diputus dalam <= 15 s (batas 10 s)" \
+    '[ "${SSH_IDLE%% *}" = 1 ] && [ "${SSH_IDLE##* }" -ge 5 ] && [ "${SSH_IDLE##* }" -le 15 ]'
+sleep 2.5
+SSH_ST="$($BM ssh 2>&1)"
+echo "$SSH_ST" | sed "s/^/info  ssh: /"
+check "F7 SSH-1b: UDP ssh: aktif port 22, fp sama, kex_ok >= 1, konek >= 3, aktif=0 maks=2 penuh=0 tanpa_entropi=0" \
+    'echo "$SSH_ST" | grep -q "^ssh: aktif port 22$" && echo "$SSH_ST" | grep -q "^fp: $SSHFP$" && [ "$(echo "$SSH_ST" | sed -n "s/.* kex_ok=\([0-9]*\) .*/\1/p")" -ge 1 ] && [ "$(echo "$SSH_ST" | sed -n "s/.* konek=\([0-9]*\) .*/\1/p")" -ge 3 ] && echo "$SSH_ST" | grep -q "^sesi: aktif=0 maks=2 .* penuh=0 tanpa_entropi=0 "'
+sleep 1.2
+SSH_MET="$($BM "metrics ssh_" 2>&1)"
+check "F7 SSH-1b: metrics ssh_: 7 kunci, ssh_kex_ok >= 1, ssh_conn >= 3" \
+    '[ "$(echo "$SSH_MET" | grep -c "^ssh_[a-z_]*=[0-9]*$")" -eq 7 ] && [ "$(echo "$SSH_MET" | sed -n "s/^ssh_kex_ok=//p")" -ge 1 ] && [ "$(echo "$SSH_MET" | sed -n "s/^ssh_conn=//p")" -ge 3 ]'
+SSH_STK="$(echo "$SSH_ST" | sed -n "s/^stack_net: terpakai_maks=\([0-9]*\) dari 32768$/\1/p")"
+echo "info  SSH stack_net sesudah kex: terpakai_maks=$SSH_STK dari 32768"
+check "F7 SSH-1b: stack_net sesudah kex tercetak dan < 24576" '[ -n "$SSH_STK" ] && [ "$SSH_STK" -lt 24576 ]'
+sleep 1.2
+SSH_RD="$($BM "baca SSHKEY.DER" 2>&1)"
+check "F7 SSH-1b: SSHKEY.DER tidak bisa dibaca lewat perintah baca" \
+    'echo "$SSH_RD" | grep -q "nama dilindungi" && ! echo "$SSH_RD" | grep -q "ukuran="'
 
 # D9c: bmctl.py --tls (pin dari file; pin salah -> rc 2 tanpa login).
 echo "$TLSPIN" > "$WORK/tlspin.txt"

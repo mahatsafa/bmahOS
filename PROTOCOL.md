@@ -128,8 +128,8 @@ Server SSH-2 minimal di kernel (net task), primitif BearSSL. Keputusan dan alasa
 - Algoritme (selain ini -> disconnect "tidak ada algoritme yang cocok"):
   - kex: `curve25519-sha256`, `curve25519-sha256@libssh.org`; `kex-strict-s-v00@openssh.com` diiklankan.
   - kunci host: `ecdsa-sha2-nistp256` (SSHKEY.DER).
-  - cipher: `chacha20-poly1305@openssh.com` (hanya bila klien menawarkan `kex-strict-c-v00@openssh.com`),
-    `aes128-gcm@openssh.com`. MAC: tidak ada (implisit AEAD). Kompresi: `none`.
+  - cipher: hanya `aes128-gcm@openssh.com`. MAC: implisit AEAD (`hmac-sha2-256` diiklankan karena daftar tidak boleh
+    kosong, tidak pernah dipakai). Kompresi: `none`.
 - Paket masuk maks 35000 byte; KEXINIT kedua (rekey) -> disconnect; batas 2^28 paket atau 1 GB per arah -> disconnect.
 - Userauth: hanya `publickey` `ecdsa-sha2-nistp256` (query tanpa tanda tangan dijawab PK_OK), kunci dari
   `SSHADM.PUB` (admin) / `SSHRO.PUB` (read-only), format `authorized_keys`, maks 4 kunci per file. Maks 4 percobaan,
@@ -138,6 +138,10 @@ Server SSH-2 minimal di kernel (net task), primitif BearSSL. Keputusan dan alasa
   per baris tanpa pty dan tanpa echo, prompt `bmahOS> `, `exit` menutup. Perintah sama dengan 7779/7780 (peran
   menentukan daftar putih), tanpa HMAC per perintah. `pty-req`, `env`, `x11-req`, forwarding, `auth-agent` ditolak.
 - Maks 2 sesi; entropi belum siap -> SYN dibuang; tanpa SSHKEY.DER sah -> port 22 tertutup (RST).
+
+Keadaan SSH-1 (2026-11-25): transport saja. Semua userauth dijawab FAILURE "publickey" dan setiap koneksi diputus
+10 s sejak ESTABLISHED. Perintah `ssh` (admin dan read-only): `ssh: aktif port 22` / `ssh: nonaktif (<alasan>)`, `fp:`,
+`sesi: aktif= maks= konek= kex_ok= gagal= penuh= tanpa_entropi= auth_gagal=`, `stack_net:`; metrics `ssh_*` (7 kunci).
 
 Membuat kunci (CentOS/Windows; kunci privat pengguna tidak pernah keluar dari klien):
 
@@ -354,9 +358,9 @@ register umum dump panic), maks 160 karakter.
   prefix harus 0; `port` hanya untuk tcp/udp/semua (cocok dengan paket TCP/UDP saja); `laju N` (1..10000)
   hanya untuk `izinkan`: paling banyak N paket per jendela 1 s untuk aturan itu (total).
 - Diperiksa berurutan, aturan pertama yang cocok menentukan; tanpa yang cocok = izinkan. Yang diperiksa:
-  UDP, ICMP, TCP SYN tanpa ACK. TCP ke 7780 selalu lolos. Ditolak = dibuang tanpa balasan.
+  UDP, ICMP, TCP SYN tanpa ACK. TCP ke 22 dan 7780 selalu lolos. Ditolak = dibuang tanpa balasan.
 - `filter` (ro): `filter: aturan=N dibuang=D sumber=<disk|tanpa file|tanpa disk|FILTER.CFG ditolak|...>
-  [cocok/dibuang]; tanpa cocok: izinkan; tcp 7780 selalu lolos`, lalu `N: <aturan kanonik> [cocok/dibuang]`.
+  [cocok/dibuang]; tanpa cocok: izinkan; tcp 22 dan 7780 selalu lolos`, lalu `N: <aturan kanonik> [cocok/dibuang]`.
 - Admin: `filter tambah <aturan>` -> `OK filter N: <aturan kanonik> (tersimpan)`; `filter hapus <n>` ->
   `OK filter: aturan n dihapus, sisa M (tersimpan)`; `filter kosong` -> `OK filter: semua aturan dihapus
   (tersimpan)`. FILTER.CFG ditulis atomik lewat FILTER.TMP; gagal tulis -> `ERR: filter: tidak tersimpan,

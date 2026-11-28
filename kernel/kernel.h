@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "ssh.h"     // F7 SSH-1b
 #include <string.h>   // D9b: kernel/compat/string.h (implementasi kernel/klib.c)
 
 // ---- Port I/O ----
@@ -866,6 +867,12 @@ uint16_t tls_suite(int s);
 int tls_sess_active(void);
 void tls_status(void);
 extern uint64_t g_tls_hs_ok, g_tls_fail, g_tls_full, g_tls_noentropy;
+// F7 SSH-1b (sshload.c): kunci host SSHKEY.DER + status + counter port 22.
+void ssh_load(void);
+int ssh_enabled(void);
+void ssh_status(void);
+int net_tcp_ssh_active(void);
+extern uint64_t g_ssh_conn, g_ssh_kex_ok, g_ssh_fail, g_ssh_full, g_ssh_noentropy, g_ssh_auth_fail;
 uint64_t net_stack_used(void);   // kernel.c: puncak pemakaian stack net task (byte)
 uint64_t net_stack_size(void);
 

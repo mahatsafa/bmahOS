@@ -5,7 +5,7 @@
 // sebelum P4). Diperiksa di net_handle_ipv4 setelah checksum header, sebelum
 // batas laju UDP, untuk UDP, ICMP, dan segmen TCP SYN tanpa ACK (koneksi
 // baru); segmen koneksi yang sudah berjalan tidak disentuh. TCP ke
-// FILTER_MGMT_PORT (TLS 7780) selalu lolos, supaya admin tidak bisa mengunci
+// FILTER_MGMT_PORT (TLS 7780) dan FILTER_SSH_PORT (22) selalu lolos, supaya admin tidak bisa mengunci
 // diri sendiri dari jarak jauh. Paket yang ditolak dibuang diam-diam (tanpa
 // RST/ICMP), hanya dihitung.
 // F7: aturan HANYA untuk IPv4 (filter_ipv4). IPv6 (ip6.c, bawaan mati) tidak melewati
@@ -22,6 +22,7 @@
 #define FILTER_MAX       16
 #define FILTER_FILE_MAX  1536   // 16 aturan terpanjang (61 byte) + header < 1100
 #define FILTER_MGMT_PORT 7780
+#define FILTER_SSH_PORT  22     // F7 SSH-1b: port manajemen kedua, juga selalu lolos
 #define FILTER_RATE_MAX  10000
 
 typedef struct {
@@ -315,7 +316,7 @@ void filter_load(void)
 // berarti untuk TCP/UDP.
 int filter_check(const volatile uint8_t *ip_src, uint8_t proto, uint16_t dport)
 {
-    if (proto == 6 && dport == FILTER_MGMT_PORT) {
+    if (proto == 6 && (dport == FILTER_MGMT_PORT || dport == FILTER_SSH_PORT)) {   // F7 SSH-1b
         return 1;
     }
     uint32_t src = ((uint32_t)ip_src[0] << 24) | ((uint32_t)ip_src[1] << 16) |
@@ -386,12 +387,12 @@ int filter_ipv4(const volatile uint8_t *buf, uint32_t ihl, uint32_t payload_len)
 
 static void flt_list(void)
 {
-    char line[160];
+    char line[192];
 
     // 16 aturan terpanjang + hitungan wajar < CMD_OUT_MAX (1400).
     ksnprintf(line, sizeof(line), "filter: aturan=%u dibuang=%lu sumber=%s [cocok/dibuang]; "
-              "tanpa cocok: izinkan; tcp %u selalu lolos\n", g_filter_n, g_filter_drop,
-              g_filter_src, (unsigned)FILTER_MGMT_PORT);
+              "tanpa cocok: izinkan; tcp %u dan %u selalu lolos\n", g_filter_n, g_filter_drop,
+              g_filter_src, (unsigned)FILTER_SSH_PORT, (unsigned)FILTER_MGMT_PORT);
     cmd_puts(line);
     for (uint32_t i = 0; i < g_filter_n; i++) {
         char rule[64];

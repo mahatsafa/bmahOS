@@ -85,7 +85,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_puts("ERR: perintah kosong (ketik help)\n");
     } else if (net_cmd_is(cmd, len, "help")) {
         cmd_puts("perintah: help ping uptime mem log irq stats metrics mac ip tasks config tls "
-                 "netcon logdisk wd pci acpi waktu filter dns pantau dhcp soket app ota cpu\n");
+                 "netcon logdisk wd pci acpi waktu filter dns pantau dhcp soket app ota cpu ssh\n");
         cmd_puts("admin: pping reboot audit ls baca tulis tambah hapus ganti set "
                  "filter tambah|hapus|kosong waktu sinkron dns <nama> pantau ping|tcp|dns|hapus|syslog "
                  "ota terima\n");
@@ -335,6 +335,13 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
         cmd_putdec(g_slab_bad_free);
         cmd_puts(" uaf=");
         cmd_putdec(g_slab_uaf);
+        cmd_putc('\n');
+    } else if (net_cmd_is(cmd, len, "ssh")) {
+        ssh_status();   // F7 SSH-1b: status SSH port 22, fingerprint, counter
+        cmd_puts("stack_net: terpakai_maks=");
+        cmd_putdec(net_stack_used());
+        cmd_puts(" dari ");
+        cmd_putdec(net_stack_size());
         cmd_putc('\n');
     } else if (net_cmd_is(cmd, len, "tls")) {
         // D9: status TLS 7780, pin sertifikat, counter sesi.

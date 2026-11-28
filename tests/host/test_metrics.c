@@ -33,6 +33,7 @@ uint64_t g_ktimer_fired, g_ktimer_cancelled, g_ktimer_late_max;
 uint64_t g_auth_ok, g_auth_denied[5], g_auth_ctr_off, g_chal_issued;
 uint64_t g_chal_noentropy, g_chal_ip_recycled, g_priv_ok, g_priv_denied[6];
 uint64_t g_tls_hs_ok, g_tls_fail, g_tls_full, g_tls_noentropy;
+uint64_t g_ssh_conn, g_ssh_kex_ok, g_ssh_fail, g_ssh_full, g_ssh_noentropy, g_ssh_auth_fail;   // F7 SSH-1b
 uint64_t g_nc_lost, g_nc_sent, g_nc_arp, g_nc_tx_fail;
 uint64_t g_fat_wr_ok, g_fat_wr_fail, g_audit_seq;
 uint64_t g_ld_written, g_ld_lost, g_ld_wfail, g_ld_bad;
@@ -72,6 +73,7 @@ void e1000_stats_poll(void) { g_stats_polls++; }
 int net_tcp_state(void) { return (int)(g_fn_val & 0x7fffffff); }
 int net_tcp_conn_active(void) { return (int)(g_fn_val & 0x7fffffff); }
 int net_tcp_cli_active(void) { return (int)(g_fn_val & 0x7fffffff); }
+int net_tcp_ssh_active(void) { return 0; }
 int net_tcp_tls_active(void) { return (int)(g_fn_val & 0x7fffffff); }
 uint64_t net_stack_used(void) { return g_fn_val; }
 uint64_t watchdog_timeout_ticks(void) { return g_fn_val; }
@@ -158,7 +160,7 @@ static int walk(const char *pfx, int seen[], uint32_t *maxlen)
 
 static void test_table(void)
 {
-    CHECK(METRICS_N == 171);   // P7-2: + 3 ota_*, P7-4: + app_versi, F7: + 6 slab_* + heap_bad_free, F7 tugas: + 5 res_* + sched_aged, F7 IPv6: + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 SMP-2: + 4 smp_*
+    CHECK(METRICS_N == 178);   // P7-2: + 3 ota_*, P7-4: + app_versi, F7: + 6 slab_* + heap_bad_free, F7 tugas: + 5 res_* + sched_aged, F7 IPv6: + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 SMP-2: + 4 smp_*, F7 SSH-1b: + 7 ssh_*
     CHECK_STR(g_metrics[0].name, "uptime_ticks");
     CHECK_STR(g_metrics[77].name, "priv_hmac");     // 78 kunci lama di depan
     CHECK_STR(g_metrics[78].name, "uptime_s");
@@ -179,7 +181,8 @@ static void test_table(void)
     CHECK_STR(g_metrics[162].name, "smp_cpus");   // F7 SMP-1
     CHECK_STR(g_metrics[166].name, "smp_irq_stray");
     CHECK_STR(g_metrics[167].name, "smp_switch_ap");   // F7 SMP-2
-    CHECK_STR(g_metrics[METRICS_N - 1].name, "smp_bkl_spin");   // kunci baru di akhir
+    CHECK_STR(g_metrics[170].name, "smp_bkl_spin");   // F7 SMP-2: kunci ke-171 (indeks 170)
+    CHECK_STR(g_metrics[METRICS_N - 1].name, "ssh_auth_fail");   // F7 SSH-1b: kunci baru di akhir
     int ok_chars = 1, ok_len = 1, ok_uniq = 1, ok_kind = 1;
     for (uint32_t i = 0; i < METRICS_N; i++) {
         const char *n = g_metrics[i].name;
@@ -287,7 +290,8 @@ static void test_prefix(void)
               "ip6_up=0\nip6_rx=0\nip6_drop=0\nip6_off=0\nip6_nxt_drop=0\nip6_tcp_drop=0\nip6_rate_drop=0\n"
               "ip6_badsum=0\nicmp6_echo=0\nnd_ns_rx=0\nnd_na_tx=0\nnd_na_rx=0\nnd_bad=0\nnd_evict=0\n"
               "ip6_dad_conflict=0\nudp6_echo=0\nip6_ignored=0\n"
-              "smp_cpus=2\nsmp_online=2\nsmp_ipi_tx=3\nsmp_ipi_rx=3\nsmp_irq_stray=0\nsmp_switch_ap=7\nsmp_tlb_shootdown=2\nsmp_resched_ipi=4\nsmp_bkl_spin=9\n");
+              "smp_cpus=2\nsmp_online=2\nsmp_ipi_tx=3\nsmp_ipi_rx=3\nsmp_irq_stray=0\nsmp_switch_ap=7\nsmp_tlb_shootdown=2\nsmp_resched_ipi=4\nsmp_bkl_spin=9\n"
+              "ssh_sess_active=0\nssh_conn=0\nssh_kex_ok=0\nssh_fail=0\nssh_full=0\nssh_noentropy=0\nssh_auth_fail=0\n");
     CHECK_STR(run(" 111"), "kmalloc=0\nkfree=0\nkfree_noop=0\nkmalloc_fail=0\n"
               "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
               "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n"
@@ -298,7 +302,8 @@ static void test_prefix(void)
               "ip6_up=0\nip6_rx=0\nip6_drop=0\nip6_off=0\nip6_nxt_drop=0\nip6_tcp_drop=0\nip6_rate_drop=0\n"
               "ip6_badsum=0\nicmp6_echo=0\nnd_ns_rx=0\nnd_na_tx=0\nnd_na_rx=0\nnd_bad=0\nnd_evict=0\n"
               "ip6_dad_conflict=0\nudp6_echo=0\nip6_ignored=0\n"
-              "smp_cpus=2\nsmp_online=2\nsmp_ipi_tx=3\nsmp_ipi_rx=3\nsmp_irq_stray=0\nsmp_switch_ap=7\nsmp_tlb_shootdown=2\nsmp_resched_ipi=4\nsmp_bkl_spin=9\n");
+              "smp_cpus=2\nsmp_online=2\nsmp_ipi_tx=3\nsmp_ipi_rx=3\nsmp_irq_stray=0\nsmp_switch_ap=7\nsmp_tlb_shootdown=2\nsmp_resched_ipi=4\nsmp_bkl_spin=9\n"
+              "ssh_sess_active=0\nssh_conn=0\nssh_kex_ok=0\nssh_fail=0\nssh_full=0\nssh_noentropy=0\nssh_auth_fail=0\n");
     CHECK_STR(run(" sock_"), "sock_rx=0\nsock_tx=0\nsock_drop=0\nsock_err=0\nsock_noarp=0\n"
               "sock_tcp_accept=0\nsock_tcp_rx_bytes=0\nsock_tcp_tx_bytes=0\nsock_tcp_reset=0\n"
               "sock_connect=0\n");
@@ -324,7 +329,7 @@ static void test_bad_args(void)
 {
     static const char *const bad[] = {
         " ", "  ", " tcp_  1", "  tcp_", " tcp_ ", " 1 2", " 1 tcp_", " tcp_ udp_",
-        " TCP_", " tcp-", " 171", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
+        " TCP_", " tcp-", " 178", " 99999", " 123456", " 1a", " tcp_ 1x", "x",
         " tcp_\t", " -1",
     };
     set_all(0);

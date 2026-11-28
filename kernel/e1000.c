@@ -472,6 +472,7 @@ void e1000_probe_and_log(uint64_t pml4_phys)
     crypto_selftest();
     auth_load_key();
     tls_load();      // D9: TLSKEY.DER + TLSCERT.DER (port 7780), sebelum config
+    ssh_load();      // F7 SSH-1b: SSHKEY.DER (port 22)
     config_load();   // D7: CONFIG.CFG (default bila tidak ada / ditolak)
     dhcp_prepare();  // P3-4: dhcp=1 -> IP 0.0.0.0 sebelum paket IP pertama
     filter_load();   // P4: FILTER.CFG (tidak ada / ditolak = tanpa aturan)

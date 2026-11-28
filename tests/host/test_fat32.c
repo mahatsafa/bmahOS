@@ -326,6 +326,13 @@ static void test_basic(int spc)
     CHECK_STR(run("tulis keyro.txt x"), "ERR: fs: nama dilindungi\n");
     CHECK_STR(run("tambah PROG.BIN x"), "ERR: fs: nama dilindungi\n");
     CHECK_STR(run("tulis app.bin x"), "ERR: fs: nama dilindungi\n");   // P5-4
+    CHECK_STR(run("baca sshkey.der"), "ERR: fs: nama dilindungi\n");   // F7 SSH-1b
+    CHECK_STR(run("tulis SSHADM.PUB x"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("baca SSHRO.PUB"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("hapus SSHKEY.DER"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("tambah SSHRO.PUB x"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("ganti SSHADM.PUB X.TXT"), "ERR: fs: nama dilindungi\n");
+    CHECK_STR(run("ganti HELLO.TXT sshkey.der"), "ERR: fs: nama dilindungi\n");
     CHECK_STR(run("baca APP.BIN"), "ERR: fs: nama dilindungi\n");
     CHECK_STR(run("tulis A.B.C x"), "ERR: fs: nama bukan 8.3 (A-Z 0-9 _ -)\n");
     CHECK_STR(run("tulis NAMAPANJANG.TXT x"), "ERR: fs: nama bukan 8.3 (A-Z 0-9 _ -)\n");

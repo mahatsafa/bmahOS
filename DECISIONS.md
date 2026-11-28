@@ -738,16 +738,17 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **SSH-2 minimal ditulis sendiri di kernel, primitif dari BearSSL.** Ini mengubah penolakan SSH di D8: alasan D8 (SSH
   butuh libc/POSIX) berlaku untuk pustaka server yang ada (Dropbear, wolfSSH, TinySSH semuanya butuh proses/libc/pty), jadi
   yang ditulis adalah lapisan protokol (RFC 4253/4252/4254), bukan primitif. Tidak ada primitif kripto baru: X25519
-  (`br_ec_c25519_m64`), ECDSA P-256 (`ecdsa_i31`), SHA-256, ChaCha20 (`chacha20_ct`), Poly1305 (`poly1305_ctmulq`), AES-128
+  (`br_ec_c25519_m64`), ECDSA P-256 (`ecdsa_i31`), SHA-256, AES-128
   CTR + GHASH (`aes_ct64`, `ghash_ctmul64`), HMAC_DRBG BearSSL di-seed `entropy_get`. Ditolak: menunda sampai userspace
   bisa menjalankan Dropbear/TinySSH (berbulan-bulan: fork/exec/pty/libc). Risiko yang diterima: kesalahan komposisi
   protokol oleh kita (dimitigasi: profil sempit, uji interop OpenSSH di `make test`, fuzz parser, review Opus).
 - **Profil sempit** (selain ini ditolak saat negosiasi):
   kex `curve25519-sha256` (+ alias `curve25519-sha256@libssh.org`) dan `kex-strict-s-v00@openssh.com` (mitigasi Terrapin,
-  dipakai bila klien menawarkan `kex-strict-c-v00@openssh.com`; klien tanpa strict kex (OpenSSH < 9.6 tanpa
-  backport; versi `ssh.exe` Windows pengguna BELUM dicek) tetap diterima tetapi HANYA dengan `aes128-gcm@openssh.com`: Terrapin mengenai chacha20-poly1305 dan mode
-  EtM, bukan GCM);
-  kunci host `ecdsa-sha2-nistp256`; cipher `chacha20-poly1305@openssh.com` dan `aes128-gcm@openssh.com` (MAC implisit);
+  dipakai bila klien menawarkan `kex-strict-c-v00@openssh.com`; klien tanpa strict kex tetap diterima karena Terrapin
+  mengenai chacha20-poly1305 dan mode EtM, bukan GCM. `ssh.exe` Windows 9.5p2 memuat strict kex, dicek 2026-11-25);
+  kunci host `ecdsa-sha2-nistp256`; cipher hanya `aes128-gcm@openssh.com` (MAC implisit). `chacha20-poly1305@openssh.com`
+  dibatalkan (2026-11-25): `br_poly1305_*_run` BearSSL selalu menambah padding + panjang RFC 8439, jadi MAC mentah OpenSSH
+  butuh Poly1305 sendiri (aturan 7), dependensi baru, atau BearSSL yang diubah; akibatnya tidak ada cipher cadangan;
   tanpa CBC/CTR+HMAC, tanpa kompresi, tanpa `ext-info`, tanpa rekey (koneksi ditutup setelah 2^28 paket atau 1 GB per arah;
   KEXINIT kedua dari klien -> disconnect). Ed25519 tidak ada di BearSSL: kunci host dan kunci pengguna hanya P-256
   (dependensi baru seperti Monocypher ditolak untuk sekarang).

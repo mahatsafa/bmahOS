@@ -18,6 +18,7 @@
 static const char *const g_fs_protected[] = {
     "KEY     TXT", "KEYRO   TXT", "PROG    BIN",
     "TLSKEY  DER", "TLSCERT DER",   // D9
+    "SSHKEY  DER", "SSHADM  PUB", "SSHRO   PUB",   // F7 SSH-1b: kunci host + kunci publik klien
     "APP     BIN",   // P5-4: program yang dijalankan saat boot
 };
 

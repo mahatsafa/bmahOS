@@ -140,6 +140,11 @@ static uint64_t met_tls_sess_active(void)
     return (uint64_t)net_tcp_tls_active();
 }
 
+static uint64_t met_ssh_sess_active(void)
+{
+    return (uint64_t)net_tcp_ssh_active();
+}
+
 static const metric_t g_metrics[] = {
     M64("uptime_ticks", timer_ticks),
     MFN("mem_free_kb", met_mem_free_kb),
@@ -317,6 +322,14 @@ static const metric_t g_metrics[] = {
     MFN("smp_tlb_shootdown", smp_metric_tlb),     // shootdown sinkron yang dikirim (ke >= 1 CPU)
     MFN("smp_resched_ipi", smp_metric_resched),   // IPI resched ke AP idle
     MFN("smp_bkl_spin", smp_metric_bkl_spin),     // putaran menunggu BKL (kasar, semua CPU)
+    // F7 SSH-1b: port 22 (kunci baru di akhir).
+    MFN("ssh_sess_active", met_ssh_sess_active),
+    M64("ssh_conn", g_ssh_conn),
+    M64("ssh_kex_ok", g_ssh_kex_ok),
+    M64("ssh_fail", g_ssh_fail),
+    M64("ssh_full", g_ssh_full),
+    M64("ssh_noentropy", g_ssh_noentropy),
+    M64("ssh_auth_fail", g_ssh_auth_fail),
 };
 
 #define METRICS_N (sizeof(g_metrics) / sizeof(g_metrics[0]))

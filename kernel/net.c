@@ -784,7 +784,14 @@ uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
 // selain itu RST. Data -> ota_rx (jendela = ota_rx_space, maks 4 KB); selama
 // diproses (cek + tulis slot) tanpa batas diam; FIN kita setelah baris hasil.
 #define NET_TCP_OTA_PORT    7781
-enum { TCP_APP_ECHO = 0, TCP_APP_CLI, TCP_APP_USER, TCP_APP_OTA };
+// F7 SSH-1b: port 22 = transport SSH-2 (kernel/ssh.c). Hanya dibuka bila SSHKEY.DER
+// termuat (selain itu SYN -> RST); entropi belum siap -> SYN dibuang. Maks
+// SSH_MAX_SESS TCB port 22 (keadaan apa pun, dihitung terpisah dari 7779/7780),
+// penggusuran SYN_RCVD sama dengan 7780. Sesi ssh dibuka saat ESTABLISHED (SYN
+// palsu tidak memakan slot/CPU). Seluruh koneksi dibatasi TCP_LOGIN_TIMEOUT
+// sejak ESTABLISHED, apa pun lalu lintasnya; kode CLI tidak berlaku untuk TCB ini.
+#define NET_TCP_SSH_PORT    22
+enum { TCP_APP_ECHO = 0, TCP_APP_CLI, TCP_APP_USER, TCP_APP_OTA, TCP_APP_SSH };
 
 // Nilai juga dipakai metrics tcp_state. P5-3: SYN_SENT (connect) di akhir
 // supaya nilai lama tetap.
@@ -829,6 +836,9 @@ typedef struct {
     int tls;            // D9: slot TLS + 1 (0 = teks polos)
     int tls_banner;     // D9: handshake selesai, banner sudah dikirim
     int tls_closing;    // D9: close_notify kita sudah diantre
+    int ssh;            // F7 SSH-1b: slot ssh + 1 (0 = tidak ada)
+    int ssh_kex;        // F7 SSH-1b: log kex OK sudah dicetak
+    const char *ssh_note;   // F7 SSH-1b: alasan penutupan dari net (bukan dari ssh.c)
 } tcp_tcb_t;
 
 #define TCB_CHAN(t)  ((t)->tls ? AUDIT_TLS : AUDIT_TCP)
@@ -890,6 +900,11 @@ int net_tcp_cli_active(void)
 int net_tcp_tls_active(void)
 {
     return net_tcp_port_active(NET_TCP_TLS_PORT);
+}
+
+int net_tcp_ssh_active(void)
+{
+    return net_tcp_port_active(NET_TCP_SSH_PORT);
 }
 
 // 1 = ada TCB 7781 SYN_RCVD/ESTABLISHED, 2 = hanya yang sedang menutup, 0 = tidak ada.
@@ -1207,6 +1222,28 @@ static void net_tcp_rtx_progress(tcp_tcb_t *t)
 // D9: slot TLS dilepas (dan dihapus) setiap kali TCB menjadi CLOSED.
 static void net_tcp_tls_release(tcp_tcb_t *t)
 {
+    if (t->ssh) {   // F7 SSH-1b: semua jalur pelepasan TCB lewat sini
+        int s = t->ssh - 1;
+        const char *w = ssh_why(s);
+        // Peer menutup tanpa alasan dari ssh.c: di AUTH = klien menyerah setelah kunci
+        // ditolak (perilaku OpenSSH) -> auth_fail; sebelum itu tidak dihitung.
+        int auth = ssh_state(s) == SSH_ST_AUTH && t->ssh_note == 0;
+        int quiet = w[0] == 0 && t->ssh_note == 0;
+
+        if (w[0] == 0) {
+            w = t->ssh_note ? t->ssh_note : "koneksi diputus";
+        }
+        if (auth || (strlen(w) >= 8 && memcmp(w, "userauth", 8) == 0)) {
+            g_ssh_auth_fail++;
+        } else if (!quiet && (strlen(w) < 13 || memcmp(w, "klien memutus", 13) != 0)) {
+            g_ssh_fail++;
+        }
+        kprintf("SSH: ditutup (%s)\r\n", w);
+        ssh_close(s);
+        t->ssh = 0;
+        t->ssh_kex = 0;
+        t->ssh_note = 0;
+    }
     if (t->tls) {
         tls_free(t->tls - 1);
         t->tls = 0;
@@ -1298,6 +1335,12 @@ static int net_tcp_cli_flushed(const tcp_tcb_t *t)
 {
     if (t->buf_count != 0 || t->out_pos != t->out_len) {
         return 0;
+    }
+    if (t->ssh) {   // F7 SSH-1b: keluaran ssh juga sudah habis
+        uint32_t n = 0;
+
+        (void)ssh_out_peek(t->ssh - 1, &n);
+        return n == 0;
     }
     if (!t->tls) {
         return 1;
@@ -1606,6 +1649,45 @@ static int net_tcp_user_poll(tcp_tcb_t *t)
     return 1;
 }
 
+// F7 SSH-1b: pompa ssh <-> antrean TCP. Keluaran ssh -> antrean kirim (sebanyak
+// ruang; ssh_out_consume sekaligus memproses sisa masukan yang tertahan),
+// ssh_done -> FIN setelah antrean habis. Masukan masuk lewat net_tcp_app_rx.
+static int net_tcp_ssh_pump(tcp_tcb_t *t)
+{
+    int s = t->ssh - 1;
+
+    if (t->state != TCP_ESTABLISHED && t->state != TCP_CLOSE_WAIT) {
+        return 1;
+    }
+    for (int round = 0; round < 16; round++) {
+        uint32_t len = 0;
+        const uint8_t *p = ssh_out_peek(s, &len);
+        int moved = 0;
+
+        if (len > 0) {
+            uint32_t n = net_tcp_queue(t, p, len);
+
+            if (n > 0) {
+                ssh_out_consume(s, n);
+                moved = 1;
+            }
+        }
+        // Kex sah baru setelah klien mengirim NEWKEYS (SERVICE), bukan saat kunci kita siap.
+        if (!t->ssh_kex && (ssh_state(s) == SSH_ST_SERVICE || ssh_state(s) == SSH_ST_AUTH)) {
+            t->ssh_kex = 1;
+            g_ssh_kex_ok++;
+            kprintf("SSH: kex OK cipher=aes128-gcm sesi=%d\r\n", s);
+        }
+        if (ssh_done(s) && !t->close_after) {
+            t->close_after = 1;
+        }
+        if (!moved) {
+            break;
+        }
+    }
+    return 1;
+}
+
 static void net_tcp_tick_one(tcp_tcb_t *t)
 {
     if (t->state == TCP_CLOSED) {
@@ -1620,6 +1702,21 @@ static void net_tcp_tick_one(tcp_tcb_t *t)
             return;
         }
         net_tcp_output(t);
+    }
+    // F7 SSH-1b: pompa, lalu batas 10 s sejak ESTABLISHED untuk seluruh koneksi
+    // (SSH-1 belum punya login sukses), terlepas dari lalu lintas: RST.
+    if (t->app == TCP_APP_SSH && t->ssh) {
+        if (!net_tcp_ssh_pump(t)) {
+            return;
+        }
+        net_tcp_output(t);
+    }
+    if (t->app == TCP_APP_SSH && t->state >= TCP_ESTABLISHED && t->state != TCP_TIME_WAIT &&
+        t->state != TCP_SYN_SENT && timer_ticks - t->opened > TCP_LOGIN_TIMEOUT) {
+        t->ssh_note = "batas waktu 10 s";
+        net_tcp_tcb_send(t, t->snd_nxt, TCP_RST | TCP_ACK, 0);
+        net_tcp_close(t, "SSH batas waktu, RST");
+        return;
     }
     // P7-2: baris hasil OTA -> antrean kirim, lalu FIN setelah di-ACK.
     if (t->app == TCP_APP_OTA && !t->close_after &&
@@ -1730,6 +1827,12 @@ static uint32_t net_tcp_app_rx(tcp_tcb_t *t, const volatile uint8_t *d, uint32_t
     if (t->tls) {
         return tls_feed(t->tls - 1, d, len);   // D9: record
     }
+    if (t->app == TCP_APP_SSH) {
+        if (t->ssh == 0 || t->close_after) {
+            return len;   // ditutup oleh kita: data dibuang (seperti TLS), bukan RST
+        }
+        return ssh_feed(t->ssh - 1, d, len);   // tidak dikonsumsi = tidak di-ACK
+    }
     if (t->app == TCP_APP_CLI) {
         return net_tcp_cli_rx(t, d, len);
     }
@@ -1772,6 +1875,9 @@ static void net_tcp_tcb_init(tcp_tcb_t *t, const volatile uint8_t *mac,
     t->tls = tls_slot + 1;
     t->tls_banner = 0;
     t->tls_closing = 0;
+    t->ssh = 0;
+    t->ssh_kex = 0;
+    t->ssh_note = 0;
     t->cli_authed = 0;
     t->role = AUTH_ROLE_NONE;
     t->cli_last = 0;
@@ -2042,6 +2148,23 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             if (t->app == TCP_APP_USER) {
                 sock_tcp_open(TCB_USER(t));   // P5-2: siap di-accept
             }
+            if (t->app == TCP_APP_SSH) {
+                int s = ssh_open();   // F7 SSH-1b: baru di ESTABLISHED, bukan di SYN
+
+                t->opened = timer_ticks;
+                if (s < 0) {
+                    if (s == SSH_ERR_ENTROPY) {
+                        g_ssh_noentropy++;
+                    } else if (s == SSH_ERR_FULL) {
+                        g_ssh_full++;
+                    }
+                    net_tcp_tcb_send(t, t->snd_nxt, TCP_RST | TCP_ACK, 0);
+                    net_tcp_close(t, "SSH tidak bisa dibuka, RST");
+                    return 1;
+                }
+                t->ssh = s + 1;
+                g_ssh_conn++;
+            }
             if (t->app == TCP_APP_CLI) {
                 t->opened = timer_ticks;
                 if (!t->tls) {
@@ -2087,7 +2210,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         if (seq_le(t->snd_una, ack)) {
             t->snd_wnd = ((uint32_t)buf[r + 14] << 8) | (uint32_t)buf[r + 15];
         }
-        if (t->tls) {
+        if (t->ssh) {
+            (void)net_tcp_ssh_pump(t);
+        } else if (t->tls) {
             if (!net_tcp_tls_pump(t)) {
                 return 1;
             }
@@ -2108,7 +2233,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         // kita tidak punya pembaca (echo sudah menutup). Keduanya: RST.
         // D9: kecuali record TLS (close_notify balasan peer) setelah close_notify
         // + FIN kita: di-ACK lalu dibuang.
-        if (t->tls && t->tls_closing && dlen > 0 &&
+        if (((t->tls && t->tls_closing) || t->app == TCP_APP_SSH) && dlen > 0 &&
             (t->state == TCP_FIN_WAIT_1 || t->state == TCP_FIN_WAIT_2)) {
             n = dlen;
             t->rcv_nxt += n;
@@ -2126,7 +2251,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
             if (n > 0) {
                 t->last = timer_ticks;   // C5b: kemajuan
             }
-            if (t->tls && !net_tcp_tls_pump(t)) {
+            if (t->ssh) {
+                (void)net_tcp_ssh_pump(t);
+            } else if (t->tls && !net_tcp_tls_pump(t)) {
                 return 1;
             }
         }
@@ -2183,7 +2310,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
 
     if (((dport == NET_TCP_ECHO_PORT && g_net_echo) ||
          (dport == NET_TCP_CLI_PORT && g_cli_plain) ||
-         (dport == NET_TCP_TLS_PORT && tls_enabled())) &&
+         (dport == NET_TCP_TLS_PORT && tls_enabled()) ||
+         (dport == NET_TCP_SSH_PORT && ssh_enabled())) &&
         (flags & TCP_SYN) &&
         !(flags & (TCP_ACK | TCP_RST))) {
         uint32_t same_ip = 0, cli_n = 0;
@@ -2209,7 +2337,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
                 (victim == 0 || e->last < victim->last)) {
                 victim = e;
             }
-            if (e->app == TCP_APP_CLI && e->lport == dport) {   // D9: per port
+            if ((e->app == TCP_APP_CLI || e->app == TCP_APP_SSH) &&
+                e->lport == dport) {   // D9: per port (F7: 22 terpisah dari 7779/7780)
                 cli_n++;
                 if (e->state == TCP_SYN_RCVD &&
                     (cli_victim == 0 || e->last < cli_victim->last)) {
@@ -2225,9 +2354,14 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         }
         // D4: sesi CLI penuh: hanya SYN_RCVD CLI yang boleh digusur.
         if (dport != NET_TCP_ECHO_PORT &&
-            cli_n >= (dport == NET_TCP_TLS_PORT ? TLS_MAX_SESS : TCP_CLI_MAX)) {
+            cli_n >= (dport == NET_TCP_TLS_PORT ? TLS_MAX_SESS :
+                      dport == NET_TCP_SSH_PORT ? SSH_MAX_SESS : TCP_CLI_MAX)) {
             if (cli_victim == 0) {
-                g_cli_sess_full++;
+                if (dport == NET_TCP_SSH_PORT) {
+                    g_ssh_full++;
+                } else {
+                    g_cli_sess_full++;
+                }
                 return 0;
             }
             t = 0;
@@ -2243,6 +2377,9 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         // F1.8: tanpa entropi cukup SYN dibuang (bukan RST); peer mengulang.
         if (!entropy_get(isn, sizeof(isn))) {
             g_tcp_noentropy++;
+            if (dport == NET_TCP_SSH_PORT) {
+                g_ssh_noentropy++;
+            }
             net_tcp_log("SYN dibuang: entropi belum cukup");
             return 1;
         }
@@ -2271,7 +2408,8 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
         }
 
         net_tcp_tcb_open(t, buf, r, sport, dport, seq, isn,
-                         dport == NET_TCP_ECHO_PORT ? TCP_APP_ECHO : TCP_APP_CLI, tls_slot);
+                         dport == NET_TCP_ECHO_PORT ? TCP_APP_ECHO :
+                         dport == NET_TCP_SSH_PORT ? TCP_APP_SSH : TCP_APP_CLI, tls_slot);
         return 1;
     }
 

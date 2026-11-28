@@ -2811,6 +2811,8 @@ static void test_config_vals(void)
 // Stub fat32_read_name: hanya TLSKEY.DER / TLSCERT.DER dari g_fk/g_fc.
 static const uint8_t *g_fk, *g_fc;
 static uint32_t g_fk_len, g_fc_len;
+static const uint8_t *g_fsk;   // F7 SSH-1b: SSHKEY.DER
+static uint32_t g_fsk_len;
 
 int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *out_size)
 {
@@ -2822,6 +2824,9 @@ int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *ou
     } else if (memcmp(name83, "TLSCERT DER", 11) == 0) {
         d = g_fc;
         n = g_fc_len;
+    } else if (memcmp(name83, "SSHKEY  DER", 11) == 0) {
+        d = g_fsk;
+        n = g_fsk_len;
     }
     if (d == 0) {
         return FAT32_ERR_NOENT;
@@ -3464,6 +3469,193 @@ static void test_tls_limit(void)
     CHECK(tls_sess_active() == 0);
 }
 
+// ---- F7 SSH-1b: port 22 (transport SSH-2, kernel/ssh.c) ----
+// Klien tiruan di sini hanya sampai baris versi/KEXINIT; kex penuh (curve25519 +
+// GCM) diuji di test_ssh.c dan tests/ssh-interop.sh (klien uji itu terikat ke
+// ssh.c yang di-#include di sana, mahal dipakai ulang di sini).
+static void ssh_files(const uint8_t *k, uint32_t kl)
+{
+    g_fsk = k;
+    g_fsk_len = kl;
+    serial_capture_reset();
+    ssh_load();
+}
+
+static void tcp_reset_ssh(void)
+{
+    for (int k = 0; k < TCP_MAX_CONN; k++) {
+        net_tcp_tls_release(&g_tcbs[k]);
+    }
+    for (int i = 0; i < SSH_MAX_SESS; i++) {
+        ssh_close(i);
+    }
+    tcp_reset();
+}
+
+static uint32_t tx_data_total(void)
+{
+    uint32_t n = 0;
+
+    for (int i = 0; i < g_tx_n; i++) {
+        n += tx_seg(i).len;
+    }
+    return n;
+}
+
+// SYN + ACK ke port 22 dari .ip3; return 1 bila SYN-ACK benar. Banner ada di g_tx.
+static int ssh_conn(uint8_t *f, uint8_t ip3, uint16_t sport, uint32_t pseq, uint32_t isn)
+{
+    int ok = syn_from(f, ip3, sport, pseq, isn);
+
+    rx(f, mk_tcp_from(f, ip3, sport, pseq + 1, isn + 1, F_ACK, ""));
+    return ok;
+}
+
+static void test_ssh_net(void)
+{
+    static uint8_t f[200];
+    uint64_t conn0 = g_ssh_conn, full0 = g_ssh_full, ne0 = g_ssh_noentropy, ev0 = g_tcp_synrcvd_evicted;
+
+    g_from_port = 22;
+    // Kunci host belum ada -> SYN dibalas RST, tanpa TCB.
+    tcp_reset_ssh();
+    ssh_files(0, 0);
+    CHECK(!ssh_enabled() && strstr(g_serial_cap, "SSH: nonaktif (SSHKEY.DER tidak ada)"));
+    rx(f, mk_tcp_from(f, 40, 5000, 100, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && net_tcp_ssh_active() == 0);
+    ssh_files(f, 20);   // sampah
+    CHECK(!ssh_enabled() && strstr(g_serial_cap, "SSH: nonaktif (SSHKEY.DER bukan kunci EC"));
+    ssh_files(T_KEYA, sizeof(T_KEYA));
+    CHECK(ssh_enabled() && strstr(g_serial_cap, "SSH: aktif port 22 fp=SHA256:"));
+
+    // Entropi belum siap: SYN dibuang (tanpa balasan, tanpa TCB).
+    g_entropy_ok = 0;
+    rx(f, mk_tcp_from(f, 40, 5000, 100, 0, F_SYN, ""));
+    CHECK(g_tx_n == 0 && net_tcp_ssh_active() == 0 && g_ssh_noentropy == ne0 + 1);
+    g_entropy_ok = 1;
+    // Entropi hilang antara SYN dan ESTABLISHED: ssh_open gagal -> RST, TCB lepas.
+    CHECK(syn_from(f, 40, 5000, 100, 1000));
+    g_entropy_ok = 0;
+    rx(f, mk_tcp_from(f, 40, 5000, 101, 1001, F_ACK, ""));
+    g_entropy_ok = 1;
+    CHECK(g_tx_n == 1 && (tx_seg(0).flags & F_RST) && g_tcbs[0].state == TCP_CLOSED);
+    CHECK(g_ssh_noentropy == ne0 + 2 && net_tcp_ssh_active() == 0);
+
+    // Banner SSH-2.0 sesudah ESTABLISHED; SYN_RCVD belum memakai slot ssh.
+    tcp_reset_ssh();
+    CHECK(syn_from(f, 41, 5001, 100, 2000));
+    CHECK(net_tcp_ssh_active() == 1 && ssh_state(0) == SSH_ST_FREE && g_tcbs[0].ssh == 0);
+    rx(f, mk_tcp_from(f, 41, 5001, 101, 2001, F_ACK, ""));
+    CHECK(g_ssh_conn == conn0 + 1 && g_tcbs[0].ssh == 1 && ssh_state(0) == SSH_ST_VERSION);
+    CHECK(g_tx_n >= 1 && tx_seg(0).len >= 8 && memcmp(tx_seg(0).data, "SSH-2.0-", 8) == 0);
+    CHECK(!strstr(g_serial_cap, "login") && g_tcbs[0].app == TCP_APP_SSH);   // tanpa banner CLI
+
+    // Batas 10 s sejak ESTABLISHED, tanpa lalu lintas: RST, slot ssh lepas.
+    serial_capture_reset();
+    timer_ticks += 500;
+    g_tx_n = 0;
+    net_tcp_tick();
+    CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_ESTABLISHED);
+    timer_ticks += 600;
+    net_tcp_tick();
+    CHECK(g_tx_n == 1 && (tx_seg(0).flags & F_RST) && g_tcbs[0].state == TCP_CLOSED);
+    CHECK(ssh_state(0) == SSH_ST_FREE && g_tcbs[0].ssh == 0 && net_tcp_ssh_active() == 0);
+    CHECK(strstr(g_serial_cap, "SSH: ditutup (batas waktu 10 s)") != 0);
+
+    // Lalu lintas kecil tidak memperpanjang batas: ketukan tiap detik tetap diputus.
+    tcp_reset_ssh();
+    CHECK(ssh_conn(f, 42, 5002, 100, 3000));
+    // Satu byte DATA sah per detik (memajukan `last`), jadi batas berbasis `last` ketahuan.
+    uint32_t got42 = tx_data_total();
+    int iter42 = 0;
+    serial_capture_reset();
+    while (iter42 < 20 && g_tcbs[0].state == TCP_ESTABLISHED) {
+        char one[2] = { "SSH-2.0-abcdefghijklmnop"[iter42], 0 };
+
+        rx(f, mk_tcp_from(f, 42, 5002, 101 + (uint32_t)iter42, 3001 + got42, F_ACK, one));
+        net_tcp_tick();
+        iter42++;
+    }
+    CHECK(iter42 == 11 && g_tcbs[0].state == TCP_CLOSED && ssh_state(0) == SSH_ST_FREE);
+    CHECK(strstr(g_serial_cap, "SSH: ditutup (batas waktu 10 s)") != 0);
+
+    // Panjang paket tidak sah: DISCONNECT (pesan 1, polos) terkirim SEBELUM FIN.
+    tcp_reset_ssh();
+    CHECK(ssh_conn(f, 45, 5005, 100, 5500));
+    uint32_t s45 = tx_data_total();
+    rx(f, mk_tcp_from(f, 45, 5005, 101, 5501 + s45, F_ACK, "SSH-2.0-x\r\n\xff\xff\xff\xff"));
+    CHECK(ssh_state(0) == SSH_ST_CLOSING);
+    int disc45 = 0;
+    for (int i = 0; i < g_tx_n; i++) {
+        CHECK(!(tx_seg(i).flags & (F_FIN | F_RST)));
+        if (tx_seg(i).len > 6 && tx_seg(i).data[5] == 1) {
+            disc45 = 1;
+        }
+    }
+    s45 += tx_data_total();
+    CHECK(disc45);
+    rx(f, mk_tcp_from(f, 45, 5005, 116, 5501 + s45, F_ACK, ""));
+    CHECK(g_tcbs[0].state == TCP_FIN_WAIT_1);
+    rx(f, mk_tcp_from(f, 45, 5005, 116, 5502 + s45, F_RST | F_ACK, ""));
+    CHECK(g_tcbs[0].state == TCP_CLOSED && ssh_state(0) == SSH_ST_FREE);
+
+    // RST dari peer melepas slot.
+    tcp_reset_ssh();
+    CHECK(ssh_conn(f, 43, 5003, 100, 4000));
+    CHECK(ssh_state(0) == SSH_ST_VERSION);
+    rx(f, mk_tcp_from(f, 43, 5003, 101, 0, F_RST, ""));
+    CHECK(g_tcbs[0].state == TCP_CLOSED && ssh_state(0) == SSH_ST_FREE && g_tcbs[0].ssh == 0);
+
+    // Versi klien salah: ssh menutup -> sisa keluaran -> FIN; data sesudahnya dibuang tanpa RST.
+    tcp_reset_ssh();
+    CHECK(ssh_conn(f, 44, 5004, 100, 5000));
+    uint32_t sent = tx_data_total();
+    rx(f, mk_tcp_from(f, 44, 5004, 101, 5001 + sent, F_ACK, "SSH-1.5-x\r\n"));
+    sent += tx_data_total();
+    CHECK(ssh_state(0) == SSH_ST_CLOSING && ssh_why(0)[0]);
+    rx(f, mk_tcp_from(f, 44, 5004, 112, 5001 + sent, F_ACK, ""));
+    CHECK(g_tcbs[0].state == TCP_FIN_WAIT_1 && g_tcbs[0].snd_nxt == g_tcbs[0].iss + 2 + sent);   // FIN sudah keluar
+    rx(f, mk_tcp_from(f, 44, 5004, 112, 5002 + sent, F_ACK, ""));
+    CHECK(g_tcbs[0].state == TCP_FIN_WAIT_2);
+    rx(f, mk_tcp_from(f, 44, 5004, 112, 5002 + sent, F_ACK, "xyz"));
+    CHECK(g_tcbs[0].state == TCP_FIN_WAIT_2 && (g_tx_n == 0 || !(tx_seg(0).flags & F_RST)));
+    rx(f, mk_tcp_from(f, 44, 5004, 115, 5002 + sent, F_FIN | F_ACK, ""));
+    CHECK(g_tcbs[0].state == TCP_TIME_WAIT);
+    timer_ticks += 100000;
+    net_tcp_tick();
+    CHECK(g_tcbs[0].state == TCP_CLOSED && ssh_state(0) == SSH_ST_FREE && g_ssh_fail > 0);
+
+    // Penuh: dua ESTABLISHED, sesi ke-3 -> RST (g_ssh_full), 7779/7780 tak terpengaruh.
+    tcp_reset_ssh();
+    CHECK(ssh_conn(f, 50, 5010, 100, 6000));
+    CHECK(ssh_conn(f, 51, 5011, 100, 6100));
+    rx(f, mk_tcp_from(f, 52, 5012, 100, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && g_ssh_full == full0 + 1);
+    CHECK(net_tcp_ssh_active() == 2);
+    g_from_port = 7779;
+    CHECK(syn_from(f, 53, 5013, 100, 6200));
+    g_from_port = 22;
+    // Satu ESTABLISHED + SYN_RCVD: sesi baru menggusur SYN_RCVD ssh tertua.
+    tcp_reset_ssh();
+    CHECK(ssh_conn(f, 54, 5020, 100, 7000));
+    CHECK(syn_from(f, 55, 5021, 100, 7100));
+    CHECK(syn_from(f, 56, 5022, 100, 7200));
+    CHECK(g_tcp_synrcvd_evicted == ev0 + 1 && net_tcp_ssh_active() == 2);
+
+    // Backpressure: jendela peer 60 byte -> keluaran ditahan, sisanya mengalir setelah ACK.
+    tcp_reset_ssh();
+    g_wport = 22;
+    tcp_open(8000, 9000, 60);
+    uint32_t first = tx_data_total();
+    CHECK(g_tcbs[0].ssh == 1 && first > 0 && first <= 60);
+    rx(f, mk_tcp_w(f, g_pseq, g_iss + 1 + first, F_ACK, 0, 0, 4096));
+    CHECK(tx_data_total() > 0 && g_tcbs[0].state == TCP_ESTABLISHED);
+    g_wport = 7;
+    tcp_reset_ssh();
+    ssh_files(0, 0);
+    g_from_port = 7;
+}
+
 #ifndef BMAHOS_FUZZ   // R7: tests/fuzz/fuzz_net.c memakai helper file ini
 // P6-2: SYN probe pantau, dan jawaban SYN-ACK/RST yang diakui kait monitor_tcp_seen.
 static void test_tcp_probe(void)
@@ -3968,6 +4160,7 @@ int main(void)
     test_tls_session(BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256);
     test_tls_fail();
     test_tls_limit();
+    test_ssh_net();   // F7 SSH-1b
     test_limits();
     ip6_bring_up();   // F7: IPv6 aktif selama truncation + fuzz
     build_templates();
