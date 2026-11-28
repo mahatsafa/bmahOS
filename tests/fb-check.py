@@ -49,7 +49,9 @@ def main():
         colors[c] = colors.get(c, 0) + 1
     fg = colors.get(b"\xc0\xc0\xc0", 0)
     other = {c.hex(): n for c, n in colors.items() if c not in (b"\x00\x00\x00", b"\xc0\xc0\xc0")}
-    top = sum(1 for i in range(0, w * 16 * 3, 3) if px[i:i + 3] == b"\xc0\xc0\xc0")
+    # Dua baris teks teratas (32 piksel): log boot berisi baris kosong tunggal, jadi
+    # baris pertama saja bisa kosong tergantung jumlah baris (F7 SSH-2: PROD).
+    top = sum(1 for i in range(0, w * 32 * 3, 3) if px[i:i + 3] == b"\xc0\xc0\xc0")
     print("fb: %dx%d warna=%d piksel_teks=%d baris1=%d lain=%s"
           % (w, h, len(colors), fg, top, dict(list(other.items())[:4])))
     return 0 if not other and fg > 5000 and top > 50 else 1
