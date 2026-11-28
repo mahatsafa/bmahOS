@@ -733,12 +733,14 @@ static void test_tcp(void)
     rx(f, mk_tcp(f, 4001, 7, 7001, iss + 1, F_ACK, "hello"));
     CHECK(g_tx_n == 1 && get32(g_tx[0] + 34 + 8) == 7006);
 
-    // C5a: SYN kedua dari IP yang sama memakai slot lain; ketiga ditolak
-    // (maks TCP_MAX_PER_IP per IP) dengan RST, bukan "sibuk".
+    // C5a: SYN kedua dan ketiga dari IP yang sama memakai slot lain; keempat ditolak
+    // (maks TCP_MAX_PER_IP = 3 per IP sejak F7 SSH-2) dengan RST, bukan "sibuk".
     uint64_t busy0 = g_tcp_busy, full0 = g_tcp_src_full;
     rx(f, mk_tcp(f, 4002, 7, 1, 0, F_SYN, ""));
     CHECK(g_tx_n == 1 && g_tx[0][34 + 13] == (F_SYN | F_ACK) && g_tcbs[1].state == TCP_SYN_RCVD);
     rx(f, mk_tcp(f, 4003, 7, 1, 0, F_SYN, ""));
+    CHECK(g_tx_n == 1 && g_tx[0][34 + 13] == (F_SYN | F_ACK) && g_tcbs[2].state == TCP_SYN_RCVD);
+    rx(f, mk_tcp(f, 4004, 7, 1, 0, F_SYN, ""));
     CHECK(g_tcp_src_full == full0 + 1 && g_tcp_busy == busy0 && g_tx_n == 1 &&
           (g_tx[0][34 + 13] & F_RST));
 
@@ -2185,24 +2187,28 @@ static void test_tcp_table(void)
     tcp_reset();
     CHECK(net_tcp_conn_active() == 0 && net_tcp_state() == TCP_CLOSED);
 
-    // Dua koneksi dari .31 (ESTABLISHED), yang ketiga ditolak RST.
+    // Tiga koneksi dari .31 (ESTABLISHED), yang keempat ditolak RST (F7 SSH-2: 6 slot, 3 per IP).
     CHECK(syn_from(f, 31, 5001, 100, 1000));
     rx(f, mk_tcp_from(f, 31, 5001, 101, 1001, F_ACK, ""));
     CHECK(syn_from(f, 31, 5002, 200, 2000));
     rx(f, mk_tcp_from(f, 31, 5002, 201, 2001, F_ACK, ""));
-    CHECK(g_tcbs[0].state == TCP_ESTABLISHED && g_tcbs[1].state == TCP_ESTABLISHED);
+    CHECK(syn_from(f, 31, 5004, 250, 2500));
+    rx(f, mk_tcp_from(f, 31, 5004, 251, 2501, F_ACK, ""));
+    CHECK(g_tcbs[0].state == TCP_ESTABLISHED && g_tcbs[1].state == TCP_ESTABLISHED &&
+          g_tcbs[2].state == TCP_ESTABLISHED);
     rx(f, mk_tcp_from(f, 31, 5003, 300, 0, F_SYN, ""));
     CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && tx_seg(0).ack == 301);
-    CHECK(g_tcp_src_full == full0 + 1 && net_tcp_conn_active() == 2);
+    CHECK(g_tcp_src_full == full0 + 1 && net_tcp_conn_active() == 3);
 
-    // Dua SYN_RCVD dari .32 lalu .33: tabel penuh.
+    // Tiga SYN_RCVD dari .32, .33, .37: tabel penuh.
     CHECK(syn_from(f, 32, 5010, 400, 3000));
     CHECK(syn_from(f, 33, 5020, 500, 4000));
-    CHECK(net_tcp_conn_active() == 4);
+    CHECK(syn_from(f, 37, 5060, 900, 7000));
+    CHECK(net_tcp_conn_active() == 6);
 
     // .34: SYN_RCVD tertua (.32) digusur tanpa RST, .34 mendapat slotnya.
     CHECK(syn_from(f, 34, 5030, 600, 5000));
-    CHECK(g_tcp_synrcvd_evicted == ev0 + 1 && g_tcbs[2].ip[3] == 34 && g_tcbs[3].ip[3] == 33);
+    CHECK(g_tcp_synrcvd_evicted == ev0 + 1 && g_tcbs[3].ip[3] == 34 && g_tcbs[4].ip[3] == 33);
     // ACK handshake .32 yang terlambat: koneksi tidak ada lagi -> RST seq=ack.
     rx(f, mk_tcp_from(f, 32, 5010, 401, 3001, F_ACK, ""));
     CHECK(g_tx_n == 1 && tx_seg(0).flags == F_RST && tx_seg(0).seq == 3001);
@@ -2210,22 +2216,24 @@ static void test_tcp_table(void)
     // Semua ESTABLISHED: SYN baru -> RST (sibuk), tidak ada yang digusur.
     rx(f, mk_tcp_from(f, 33, 5020, 501, 4001, F_ACK, ""));
     rx(f, mk_tcp_from(f, 34, 5030, 601, 5001, F_ACK, ""));
-    CHECK(g_tcbs[2].state == TCP_ESTABLISHED && g_tcbs[3].state == TCP_ESTABLISHED);
+    rx(f, mk_tcp_from(f, 37, 5060, 901, 7001, F_ACK, ""));
+    CHECK(g_tcbs[3].state == TCP_ESTABLISHED && g_tcbs[4].state == TCP_ESTABLISHED &&
+          g_tcbs[5].state == TCP_ESTABLISHED);
     rx(f, mk_tcp_from(f, 35, 5040, 700, 0, F_SYN, ""));
     CHECK(g_tx_n == 1 && tx_seg(0).flags == (F_RST | F_ACK) && g_tcp_busy == busy0 + 1);
-    CHECK(g_tcp_synrcvd_evicted == ev0 + 1 && net_tcp_conn_active() == 4);
+    CHECK(g_tcp_synrcvd_evicted == ev0 + 1 && net_tcp_conn_active() == 6);
 
     // Echo per koneksi: data .33 kembali ke .33 dengan nomor urutnya sendiri,
     // koneksi lain tidak tersentuh.
     rx(f, mk_tcp_from(f, 33, 5020, 501, 4001, F_ACK | 0x08, "tiga"));
     CHECK(g_tx_n == 1 && g_tx[0][33] == 33 && tx_seg(0).seq == 4001 && tx_seg(0).ack == 505 &&
           tx_seg(0).len == 4 && memcmp(tx_seg(0).data, "tiga", 4) == 0);
-    CHECK(g_tcbs[3].buf_count == 4 && g_tcbs[0].buf_count == 0 && g_tcbs[2].buf_count == 0);
-    CHECK(ktimer_pending(&g_tcp_rtx_timer[3]) && !ktimer_pending(&g_tcp_rtx_timer[2]));
+    CHECK(g_tcbs[4].buf_count == 4 && g_tcbs[0].buf_count == 0 && g_tcbs[3].buf_count == 0);
+    CHECK(ktimer_pending(&g_tcp_rtx_timer[4]) && !ktimer_pending(&g_tcp_rtx_timer[3]));
 
     // RST dari .31:5001 hanya menutup slot 0; slot itu lalu dipakai SYN baru.
     rx(f, mk_tcp_from(f, 31, 5001, 101, 0, F_RST, ""));
-    CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_CLOSED && net_tcp_conn_active() == 3);
+    CHECK(g_tx_n == 0 && g_tcbs[0].state == TCP_CLOSED && net_tcp_conn_active() == 5);
     CHECK(net_tcp_state() == TCP_ESTABLISHED);
     CHECK(syn_from(f, 36, 5050, 800, 6000) && g_tcbs[0].ip[3] == 36);
     CHECK(g_tx_bad == 0);
@@ -2813,6 +2821,7 @@ static const uint8_t *g_fk, *g_fc;
 static uint32_t g_fk_len, g_fc_len;
 static const uint8_t *g_fsk;   // F7 SSH-1b: SSHKEY.DER
 static uint32_t g_fsk_len;
+static const char *g_fadm, *g_fro;   // F7 SSH-2: SSHADM.PUB / SSHRO.PUB (teks), 0 = tidak ada
 
 int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *out_size)
 {
@@ -2827,6 +2836,12 @@ int fat32_read_name(const char *name83, uint8_t *out, uint32_t max, uint32_t *ou
     } else if (memcmp(name83, "SSHKEY  DER", 11) == 0) {
         d = g_fsk;
         n = g_fsk_len;
+    } else if (memcmp(name83, "SSHADM  PUB", 11) == 0 && g_fadm) {
+        d = (const uint8_t *)g_fadm;
+        n = (uint32_t)strlen(g_fadm);
+    } else if (memcmp(name83, "SSHRO   PUB", 11) == 0 && g_fro) {
+        d = (const uint8_t *)g_fro;
+        n = (uint32_t)strlen(g_fro);
     }
     if (d == 0) {
         return FAT32_ERR_NOENT;
@@ -3527,6 +3542,22 @@ static void test_ssh_net(void)
     CHECK(!ssh_enabled() && strstr(g_serial_cap, "SSH: nonaktif (SSHKEY.DER bukan kunci EC"));
     ssh_files(T_KEYA, sizeof(T_KEYA));
     CHECK(ssh_enabled() && strstr(g_serial_cap, "SSH: aktif port 22 fp=SHA256:"));
+    // F7 SSH-2: SSHADM.PUB / SSHRO.PUB; kunci yang sama di keduanya -> SSHRO.PUB ditolak (DECISIONS 2026-11-24)
+    CHECK(strstr(g_serial_cap, "SSH: kunci pengguna admin=0 ro=0"));
+    static const char pk1[] = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBCEFldy8tNCPHKrns43qr4enV3ks/fmc7XrQr3qR486Vojh7OZFPROrohl48lVDHsD9LdWfe8OqUZMhCMJXDJgo= uji1\n", pk2[] = "# komentar\r\necdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBNICOOAuxyKxp9kGmb0AhKweatQjrk+V2oBjq4YBDturi6BPk6CdoL+CMN7tU4F0uk4MaLNaxgfHuOA36HZL2eg= uji2\r\n";
+    g_fadm = pk1;
+    g_fro = pk2;
+    ssh_files(T_KEYA, sizeof(T_KEYA));
+    CHECK(strstr(g_serial_cap, "SSH: kunci pengguna admin=1 ro=1") && !strstr(g_serial_cap, "ditolak"));
+    CHECK(ssh_authkey_count(SSH_ROLE_ADMIN) == 1 && ssh_authkey_count(SSH_ROLE_RO) == 1);
+    g_fro = pk1;
+    ssh_files(T_KEYA, sizeof(T_KEYA));
+    CHECK(strstr(g_serial_cap, "SSH: SSHRO.PUB ditolak: 1 kunci sama dengan SSHADM.PUB") &&
+          strstr(g_serial_cap, "SSH: kunci pengguna admin=1 ro=0"));
+    CHECK(ssh_authkey_count(SSH_ROLE_ADMIN) == 1 && ssh_authkey_count(SSH_ROLE_RO) == 0);
+    g_fadm = g_fro = 0;
+    ssh_files(T_KEYA, sizeof(T_KEYA));
+    CHECK(ssh_authkey_count(SSH_ROLE_ADMIN) == 0 && ssh_authkey_count(SSH_ROLE_RO) == 0);
 
     // Entropi belum siap: SYN dibuang (tanpa balasan, tanpa TCB).
     g_entropy_ok = 0;

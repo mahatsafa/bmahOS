@@ -873,6 +873,8 @@ int ssh_enabled(void);
 void ssh_status(void);
 int net_tcp_ssh_active(void);
 extern uint64_t g_ssh_conn, g_ssh_kex_ok, g_ssh_fail, g_ssh_full, g_ssh_noentropy, g_ssh_auth_fail;
+extern uint64_t g_ssh_login, g_ssh_cmd, g_ssh_idle;   // F7 SSH-2
+void net_ssh_install(void);   // net.c: callback exec/audit ssh.c
 uint64_t net_stack_used(void);   // kernel.c: puncak pemakaian stack net task (byte)
 uint64_t net_stack_size(void);
 
@@ -1145,7 +1147,7 @@ void net_cmd_handle(volatile uint8_t *req, uint32_t ihl, uint32_t udp_len);
 
 // ---- audit.c (D5: audit log di RAM, dua ring) ----
 // Urutan enum = indeks nama di audit.c; mulai AUDIT_LOGIN_FAIL = ring gagal.
-enum { AUDIT_TCP = 0, AUDIT_UDP, AUDIT_TLS };
+enum { AUDIT_TCP = 0, AUDIT_UDP, AUDIT_TLS, AUDIT_SSH };
 enum { AUDIT_LOGIN = 0, AUDIT_CMD, AUDIT_CMD_ROLE, AUDIT_IDLE,
        AUDIT_LOGIN_FAIL, AUDIT_LOGIN_TIMEOUT, AUDIT_LINE_LONG, AUDIT_CMD_FAIL };
 void audit_record(int ev, int chan, const volatile uint8_t *ip, uint16_t port,

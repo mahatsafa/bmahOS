@@ -84,6 +84,12 @@ mcopy -i "$DISK" "$WORK/TLSCERT.DER" ::TLSCERT.DER
 # kernel: kunci publik (openssl) -> blob ssh -> sha256 -> base64 tanpa "=".
 openssl ecparam -name prime256v1 -genkey -noout -outform DER -out "$WORK/SSHKEY.DER" 2>/dev/null
 mcopy -i "$DISK" "$WORK/SSHKEY.DER" ::SSHKEY.DER
+# F7 SSH-2: kunci pengguna uji acak (admin, ro, asing); .pub ke disk (authorized_keys)
+for u in uadm uro uasing; do
+    ssh-keygen -q -t ecdsa -b 256 -N "" -C "uji-$u" -f "$WORK/$u" >/dev/null 2>&1
+done
+mcopy -i "$DISK" "$WORK/uadm.pub" ::SSHADM.PUB
+mcopy -i "$DISK" "$WORK/uro.pub" ::SSHRO.PUB
 SSHFP="$(openssl ec -inform DER -in "$WORK/SSHKEY.DER" -pubout -outform DER 2>/dev/null | python3 -c '
 import sys, struct, hashlib, base64
 q = sys.stdin.buffer.read()[-65:]
@@ -296,7 +302,7 @@ check "laju tick 85..115 per detik (PIT-1)" '[ "$HZ" -ge 85 ] && [ "$HZ" -le 115
 
 # R3: registry metrik. Halaman <= 1400 byte diakhiri metrics_lanjut=<i>;
 # bmctl mengikuti halaman; awalan; argumen salah; CPU/memori/uptime.
-R3_N=178   # F7 SSH-1b: + 7 ssh_*, F7 SMP-2: + smp_switch_ap/smp_tlb_shootdown/smp_resched_ipi/smp_bkl_spin, F7 SMP-1: + smp_cpus/smp_online/smp_ipi_tx/smp_ipi_rx/smp_irq_stray, F7 IPv6: + ip6_ignored (review), + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
+R3_N=181   # F7 SSH-2: + ssh_login/ssh_cmd/ssh_idle, F7 SSH-1b: + 7 ssh_*, F7 SMP-2: + smp_switch_ap/smp_tlb_shootdown/smp_resched_ipi/smp_bkl_spin, F7 SMP-1: + smp_cpus/smp_online/smp_ipi_tx/smp_ipi_rx/smp_irq_stray, F7 IPv6: + ip6_ignored (review), + ip6_up + 15 ip6_/icmp6_/nd_/udp6_, F7 tugas: + 5 res_* + sched_aged, F7: + 6 slab_* + heap_bad_free, R4: + 4 kunci logdisk_*, R5: + 3 kunci wd_*, R6-1: + 3, R6-3: + 8, P5-1: + 5 sock_*, P5-2: + 4 sock_tcp_*, P5-3: + sock_connect, P5-4: + 3 app_*, P7-2: + 3 ota_*, P7-4: + app_versi
 sleep 1.2
 R3_P1="$($BM "metrics 0")"   # mulai eksplisit: bmctl tidak mengikuti halaman
 R3_ALL="$($BM metrics)"
@@ -569,14 +575,56 @@ echo "info  SSH koneksi diam: banner/detik = $SSH_IDLE"
 check "F7 SSH-1b: koneksi diam menerima banner SSH-2.0 lalu diputus dalam <= 15 s (batas 10 s)" \
     '[ "${SSH_IDLE%% *}" = 1 ] && [ "${SSH_IDLE##* }" -ge 5 ] && [ "${SSH_IDLE##* }" -le 15 ]'
 sleep 2.5
+# F7 SSH-2: login publickey + kanal session (exec, shell tanpa pty), peran, audit.
+check "F7 SSH-2: serial: kunci pengguna admin=1 ro=1 dimuat" \
+    'grep -aq "SSH: kunci pengguna admin=1 ro=1" "$LOG"'
+sshu() {   # sshu <kunci> [argumen ssh...]
+    local k="$1"; shift
+    timeout 60 ssh -F /dev/null -p "$SSHPORT" -o BatchMode=yes -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile="$WORK/ssh_known" -o IdentitiesOnly=yes -o IdentityAgent=none \
+        -o IdentityFile="$WORK/$k" -o PreferredAuthentications=publickey \
+        -o HostKeyAlgorithms=ecdsa-sha2-nistp256 -o ConnectTimeout=20 "$@"
+}
+S2_OUT="$(set -o pipefail; sshu uadm uji@127.0.0.1 uptime 2>&1 | tr -d '\r')"; S2_RC=$?
+echo "$S2_OUT" | head -3 | sed "s/^/info  ssh exec: /"
+check "F7 SSH-2: ssh exec admin 'uptime': keluaran uptime:, exit 0" \
+    '[ "$S2_RC" -eq 0 ] && echo "$S2_OUT" | grep -q "^uptime: "'
+sleep 2.5
+S2_OUT="$(set -o pipefail; sshu uadm uji@127.0.0.1 perintahtidakada 2>&1 | tr -d '\r')"; S2_RC=$?
+check "F7 SSH-2: ssh exec perintah tak dikenal: ERR, exit 1" \
+    '[ "$S2_RC" -eq 1 ] && echo "$S2_OUT" | grep -q "^ERR"'
+sleep 2.5
+S2_OUT="$(set -o pipefail; sshu uro ro@127.0.0.1 audit 2>&1 | tr -d '\r')"; S2_RC=$?
+check "F7 SSH-2: ssh exec kunci ro 'audit': ERR: peran read-only, exit 1" \
+    '[ "$S2_RC" -eq 1 ] && echo "$S2_OUT" | grep -q "^ERR: peran read-only"'
+sleep 2.5
+S2_OUT="$(set -o pipefail; sshu uro ro@127.0.0.1 uptime 2>&1 | tr -d '\r')"; S2_RC=$?
+check "F7 SSH-2: ssh exec kunci ro 'uptime' diizinkan, exit 0" \
+    '[ "$S2_RC" -eq 0 ] && echo "$S2_OUT" | grep -q "^uptime: "'
+sleep 2.5
+# Shell tanpa pty: baris dari stdin, jeda 12 s di tengah (batas 10 s hanya sebelum login).
+S2_OUT="$(set -o pipefail;  (printf 'ping\n'; sleep 12; printf 'uptime\r\nexit\n') | sshu uadm -T uji@127.0.0.1 2>&1 | tr -d '\r')"; S2_RC=$?
+echo "$S2_OUT" | head -6 | sed "s/^/info  ssh shell: /"
+check "F7 SSH-2: ssh shell (-T, stdin): prompt bmahOS>, ping + uptime setelah jeda 12 s, exit 0" \
+    '[ "$S2_RC" -eq 0 ] && echo "$S2_OUT" | grep -q "bmahOS> " && echo "$S2_OUT" | grep -q "pong" && echo "$S2_OUT" | grep -q "uptime: "'
+sleep 2.5
+S2_OUT="$(set -o pipefail; sshu uasing asing@127.0.0.1 uptime 2>&1 | tr -d '\r')"; S2_RC=$?
+check "F7 SSH-2: kunci asing: Permission denied (publickey), tanpa keluaran perintah" \
+    '[ "$S2_RC" -ne 0 ] && echo "$S2_OUT" | grep -q "Permission denied (publickey)" && ! echo "$S2_OUT" | grep -q "^uptime: "'
+check "F7 SSH-2: AUDIT serial: ssh admin login + cmd, ssh ro login + tolak-peran (baris SSH: login ikut jatah log B4b)" \
+    'grep -aq "AUDIT #.* ssh admin login uji" "$LOG" && grep -aq "AUDIT #.* ssh ro login ro" "$LOG" && grep -aq "AUDIT #.* ssh admin cmd uptime" "$LOG" && grep -aq "AUDIT #.* ssh ro tolak-peran audit" "$LOG"'
+sleep 2.5
 SSH_ST="$($BM ssh 2>&1)"
 echo "$SSH_ST" | sed "s/^/info  ssh: /"
+# F7 SSH-2: hanya chacha (tanpa algoritme cocok) dan diam 10 s yang gagal; sesi login yang selesai normal tidak.
+check "F7 SSH-2: UDP ssh: gagal=2 (chacha + diam 10 s), login: ok >= 5" \
+    'echo "$SSH_ST" | grep -q " gagal=2 " && [ "$(echo "$SSH_ST" | sed -n "s/^login: ok=\([0-9]*\) .*/\1/p")" -ge 5 ]'
 check "F7 SSH-1b: UDP ssh: aktif port 22, fp sama, kex_ok >= 1, konek >= 3, aktif=0 maks=2 penuh=0 tanpa_entropi=0" \
     'echo "$SSH_ST" | grep -q "^ssh: aktif port 22$" && echo "$SSH_ST" | grep -q "^fp: $SSHFP$" && [ "$(echo "$SSH_ST" | sed -n "s/.* kex_ok=\([0-9]*\) .*/\1/p")" -ge 1 ] && [ "$(echo "$SSH_ST" | sed -n "s/.* konek=\([0-9]*\) .*/\1/p")" -ge 3 ] && echo "$SSH_ST" | grep -q "^sesi: aktif=0 maks=2 .* penuh=0 tanpa_entropi=0 "'
 sleep 1.2
 SSH_MET="$($BM "metrics ssh_" 2>&1)"
-check "F7 SSH-1b: metrics ssh_: 7 kunci, ssh_kex_ok >= 1, ssh_conn >= 3" \
-    '[ "$(echo "$SSH_MET" | grep -c "^ssh_[a-z_]*=[0-9]*$")" -eq 7 ] && [ "$(echo "$SSH_MET" | sed -n "s/^ssh_kex_ok=//p")" -ge 1 ] && [ "$(echo "$SSH_MET" | sed -n "s/^ssh_conn=//p")" -ge 3 ]'
+check "F7 SSH-1b/2: metrics ssh_: 10 kunci, ssh_kex_ok >= 1, ssh_conn >= 3, ssh_login >= 4" \
+    '[ "$(echo "$SSH_MET" | grep -c "^ssh_[a-z_]*=[0-9]*$")" -eq 10 ] && [ "$(echo "$SSH_MET" | sed -n "s/^ssh_login=//p")" -ge 4 ] && [ "$(echo "$SSH_MET" | sed -n "s/^ssh_kex_ok=//p")" -ge 1 ] && [ "$(echo "$SSH_MET" | sed -n "s/^ssh_conn=//p")" -ge 3 ]'
 SSH_STK="$(echo "$SSH_ST" | sed -n "s/^stack_net: terpakai_maks=\([0-9]*\) dari 32768$/\1/p")"
 echo "info  SSH stack_net sesudah kex: terpakai_maks=$SSH_STK dari 32768"
 check "F7 SSH-1b: stack_net sesudah kex tercetak dan < 24576" '[ -n "$SSH_STK" ] && [ "$SSH_STK" -lt 24576 ]'

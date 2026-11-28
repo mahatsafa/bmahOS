@@ -329,6 +329,9 @@ static const metric_t g_metrics[] = {
     M64("ssh_fail", g_ssh_fail),
     M64("ssh_full", g_ssh_full),
     M64("ssh_noentropy", g_ssh_noentropy),
+    M64("ssh_login", g_ssh_login),   // F7 SSH-2 (ssh_auth_fail tetap kunci terakhir)
+    M64("ssh_cmd", g_ssh_cmd),
+    M64("ssh_idle", g_ssh_idle),
     M64("ssh_auth_fail", g_ssh_auth_fail),
 };
 

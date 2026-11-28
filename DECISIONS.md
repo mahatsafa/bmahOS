@@ -775,3 +775,16 @@ Format: memilih X karena Y, alternatif Z. Tambahkan di akhir; jangan menulis ula
 - **Tahapan**: SSH-0 dokumen (ini), SSH-1 transport (versi, KEXINIT, kex, NEWKEYS, cipher, strict kex; uji host vektor +
   `ssh` OpenSSH di qemu-smoke), SSH-2 userauth + kanal + audit + metrics `ssh_*` + perintah `ssh`, SSH-3 klien/dokumen +
   uji VMware dengan `ssh.exe` Windows. Pola: Sonnet implementasi di branch `f7-ssh`, Opus review, uji VMware, merge ff.
+
+## 2026-11-28 (F7 SSH-2: keputusan pengguna sebelum implementasi)
+- **TCP_MAX_CONN 4 -> 6** (slot TCB layanan kernel), supaya 2 sesi SSH tidak membuat OTA 7781 atau CLI ditolak.
+  Keputusan kecil Claude yang mengikutinya: **TCP_MAX_PER_IP 2 -> 3** (di VMware semua klien datang dari satu IP host:
+  admin TLS + SSH + OTA).
+- **Percobaan userauth**: hanya tanda tangan salah untuk kunci terdaftar yang dihitung (maks 4 -> DISCONNECT).
+  `none`, query tanpa tanda tangan (PK_OK/FAILURE), dan tanda tangan untuk kunci tak terdaftar tidak dihitung; sebagai
+  ganti, maks 32 USERAUTH_REQUEST per koneksi (menggantikan "maks 4 percobaan userauth" 2026-11-24).
+- **Batas waktu**: 10 s hanya sampai USERAUTH_SUCCESS; sesudahnya `cli_idle` sejak perintah terakhir (seperti 7779).
+- Tetap dari 2026-11-24: kunci di kedua file -> SSHRO.PUB ditolak; window kanal masuk 4096 byte.
+- Temuan VMware (ssh.exe Windows lewat pipa cmd): spasi/tab di akhir perintah dibuang (cmd.exe menambah spasi).
+  `ssh -tt` + pty-req ditolak -> klien OpenSSH menutup kanal sendiri (perilaku klien, bukan bug server).
+

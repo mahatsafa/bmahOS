@@ -739,8 +739,11 @@ uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
 #define TCP_CONN_SEG_PER_SEC 2000
 #define TCP_DUPACK_PER_SEC  10
 // C5a: jumlah slot TCB (tabel statis, tanpa heap) dan batas per IP sumber.
-#define TCP_MAX_CONN        4
-#define TCP_MAX_PER_IP      2
+// F7 SSH-2 (keputusan pengguna 2026-11-28): 4 -> 6 slot, supaya 2 sesi SSH + CLI/TLS +
+// OTA 7781 muat; per IP 2 -> 3 (VMware: semua klien dari satu IP host, admin TLS +
+// SSH + OTA).
+#define TCP_MAX_CONN        6
+#define TCP_MAX_PER_IP      3
 // P5-2a: jumlah seluruh slot TCB. Slot 0..TCP_MAX_CONN-1 = layanan kernel
 // (echo, CLI, TLS); slot sesudahnya untuk soket TCP user (P5-2).
 // P5-2: TCP_USER_MAX slot TCB khusus port listen soket user, terpisah dari
@@ -788,8 +791,9 @@ uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
 // termuat (selain itu SYN -> RST); entropi belum siap -> SYN dibuang. Maks
 // SSH_MAX_SESS TCB port 22 (keadaan apa pun, dihitung terpisah dari 7779/7780),
 // penggusuran SYN_RCVD sama dengan 7780. Sesi ssh dibuka saat ESTABLISHED (SYN
-// palsu tidak memakan slot/CPU). Seluruh koneksi dibatasi TCP_LOGIN_TIMEOUT
-// sejak ESTABLISHED, apa pun lalu lintasnya; kode CLI tidak berlaku untuk TCB ini.
+// palsu tidak memakan slot/CPU). Sampai USERAUTH_SUCCESS koneksi dibatasi
+// TCP_LOGIN_TIMEOUT sejak ESTABLISHED, apa pun lalu lintasnya (F7 SSH-2); sesudahnya
+// TCP_CLI_IDLE sejak perintah terakhir (cli_last), seperti sesi CLI login.
 #define NET_TCP_SSH_PORT    22
 enum { TCP_APP_ECHO = 0, TCP_APP_CLI, TCP_APP_USER, TCP_APP_OTA, TCP_APP_SSH };
 
@@ -848,6 +852,7 @@ static tcp_tcb_t g_tcbs[TCP_TCB_N];
 // tetap jalan walau koneksi sudah ditutup/RST sebelum keluaran di-ACK.
 static int g_cli_reboot;
 static uint64_t g_cli_reboot_at;
+static tcp_tcb_t *g_ssh_cur;   // F7 SSH-2: TCB yang sedang menyuap ssh.c (callback exec/audit)
 static uint8_t g_tcp_buf[TCP_TCB_N][TCP_BUF_SIZE];
 // C3c: di luar TCB (ada di senarai ktimer), satu per slot.
 static ktimer_t g_tcp_rtx_timer[TCP_TCB_N];
@@ -1233,9 +1238,14 @@ static void net_tcp_tls_release(tcp_tcb_t *t)
         if (w[0] == 0) {
             w = t->ssh_note ? t->ssh_note : "koneksi diputus";
         }
+        // F7 SSH-2: akhir normal (kanal selesai/ditutup klien, DISCONNECT klien) bukan gagal.
+        int normal = (strlen(w) == 12 && memcmp(w, "sesi selesai", 12) == 0) ||
+                     (strlen(w) == 19 && memcmp(w, "klien menutup kanal", 19) == 0) ||
+                     (strlen(w) >= 13 && memcmp(w, "klien memutus", 13) == 0);
+
         if (auth || (strlen(w) >= 8 && memcmp(w, "userauth", 8) == 0)) {
             g_ssh_auth_fail++;
-        } else if (!quiet && (strlen(w) < 13 || memcmp(w, "klien memutus", 13) != 0)) {
+        } else if (!quiet && !normal) {
             g_ssh_fail++;
         }
         kprintf("SSH: ditutup (%s)\r\n", w);
@@ -1668,24 +1678,104 @@ static int net_tcp_ssh_pump(tcp_tcb_t *t)
             uint32_t n = net_tcp_queue(t, p, len);
 
             if (n > 0) {
+                g_ssh_cur = t;   // consume bisa memproses masukan tertahan (perintah)
                 ssh_out_consume(s, n);
+                g_ssh_cur = 0;
                 moved = 1;
             }
         }
         // Kex sah baru setelah klien mengirim NEWKEYS (SERVICE), bukan saat kunci kita siap.
-        if (!t->ssh_kex && (ssh_state(s) == SSH_ST_SERVICE || ssh_state(s) == SSH_ST_AUTH)) {
+        if (!t->ssh_kex && (ssh_state(s) == SSH_ST_SERVICE || ssh_state(s) == SSH_ST_AUTH ||
+                            ssh_state(s) == SSH_ST_CONN)) {
             t->ssh_kex = 1;
             g_ssh_kex_ok++;
             kprintf("SSH: kex OK cipher=aes128-gcm sesi=%d\r\n", s);
         }
         if (ssh_done(s) && !t->close_after) {
             t->close_after = 1;
+            // F7 SSH-2: reboot/ota coba lewat ssh: setelah CLOSE kanal terkirim dan di-ACK
+            // (jalur D2 yang sama dengan CLI, cadangan TCP_REBOOT_WAIT).
+            if (ssh_take_reboot(s)) {
+                t->reboot_after = 1;
+                g_cli_reboot = 1;
+                g_cli_reboot_at = timer_ticks;
+            }
         }
         if (!moved) {
             break;
         }
     }
     return 1;
+}
+
+// F7 SSH-2: callback ssh.c. Dipanggil di dalam ssh_feed/ssh_out_consume (net task);
+// g_ssh_cur = TCB yang sedang menyuap, cadangan: cari lewat nomor slot.
+static tcp_tcb_t *net_ssh_tcb(int s)
+{
+    if (g_ssh_cur && g_ssh_cur->ssh == s + 1) {
+        return g_ssh_cur;
+    }
+    for (uint32_t k = 0; k < TCP_MAX_CONN; k++) {
+        if (g_tcbs[k].app == TCP_APP_SSH && g_tcbs[k].ssh == s + 1) {
+            return &g_tcbs[k];
+        }
+    }
+    return 0;
+}
+
+static uint32_t net_ssh_exec(int role, const uint8_t *cmd, uint32_t len, uint8_t *out,
+                             uint32_t max, int *reboot, int *denied)
+{
+    tcp_tcb_t *t = g_ssh_cur;
+    uint32_t n;
+
+    *denied = !auth_cmd_allowed(role, cmd, len);
+    g_ssh_cmd++;
+    if (t) {
+        t->cli_last = timer_ticks;   // perintah = aktivitas (idle cli_idle)
+    }
+    g_cmd_src_ip = t ? t->ip : 0;    // P7-2: `ota terima` mengikat IP sesi ini
+    n = auth_tcp_exec(role, cmd, len, out, max, reboot);
+    g_cmd_src_ip = 0;
+    return n;
+}
+
+static void net_ssh_audit(int s, int ev, int role, const uint8_t *txt, uint32_t len)
+{
+    tcp_tcb_t *t = net_ssh_tcb(s);
+    static const uint8_t zero_ip[4] = { 0, 0, 0, 0 };
+    const volatile uint8_t *ip = t ? t->ip : zero_ip;
+    uint16_t port = t ? t->rport : 0;
+    int aev;
+
+    if (ev == SSH_EV_LOGIN) {
+        aev = AUDIT_LOGIN;
+        g_ssh_login++;
+        if (t) {
+            t->cli_last = timer_ticks;
+        }
+        kprintf("SSH: login peran=%s pengguna=%s sesi=%d\r\n",
+                role == AUTH_ROLE_ADMIN ? "admin" : "ro", ssh_user(s), s);
+    } else if (ev == SSH_EV_LOGIN_FAIL) {
+        aev = AUDIT_LOGIN_FAIL;
+    } else if (ev == SSH_EV_CMD) {
+        // Ditolak peran dicatat sekali lewat SSH_EV_CMD_ROLE (seperti CLI 7779).
+        if (!auth_cmd_allowed(role, txt, len)) {
+            return;
+        }
+        aev = AUDIT_CMD;
+    } else if (ev == SSH_EV_CMD_ROLE) {
+        aev = AUDIT_CMD_ROLE;
+    } else {
+        return;
+    }
+    audit_record(aev, AUDIT_SSH, ip, port, role, 0, txt, len);
+}
+
+void net_ssh_install(void)
+{
+    ssh_set_exec(net_ssh_exec);
+    ssh_set_audit(net_ssh_audit);
 }
 
 static void net_tcp_tick_one(tcp_tcb_t *t)
@@ -1703,8 +1793,8 @@ static void net_tcp_tick_one(tcp_tcb_t *t)
         }
         net_tcp_output(t);
     }
-    // F7 SSH-1b: pompa, lalu batas 10 s sejak ESTABLISHED untuk seluruh koneksi
-    // (SSH-1 belum punya login sukses), terlepas dari lalu lintas: RST.
+    // F7 SSH-1b: pompa, lalu batas 10 s sejak ESTABLISHED sampai login sukses
+    // (terlepas dari lalu lintas: RST); F7 SSH-2: sesudah login idle cli_idle.
     if (t->app == TCP_APP_SSH && t->ssh) {
         if (!net_tcp_ssh_pump(t)) {
             return;
@@ -1712,11 +1802,33 @@ static void net_tcp_tick_one(tcp_tcb_t *t)
         net_tcp_output(t);
     }
     if (t->app == TCP_APP_SSH && t->state >= TCP_ESTABLISHED && t->state != TCP_TIME_WAIT &&
-        t->state != TCP_SYN_SENT && timer_ticks - t->opened > TCP_LOGIN_TIMEOUT) {
-        t->ssh_note = "batas waktu 10 s";
-        net_tcp_tcb_send(t, t->snd_nxt, TCP_RST | TCP_ACK, 0);
-        net_tcp_close(t, "SSH batas waktu, RST");
-        return;
+        t->state != TCP_SYN_SENT) {
+        int authed = t->ssh && ssh_authed(t->ssh - 1);
+
+        if (!authed && timer_ticks - t->opened > TCP_LOGIN_TIMEOUT) {
+            t->ssh_note = "batas waktu 10 s";
+            if (t->ssh) {
+                audit_record(AUDIT_LOGIN_TIMEOUT, AUDIT_SSH, t->ip, t->rport, AUTH_ROLE_NONE,
+                             0, 0, 0);
+            }
+            net_tcp_tcb_send(t, t->snd_nxt, TCP_RST | TCP_ACK, 0);
+            net_tcp_close(t, "SSH batas waktu, RST");
+            return;
+        }
+        if (authed && timer_ticks - t->cli_last > TCP_CLI_IDLE) {
+            // Termasuk sesi yang keluarannya macet (window klien 0): tanpa perintah baru
+            // selama cli_idle -> RST. Tanpa DISCONNECT: bisa tidak muat/tidak terbaca.
+            g_ssh_idle++;
+            t->ssh_note = "sesi idle";
+            audit_record(AUDIT_IDLE, AUDIT_SSH, t->ip, t->rport, ssh_role(t->ssh - 1), 0, 0, 0);
+            net_tcp_tcb_send(t, t->snd_nxt, TCP_RST | TCP_ACK, 0);
+            net_tcp_close(t, "SSH sesi idle, RST");
+            return;
+        }
+        // Sesi login dengan antrean kosong diatur cli_idle, bukan batas diam TCP 30 s.
+        if (authed && t->state == TCP_ESTABLISHED && !t->close_after && t->buf_count == 0) {
+            return;
+        }
     }
     // P7-2: baris hasil OTA -> antrean kirim, lalu FIN setelah di-ACK.
     if (t->app == TCP_APP_OTA && !t->close_after &&
@@ -1831,7 +1943,11 @@ static uint32_t net_tcp_app_rx(tcp_tcb_t *t, const volatile uint8_t *d, uint32_t
         if (t->ssh == 0 || t->close_after) {
             return len;   // ditutup oleh kita: data dibuang (seperti TLS), bukan RST
         }
-        return ssh_feed(t->ssh - 1, d, len);   // tidak dikonsumsi = tidak di-ACK
+        g_ssh_cur = t;   // F7 SSH-2: callback exec/audit butuh IP/port TCB ini
+        uint32_t used = ssh_feed(t->ssh - 1, d, len);   // tidak dikonsumsi = tidak di-ACK
+
+        g_ssh_cur = 0;
+        return used;
     }
     if (t->app == TCP_APP_CLI) {
         return net_tcp_cli_rx(t, d, len);

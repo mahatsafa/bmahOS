@@ -1164,8 +1164,7 @@ static void send_ua(cl_t *c)
     w_u8(&uw, M_UA_REQ);
     w_cstr(&uw, "bima");
     w_cstr(&uw, "ssh-connection");
-    w_cstr(&uw, "publickey");
-    w_u8(&uw, 0);
+    w_cstr(&uw, "none");   // SSH-2a: none tidak dihitung terhadap SSH_AUTH_MAX
     cl_send(c, ua, uw.n);
 }
 
@@ -1207,11 +1206,8 @@ static void test_post(void)
         CHECK(C.pln == 1 + 4 + 9 + 1 && memcmp(C.pl + 5, "publickey", 9) == 0 && C.pl[14] == 0);
         CHECK(ssh_state(C.s) == SSH_ST_AUTH);
     }
-    send_ua(&C);
-    int last = 0;
-
-    CHECK(cl_count(&C, M_UA_FAILURE, &last) == 1 && last == M_DISCONNECT);
-    CHECK(closed_hard(&C));
+    send_ua(&C);   // keempat: none tetap tidak memutus (pemutusan 4 tanda tangan salah: test_auth)
+    CHECK(cl_msg(&C) == M_UA_FAILURE && ssh_state(C.s) == SSH_ST_AUTH && C.s >= 0 && g_ssh[C.s].auth_n == 0);
     ssh_close(C.s);
     // USERAUTH_REQUEST cacat
     CHECK(full(1));
@@ -1532,6 +1528,7 @@ static void test_vektor(void)
     br_aes_ct64_ctr_keys ks;
     uint8_t key[16];
 
+    memset(&ks, 0, sizeof(ks));   // padding struct tidak boleh ikut dibandingkan (tumpukan acak)
     test_unhex(VEC_KEY_S, key, sizeof(key));
     br_aes_ct64_ctr_init(&ks, key, 16);
     CHECK(memcmp(&s->co.ks, &ks, sizeof(ks)) == 0);
@@ -1983,6 +1980,1093 @@ static void test_sig_canon(void)
 }
 
 #ifndef BMAHOS_FUZZ   // tests/fuzz/fuzz_ssh.c memakai helper file ini
+// ---- SSH-2a: kunci klien, userauth, kanal ----
+
+typedef struct {
+    uint8_t x[32], q[65], blob[104];
+    br_ec_private_key sk;
+    char line[200];
+} tk_t;
+
+static tk_t KK[6];   // 0 = admin, 1 = ro, 2.. = asing / pengisi
+
+static void b64_pad(const uint8_t *d, uint32_t n, char *out)
+{
+    b64_nopad(d, n, out);
+    uint32_t l = (uint32_t)strlen(out);
+
+    while (l % 4) {
+        out[l++] = '=';
+    }
+    out[l] = 0;
+}
+
+static void tk_line(const uint8_t *blob, const char *pre, const char *post, char *out)
+{
+    char b[160];
+
+    b64_pad(blob, 104, b);
+    snprintf(out, 200, "%secdsa-sha2-nistp256 %s%s", pre, b, post);
+}
+
+static void tk_make(tk_t *k, uint8_t seed)
+{
+    for (int i = 0; i < 32; i++) {
+        k->x[i] = (uint8_t)(seed * 37 + i * 11 + 1);
+    }
+    k->x[0] &= 0x7f;
+    k->sk.curve = BR_EC_secp256r1;
+    k->sk.x = k->x;
+    k->sk.xlen = 32;
+    br_ec_public_key pub;
+
+    CHECK(br_ec_compute_pub(&br_ec_p256_m64, &pub, k->q, &k->sk) == 65);
+    wr_t w = { k->blob, 0, sizeof(k->blob), 0 };
+
+    w_cstr(&w, "ecdsa-sha2-nistp256");
+    w_cstr(&w, "nistp256");
+    w_str(&w, k->q, 65);
+    CHECK(!w.err && w.n == 104);
+    tk_line(k->blob, "", " komentar", k->line);
+}
+
+static void make_keys(void)
+{
+    for (int i = 0; i < 6; i++) {
+        tk_make(&KK[i], (uint8_t)(i + 1));
+    }
+}
+
+static void load_keys(void)
+{
+    ssh_clear_authkeys();
+    CHECK(ssh_set_authkeys(SSH_ROLE_ADMIN, (const uint8_t *)KK[0].line, (uint32_t)strlen(KK[0].line)) == 1);
+    CHECK(ssh_set_authkeys(SSH_ROLE_RO, (const uint8_t *)KK[1].line, (uint32_t)strlen(KK[1].line)) == 1);
+}
+
+// Kuras SELURUH keluaran server (consume memicu pemrosesan lanjutan).
+static void cl_flush(cl_t *c)
+{
+    for (int i = 0; i < 200; i++) {
+        uint32_t n;
+
+        ssh_out_peek(c->s, &n);
+        if (n == 0) {
+            break;
+        }
+        cl_drain(c);
+    }
+}
+
+// Ringkasan keluaran server: urutan jenis pesan, data kanal, exit-status.
+typedef struct {
+    int t[300];
+    int nt;
+    uint8_t data[8000];
+    uint32_t dn;
+    int has_exit;
+    uint32_t code;
+    uint32_t datapk;   // jumlah paket DATA
+    uint32_t maxdata;  // DATA terbesar
+} rs_t;
+
+static void rs_get(cl_t *c, rs_t *o)
+{
+    memset(o, 0, sizeof(*o));
+    cl_flush(c);
+    while (cl_recv(c) > 0) {
+        if (o->nt < 300) {
+            o->t[o->nt++] = c->pl[0];
+        }
+        if (c->pl[0] == M_CH_DATA) {
+            uint32_t dl = get32(c->pl + 5);
+
+            if (o->dn + dl <= sizeof(o->data)) {
+                memcpy(o->data + o->dn, c->pl + 9, dl);
+                o->dn += dl;
+            }
+            o->datapk++;
+            if (dl > o->maxdata) {
+                o->maxdata = dl;
+            }
+        } else if (c->pl[0] == M_CH_REQ && memcmp(c->pl + 5, "\0\0\0\x0b" "exit-status", 15) == 0) {
+            o->has_exit = 1;
+            o->code = get32(c->pl + 5 + 15 + 1);
+        }
+    }
+}
+
+static int rs_is(const rs_t *o, const char *want)
+{
+    return o->dn == strlen(want) && memcmp(o->data, want, o->dn) == 0;
+}
+
+// Pesan USERAUTH_REQUEST. mode: 0 none, 1 publickey tanpa sig, 2 sig benar, 3 sig atas data lain,
+// 4 sig dari kunci lain (KK[5]).
+static void ua_send(cl_t *c, const char *user, const char *svc, const tk_t *k, int mode)
+{
+    uint8_t m[600];
+    wr_t w = { m, 0, sizeof(m), 0 };
+
+    w_u8(&w, M_UA_REQ);
+    w_cstr(&w, user);
+    w_cstr(&w, svc);
+    if (mode == 0) {
+        w_cstr(&w, "none");
+        cl_send(c, m, w.n);
+        return;
+    }
+    w_cstr(&w, "publickey");
+    w_u8(&w, mode >= 2);
+    w_cstr(&w, "ecdsa-sha2-nistp256");
+    w_str(&w, k->blob, 104);
+    if (mode >= 2) {
+        uint8_t sd[400], hh[32], sg[64];
+        wr_t d = { sd, 0, sizeof(sd), 0 };
+
+        w_str(&d, g_last_h, 32);
+        w_u8(&d, M_UA_REQ);
+        w_cstr(&d, user);
+        w_cstr(&d, svc);
+        w_cstr(&d, "publickey");
+        w_u8(&d, 1);
+        w_cstr(&d, "ecdsa-sha2-nistp256");
+        w_str(&d, k->blob, 104);
+        if (mode == 3) {
+            sd[d.n - 1] ^= 1;
+        }
+        br_sha256_context h;
+
+        br_sha256_init(&h);
+        br_sha256_update(&h, sd, d.n);
+        br_sha256_out(&h, hh);
+        CHECK(br_ecdsa_i31_sign_raw(&br_ec_p256_m64, &br_sha256_vtable, hh, mode == 4 ? &KK[5].sk : &k->sk, sg) == 64);
+        uint8_t sb[120];
+        wr_t sw = { sb, 0, sizeof(sb), 0 };
+
+        encode_sig(&sw, sg);
+        w_str(&w, sb, sw.n);
+    }
+    cl_send(c, m, w.n);
+}
+
+static int to_auth(void)
+{
+    uint8_t m[40];
+    wr_t w = { m, 0, sizeof(m), 0 };
+
+    if (!full(1)) {
+        return 0;
+    }
+    w_u8(&w, M_SVC_REQ);
+    w_cstr(&w, "ssh-userauth");
+    cl_send(&C, m, w.n);
+    return cl_msg(&C) == M_SVC_ACCEPT;
+}
+
+static int login(const tk_t *k, const char *user)
+{
+    ua_send(&C, user, "ssh-connection", k, 2);
+    return cl_msg(&C) == M_UA_SUCCESS && ssh_state(C.s) == SSH_ST_CONN;
+}
+
+// Stub callback kernel
+static int g_ex_calls, g_ex_role;
+static uint8_t g_ex_cmd[400];
+static uint32_t g_ex_cmdn;
+static uint32_t ex_stub(int role, const uint8_t *cmd, uint32_t len, uint8_t *out, uint32_t max, int *reboot, int *denied)
+{
+    g_ex_calls++;
+    g_ex_role = role;
+    g_ex_cmdn = len < sizeof(g_ex_cmd) ? len : sizeof(g_ex_cmd);
+    memcpy(g_ex_cmd, cmd, g_ex_cmdn);
+    if (len == 6 && memcmp(cmd, "reboot", 6) == 0) {
+        *reboot = 1;
+        memcpy(out, "rebooting\n", 10);
+        return 10;
+    }
+    if (len == 4 && memcmp(cmd, "deny", 4) == 0) {
+        *denied = 1;
+        memcpy(out, "ERR: ditolak\n", 13);
+        return 13;
+    }
+    if (len == 3 && memcmp(cmd, "big", 3) == 0) {
+        memset(out, 'A', max);
+        return max;
+    }
+    if (len == 4 && memcmp(cmd, "huge", 4) == 0) {
+        return max + 500;   // callback nakal: dipotong ke max
+    }
+    out[0] = 'O';
+    out[1] = 'K';
+    out[2] = ':';
+    uint32_t n = len > 100 ? 100 : len;
+
+    memcpy(out + 3, cmd, n);
+    out[3 + n] = '\n';
+    return 4 + n;
+}
+
+static int g_au_n, g_au_ev[16], g_au_role[16];
+static char g_au_txt[16][300];
+static void au_stub(int s, int ev, int role, const uint8_t *txt, uint32_t len)
+{
+    (void)s;
+    if (g_au_n < 16) {
+        g_au_ev[g_au_n] = ev;
+        g_au_role[g_au_n] = role;
+        memcpy(g_au_txt[g_au_n], txt, len < 299 ? len : 299);
+        g_au_txt[g_au_n][len < 299 ? len : 299] = 0;
+        g_au_n++;
+    }
+}
+
+static void test_authkeys(void)
+{
+    make_keys();
+    ssh_clear_authkeys();
+    char bad_pt[200], bad_b64[200], bad_ty[200], opt[400];
+    uint8_t tb[104];
+
+    memcpy(tb, KK[2].blob, 104);
+    tb[103] ^= 1;   // y diubah: titik tidak di kurva
+    tk_line(tb, "", "", bad_pt);
+    memcpy(tb, KK[2].blob, 104);
+    memcpy(tb + 8, "nistp384", 8);   // nama kurva salah
+    tk_line(tb, "", "", bad_ty);
+    tk_line(KK[2].blob, "", "", bad_b64);
+    bad_b64[30] = '!';
+    tk_line(KK[0].blob, "no-pty,command=\"x\" ", "", opt);
+    static char txt[2000];
+
+    snprintf(txt, sizeof(txt), "# komentar\r\n\r\n   \n%s\r\n%s\n%s\nssh-ed25519 AAAAC3Nza x\n%s\n%s\n%s\n%s\n%s\n",
+             opt, bad_pt, bad_b64, bad_ty, KK[1].line, KK[0].line, KK[1].line, "ecdsa-sha2-nistp256 AAAA");
+    // hanya KK[1] dan KK[0] sah; duplikat KK[1] dilewati
+    CHECK(ssh_set_authkeys(SSH_ROLE_ADMIN, (const uint8_t *)txt, (uint32_t)strlen(txt)) == 2);
+    CHECK(ssh_authkey_count(SSH_ROLE_ADMIN) == 2 && ssh_authkey_count(SSH_ROLE_RO) == 0);
+    CHECK(ak_find(KK[0].blob, 104) == SSH_ROLE_ADMIN && ak_find(KK[1].blob, 104) == SSH_ROLE_ADMIN);
+    CHECK(ak_find(KK[2].blob, 104) == 0 && ak_find(tb, 103) == 0);
+    // ganti isi: kunci lama hilang
+    CHECK(ssh_set_authkeys(SSH_ROLE_ADMIN, (const uint8_t *)KK[2].line, (uint32_t)strlen(KK[2].line)) == 1);
+    CHECK(ak_find(KK[0].blob, 104) == 0 && ak_find(KK[2].blob, 104) == SSH_ROLE_ADMIN);
+    // kunci di kedua daftar -> ro (hak terendah); ssh_authkey_dup menghitungnya
+    CHECK(ssh_authkey_dup() == 0);
+    CHECK(ssh_set_authkeys(SSH_ROLE_RO, (const uint8_t *)KK[2].line, (uint32_t)strlen(KK[2].line)) == 1);
+    CHECK(ak_find(KK[2].blob, 104) == SSH_ROLE_RO && ssh_authkey_dup() == 1);
+    // enam kunci -> empat
+    txt[0] = 0;
+    for (int i = 0; i < 6; i++) {
+        strcat(txt, KK[i].line);
+        strcat(txt, i & 1 ? "\r\n" : "\n");
+    }
+    CHECK(ssh_set_authkeys(SSH_ROLE_RO, (const uint8_t *)txt, (uint32_t)strlen(txt)) == 4);
+    CHECK(ak_find(KK[3].blob, 104) == SSH_ROLE_ADMIN || ak_find(KK[3].blob, 104) == SSH_ROLE_RO);
+    CHECK(ak_find(KK[5].blob, 104) == 0);
+    // tanpa LF akhir, kosong, null, peran salah
+    CHECK(ssh_set_authkeys(SSH_ROLE_RO, (const uint8_t *)KK[4].line, (uint32_t)strlen(KK[4].line)) == 1);
+    CHECK(ssh_set_authkeys(SSH_ROLE_RO, (const uint8_t *)"", 0) == 0 && ssh_authkey_count(SSH_ROLE_RO) == 0);
+    CHECK(ssh_set_authkeys(SSH_ROLE_RO, 0, 5) == 0);
+    CHECK(ssh_set_authkeys(0, (const uint8_t *)KK[4].line, 10) == 0 && ssh_set_authkeys(3, 0, 0) == 0);
+    CHECK(ssh_authkey_count(0) == 0 && ssh_authkey_count(9) == 0);
+    ssh_clear_authkeys();
+    CHECK(ssh_authkey_count(SSH_ROLE_ADMIN) == 0 && ak_find(KK[2].blob, 104) == 0);
+}
+
+static void test_auth(void)
+{
+    reset_all();
+    make_keys();
+    load_keys();
+    ssh_set_audit(au_stub);
+    g_au_n = 0;
+    // none / query / layanan salah: tidak dihitung; 10 query tidak memutus
+    CHECK(to_auth());
+    CHECK(!ssh_authed(C.s) && ssh_role(C.s) == 0 && ssh_user(C.s)[0] == 0 && ssh_cmd_count(C.s) == 0);
+    for (int i = 0; i < 5; i++) {
+        ua_send(&C, "bima", "ssh-connection", 0, 0);
+        CHECK(cl_msg(&C) == M_UA_FAILURE && ssh_state(C.s) == SSH_ST_AUTH);
+    }
+    for (int i = 0; i < 10; i++) {
+        const tk_t *k = i & 1 ? &KK[1] : &KK[0];
+
+        ua_send(&C, "bima", "ssh-connection", k, 1);
+        CHECK(cl_msg(&C) == M_UA_PK_OK && C.pln == 1 + 4 + 19 + 4 + 104 && memcmp(C.pl + 5 + 19 + 4, k->blob, 104) == 0);
+        ua_send(&C, "bima", "ssh-connection", &KK[3], 1);   // kunci asing
+        CHECK(cl_msg(&C) == M_UA_FAILURE);
+        if (i == 6) {
+            break;   // 5 + 14 = 19 permintaan, di bawah batas 32
+        }
+    }
+    ua_send(&C, "bima", "ssh-userauth", &KK[0], 2);   // layanan salah, sig benar: FAILURE tanpa hitungan
+    CHECK(cl_msg(&C) == M_UA_FAILURE && g_ssh[C.s].auth_n == 0 && ssh_state(C.s) == SSH_ST_AUTH);
+    CHECK(login(&KK[0], "bima") && ssh_authed(C.s) && ssh_role(C.s) == SSH_ROLE_ADMIN);
+    CHECK(strcmp(ssh_user(C.s), "bima") == 0);
+    CHECK(g_au_n == 1 && g_au_ev[0] == SSH_EV_LOGIN && g_au_role[0] == SSH_ROLE_ADMIN && strcmp(g_au_txt[0], "bima") == 0);
+    ua_send(&C, "bima", "ssh-connection", &KK[0], 2);   // setelah sukses: diabaikan
+    cl_flush(&C);
+    CHECK(C.rxn == C.rxpos && ssh_state(C.s) == SSH_ST_CONN);
+    ssh_close(C.s);
+    CHECK(!ssh_authed(C.s) && ssh_role(C.s) == 0);
+    // peran ro; nama pengguna disanitasi dan dipotong
+    CHECK(to_auth() && login(&KK[1], "a\x01" "b\x7f" "c") && ssh_role(C.s) == SSH_ROLE_RO);
+    CHECK(strcmp(ssh_user(C.s), "a?b?c") == 0);
+    ssh_close(C.s);
+    CHECK(to_auth() && login(&KK[0], "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu"));
+    CHECK(strlen(ssh_user(C.s)) == 32);
+    ssh_close(C.s);
+    // tanda tangan kunci TIDAK terdaftar (benar secara kriptografi) tidak dihitung ke SSH_AUTH_MAX
+    CHECK(to_auth());
+    for (int i = 0; i < 6; i++) {
+        ua_send(&C, "asing", "ssh-connection", &KK[3], 2);
+        CHECK(cl_msg(&C) == M_UA_FAILURE && ssh_state(C.s) == SSH_ST_AUTH && g_ssh[C.s].auth_n == 0);
+    }
+    ssh_close(C.s);
+    // 4 tanda tangan salah (data lain / kunci lain) pada kunci TERDAFTAR -> FAILURE x4 lalu DISCONNECT
+    g_au_n = 0;
+    CHECK(to_auth());
+    for (int i = 0; i < 3; i++) {
+        ua_send(&C, "evil", "ssh-connection", i == 1 ? &KK[1] : &KK[0], i == 1 ? 4 : 3);
+        CHECK(cl_msg(&C) == M_UA_FAILURE && ssh_state(C.s) == SSH_ST_AUTH && g_ssh[C.s].auth_n == i + 1);
+    }
+    CHECK(g_au_n == 3 && g_au_ev[0] == SSH_EV_LOGIN_FAIL && strcmp(g_au_txt[2], "evil") == 0);
+    ua_send(&C, "evil", "ssh-connection", &KK[0], 3);
+    int last = 0;
+
+    CHECK(cl_count(&C, M_UA_FAILURE, &last) == 1 && last == M_DISCONNECT && closed_hard(&C));
+    CHECK(!ssh_authed(C.s));
+    ssh_close(C.s);
+    // batas 32 permintaan: none x32 FAILURE, ke-33 DISCONNECT
+    CHECK(to_auth());
+    for (int i = 0; i < SSH_UA_REQ_MAX; i++) {
+        ua_send(&C, "x", "ssh-connection", 0, 0);
+        CHECK(cl_msg(&C) == M_UA_FAILURE);
+    }
+    CHECK(ssh_state(C.s) == SSH_ST_AUTH);
+    ua_send(&C, "x", "ssh-connection", 0, 0);
+    CHECK(disc_seen(&C) && closed_hard(&C));
+    ssh_close(C.s);
+    // pesan >= 80 sebelum sukses (GLOBAL_REQUEST, CHANNEL_OPEN, CHANNEL_DATA) -> DISCONNECT
+    uint8_t gl[] = { M_GLOBAL_REQ, 0, 0, 0, 3, 'a', 'b', 'c', 0 };
+    uint8_t co[] = { M_CH_OPEN, 0, 0, 0, 7, 's', 'e', 's', 's', 'i', 'o', 'n', 0, 0, 0, 1, 0, 0, 0x20, 0, 0, 0, 0x80, 0 };
+    uint8_t cd[] = { M_CH_DATA, 0, 0, 0, 0, 0, 0, 0, 1, 'x' };
+
+    CHECK(to_auth());
+    cl_send(&C, gl, sizeof(gl));
+    CHECK(closed_hard(&C));
+    ssh_close(C.s);
+    CHECK(to_auth());
+    cl_send(&C, co, sizeof(co));
+    CHECK(closed_hard(&C) && !g_ssh[C.s].ch_open);
+    ssh_close(C.s);
+    CHECK(to_auth());
+    cl_send(&C, cd, sizeof(cd));
+    CHECK(closed_hard(&C) && !ssh_authed(C.s));
+    ssh_close(C.s);
+    CHECK(to_auth());
+    ua_send(&C, "x", "ssh-connection", &KK[0], 1);   // dan setelah itu pun belum sah
+    CHECK(cl_msg(&C) == M_UA_PK_OK);
+    cl_send(&C, co, sizeof(co));
+    CHECK(closed_hard(&C));
+    ssh_close(C.s);
+    ssh_set_audit(0);
+    ssh_clear_authkeys();
+    reset_all();
+}
+
+// ---- pesan kanal sisi klien ----
+static void chm(cl_t *c, uint8_t msg, uint32_t recip, const char *str, int want, const void *d, uint32_t dn, uint32_t extra)
+{
+    uint8_t m[9000];
+    wr_t w = { m, 0, sizeof(m), 0 };
+
+    w_u8(&w, msg);
+    if (msg == M_CH_OPEN) {
+        w_cstr(&w, str);
+        w_u32(&w, recip);   // id klien
+        w_u32(&w, extra);   // window
+        w_u32(&w, dn);      // max packet
+    } else {
+        w_u32(&w, recip);
+        if (msg == M_CH_REQ) {
+            w_cstr(&w, str);
+            w_u8(&w, (uint8_t)want);
+            if (d) {
+                w_str(&w, d, dn);
+            }
+        } else if (msg == M_CH_DATA) {
+            w_str(&w, d, dn);
+        } else if (msg == M_CH_WINADJ) {
+            w_u32(&w, extra);
+        }
+    }
+    CHECK(!w.err);
+    cl_send(c, m, w.n);
+}
+
+static void ch_req(cl_t *c, const char *t, int want, const char *arg)
+{
+    chm(c, M_CH_REQ, 0, t, want, arg, arg ? (uint32_t)strlen(arg) : 0, 0);
+}
+
+// Naik ke kanal session terbuka (id klien 7). win/maxp = milik klien.
+static int conn_up(const tk_t *k, uint32_t win, uint32_t maxp)
+{
+    if (!to_auth() || !login(k, "bima")) {
+        return 0;
+    }
+    chm(&C, M_CH_OPEN, 7, "session", 0, 0, maxp, win);
+    return cl_msg(&C) == M_CH_CONFIRM && get32(C.pl + 1) == 7 && get32(C.pl + 5) == 0 &&
+           get32(C.pl + 9) == SSH_WIN_IN && get32(C.pl + 13) == SSH_MAXPKT_IN;
+}
+
+static int is_seq(const rs_t *o, const int *want, int n)
+{
+    return o->nt == n && memcmp(o->t, want, (size_t)n * sizeof(int)) == 0;
+}
+
+static void test_channel(void)
+{
+    rs_t o;
+
+    reset_all();
+    make_keys();
+    load_keys();
+    g_ex_calls = 0;
+    ssh_set_exec(ex_stub);
+    ssh_set_audit(au_stub);
+    // GLOBAL_REQUEST, tipe kanal lain, kanal kedua, request ditolak, kanal tak dikenal
+    CHECK(to_auth() && login(&KK[0], "bima"));
+    uint8_t gr[] = { M_GLOBAL_REQ, 0, 0, 0, 3, 'a', 'b', 'c', 1 };
+    uint8_t gr0[] = { M_GLOBAL_REQ, 0, 0, 0, 3, 'a', 'b', 'c', 0 };
+
+    cl_send(&C, gr0, sizeof(gr0));
+    cl_send(&C, gr, sizeof(gr));
+    rs_get(&C, &o);
+    CHECK(o.nt == 1 && o.t[0] == M_REQ_FAILURE);
+    chm(&C, M_CH_OPEN, 5, "direct-tcpip", 0, 0, 100, 100);
+    CHECK(cl_msg(&C) == M_CH_OPENFAIL && get32(C.pl + 1) == 5 && get32(C.pl + 5) == 3);
+    chm(&C, M_CH_OPEN, 7, "session", 0, 0, 1000, 5000);
+    CHECK(cl_msg(&C) == M_CH_CONFIRM);
+    chm(&C, M_CH_OPEN, 8, "session", 0, 0, 1000, 5000);
+    CHECK(cl_msg(&C) == M_CH_OPENFAIL && get32(C.pl + 1) == 8 && get32(C.pl + 5) == 1);
+    static const char *const rej[] = { "pty-req", "env", "x11-req", "auth-agent-req@openssh.com", "subsystem", "xyz" };
+
+    for (unsigned i = 0; i < sizeof(rej) / sizeof(rej[0]); i++) {
+        ch_req(&C, rej[i], 1, "arg");
+        CHECK(cl_msg(&C) == M_CH_FAILURE && get32(C.pl + 1) == 7);
+    }
+    ch_req(&C, "pty-req", 0, 0);
+    rs_get(&C, &o);
+    CHECK(o.nt == 0);
+    chm(&C, M_CH_EOF, 3, 0, 0, 0, 0, 0);   // kanal tak dikenal
+    CHECK(closed_hard(&C) && strstr(ssh_why(C.s), "kanal") != 0);
+    ssh_close(C.s);
+    CHECK(to_auth() && login(&KK[0], "bima"));
+    ch_req(&C, "shell", 1, 0);   // belum ada kanal
+    CHECK(closed_hard(&C));
+    ssh_close(C.s);
+
+    // exec admin: SUCCESS, DATA, exit-status, EOF, CLOSE; sesi CLOSING segera
+    static const int seq_ok[] = { M_CH_SUCCESS, M_CH_DATA, M_CH_REQ, M_CH_EOF, M_CH_CLOSE };
+    g_au_n = 0;
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    ch_req(&C, "exec", 1, "ver x");
+    rs_get(&C, &o);
+    CHECK(is_seq(&o, seq_ok, 5) && rs_is(&o, "OK:ver x\n") && o.has_exit && o.code == 0);
+    CHECK(g_ex_calls == 1 && g_ex_role == SSH_ROLE_ADMIN && g_ex_cmdn == 5 && memcmp(g_ex_cmd, "ver x", 5) == 0);
+    CHECK(closed_hard(&C) && ssh_done(C.s) && ssh_cmd_count(C.s) == 1);
+    CHECK(g_au_n == 2 && g_au_ev[1] == SSH_EV_CMD && strcmp(g_au_txt[1], "ver x") == 0);
+    ssh_close(C.s);
+    // exec ro, ditolak peran (ERR -> exit 1, audit CMD_ROLE), tanpa want_reply
+    g_au_n = 0;
+    CHECK(conn_up(&KK[1], 100000, 32768));
+    ch_req(&C, "exec", 0, "deny");
+    rs_get(&C, &o);
+    static const int seq_nr[] = { M_CH_DATA, M_CH_REQ, M_CH_EOF, M_CH_CLOSE };
+    CHECK(is_seq(&o, seq_nr, 4) && rs_is(&o, "ERR: ditolak\n") && o.code == 1 && g_ex_role == SSH_ROLE_RO);
+    CHECK(g_au_n == 3 && g_au_ev[2] == SSH_EV_CMD_ROLE && g_au_role[2] == SSH_ROLE_RO && strcmp(g_au_txt[2], "deny") == 0);
+    ssh_close(C.s);
+    // perintah 256 byte jalan, 257 byte ditolak tanpa callback, keluaran callback dipotong 1400
+    char lg[300];
+
+    memset(lg, 'a', sizeof(lg));
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    int before = g_ex_calls;
+    chm(&C, M_CH_REQ, 0, "exec", 1, lg, 256, 0);
+    rs_get(&C, &o);
+    CHECK(g_ex_calls == before + 1 && g_ex_cmdn == 256 && o.dn == 4 + 100 && o.code == 0);
+    ssh_close(C.s);
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    chm(&C, M_CH_REQ, 0, "exec", 1, lg, 257, 0);
+    rs_get(&C, &o);
+    CHECK(g_ex_calls == before + 1 && rs_is(&o, "ERR: perintah terlalu panjang\n") && o.code == 1);
+    ssh_close(C.s);
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    ch_req(&C, "exec", 1, "huge");
+    rs_get(&C, &o);
+    CHECK(o.dn == SSH_CMD_OUT_MAX && o.code == 0 && o.t[o.nt - 1] == M_CH_CLOSE);
+    ssh_close(C.s);
+    ssh_set_exec(0);
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    ch_req(&C, "exec", 1, "apa");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "ERR: perintah tidak tersedia\n") && o.code == 1);
+    ssh_close(C.s);
+    ssh_set_exec(ex_stub);
+    ssh_set_audit(0);
+    ssh_clear_authkeys();
+    reset_all();
+}
+
+static void sh_send(const char *s)
+{
+    chm(&C, M_CH_DATA, 0, 0, 0, s, (uint32_t)strlen(s), 0);
+}
+
+static void test_shell(void)
+{
+    rs_t o;
+
+    reset_all();
+    make_keys();
+    load_keys();
+    g_ex_calls = 0;
+    ssh_set_exec(ex_stub);
+    ssh_set_audit(au_stub);
+    CHECK(conn_up(&KK[1], 100000, 32768));
+    ch_req(&C, "shell", 1, 0);
+    rs_get(&C, &o);
+    static const int s_ok[] = { M_CH_SUCCESS, M_CH_DATA };
+    CHECK(is_seq(&o, s_ok, 2) && rs_is(&o, "bmahOS> ") && ssh_state(C.s) == SSH_ST_CONN);
+    ch_req(&C, "shell", 1, 0);   // kedua kali
+    CHECK(cl_msg(&C) == M_CH_FAILURE);
+    ch_req(&C, "exec", 1, "ver");
+    CHECK(cl_msg(&C) == M_CH_FAILURE && g_ex_calls == 0);
+    sh_send("ver\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:ver\nbmahOS> ") && g_ex_role == SSH_ROLE_RO && ssh_cmd_count(C.s) == 1);
+    sh_send("a\nb\n");   // dua baris dalam satu paket: dua respons berurutan
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:a\nbmahOS> OK:b\nbmahOS> ") && g_ex_calls == 3);
+    sh_send("he");       // satu baris terpecah antar paket
+    sh_send("llo");
+    rs_get(&C, &o);
+    CHECK(o.dn == 0 && g_ex_calls == 3);
+    sh_send("\r\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:hello\nbmahOS> "));
+    sh_send("\n\r\n");   // baris kosong: hanya prompt
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "bmahOS> bmahOS> ") && g_ex_calls == 4);
+    // baris > 256: ERR lalu lanjut normal; tepat 256 lolos
+    char lg[400];
+
+    memset(lg, 'z', sizeof(lg));
+    chm(&C, M_CH_DATA, 0, 0, 0, lg, 300, 0);
+    sh_send("\nver\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "ERR: baris terlalu panjang\nbmahOS> OK:ver\nbmahOS> ") && g_ex_calls == 5);
+    chm(&C, M_CH_DATA, 0, 0, 0, lg, 256, 0);
+    sh_send("\n");
+    rs_get(&C, &o);
+    CHECK(o.dn == 100 + 4 + 8 && g_ex_cmdn == 256);
+    // "deny" lewat shell: audit CMD_ROLE; sesi tetap terbuka
+    sh_send("deny\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "ERR: ditolak\nbmahOS> ") && ssh_state(C.s) == SSH_ST_CONN && !o.has_exit);
+    // exit
+    sh_send("exit\nver\n");
+    rs_get(&C, &o);
+    static const int s_end[] = { M_CH_REQ, M_CH_EOF, M_CH_CLOSE };
+    CHECK(is_seq(&o, s_end, 3) && o.code == 0 && o.dn == 0 && closed_hard(&C) && ssh_done(C.s));
+    CHECK(ssh_take_reboot(C.s) == 0);
+    ssh_close(C.s);
+    // EOF klien: baris yang sudah masuk diproses dulu, lalu exit-status 0, EOF, CLOSE
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    ch_req(&C, "shell", 0, 0);
+    sh_send("one\ntwo\n");
+    chm(&C, M_CH_EOF, 0, 0, 0, 0, 0, 0);
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "bmahOS> OK:one\nbmahOS> OK:two\nbmahOS> ") && o.has_exit && o.code == 0);
+    CHECK(o.t[o.nt - 1] == M_CH_CLOSE && o.t[o.nt - 2] == M_CH_EOF && closed_hard(&C));
+    ssh_close(C.s);
+    // reboot dari shell: keluaran, lalu exit-status/EOF/CLOSE tanpa prompt; flag sekali
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    ch_req(&C, "shell", 0, 0);
+    sh_send("reboot\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "bmahOS> rebooting\n") && o.has_exit && closed_hard(&C));
+    CHECK(ssh_take_reboot(C.s) == 1 && ssh_take_reboot(C.s) == 0);
+    ssh_close(C.s);
+    // reboot dari exec
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    ch_req(&C, "exec", 0, "reboot");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "rebooting\n") && o.code == 0 && ssh_done(C.s) && ssh_take_reboot(C.s) == 1);
+    ssh_close(C.s);
+    CHECK(ssh_take_reboot(C.s) == 0 && ssh_take_reboot(-1) == 0);
+    // CLOSE dari klien: balas CLOSE lalu CLOSING
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    ch_req(&C, "shell", 0, 0);
+    chm(&C, M_CH_CLOSE, 0, 0, 0, 0, 0, 0);
+    rs_get(&C, &o);
+    CHECK(o.nt == 2 && o.t[1] == M_CH_CLOSE && closed_hard(&C));
+    ssh_close(C.s);
+    // pesan tak dikenal di CONN -> UNIMPLEMENTED
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    uint8_t unk = 200;
+    cl_send(&C, &unk, 1);
+    CHECK(cl_msg(&C) == M_UNIMPL);
+    ssh_close(C.s);
+    ssh_set_audit(0);
+    ssh_clear_authkeys();
+    reset_all();
+}
+
+static void test_window(void)
+{
+    rs_t o, t;
+
+    reset_all();
+    make_keys();
+    load_keys();
+    ssh_set_exec(ex_stub);
+    // window klien 10, max packet 4: keluaran 1400 byte tertahan; EOF/CLOSE tidak mendahului data
+    CHECK(conn_up(&KK[0], 10, 4));
+    ch_req(&C, "exec", 1, "big");
+    rs_get(&C, &o);
+    CHECK(o.t[0] == M_CH_SUCCESS && o.dn == 10 && o.maxdata <= 4 && o.datapk == 3 && !o.has_exit);
+    CHECK(ssh_state(C.s) == SSH_ST_CONN && !ssh_done(C.s));
+    uint32_t got = o.dn;
+    int rounds = 0;
+
+    while (!ssh_done(C.s) && rounds++ < 2000) {
+        chm(&C, M_CH_WINADJ, 0, 0, 0, 0, 0, 7);   // 7 byte tiap kali
+        rs_get(&C, &t);
+        got += t.dn;
+        CHECK(t.maxdata <= 4);
+        if (t.has_exit) {
+            // exit-status/EOF/CLOSE hanya setelah seluruh data
+            CHECK(got == 1400 && t.t[t.nt - 1] == M_CH_CLOSE && t.t[t.nt - 2] == M_CH_EOF);
+        } else {
+            CHECK(t.nt == 0 || t.t[t.nt - 1] == M_CH_DATA);
+        }
+    }
+    CHECK(got == 1400 && ssh_done(C.s) && rounds == (1400 - 10 + 6) / 7);
+    ssh_close(C.s);
+    // window besar tetapi max packet 100: dipecah per 100
+    CHECK(conn_up(&KK[0], 100000, 100));
+    ch_req(&C, "exec", 0, "big");
+    rs_get(&C, &o);
+    CHECK(o.dn == 1400 && o.maxdata == 100 && o.datapk == 14 && o.code == 0);
+    ssh_close(C.s);
+    // WINDOW_ADJUST besar tidak melimpah (dijepit 2^32-1)
+    CHECK(conn_up(&KK[0], 0xFFFFFFF0u, 100));
+    chm(&C, M_CH_WINADJ, 0, 0, 0, 0, 0, 0xFFFFFFFFu);
+    CHECK(g_ssh[C.s].cl_win == 0xFFFFFFFFu && ssh_state(C.s) == SSH_ST_CONN);
+    ssh_close(C.s);
+    // window masuk: DATA melebihi window (klien window 0 -> prompt tertahan, antrean tak diproses)
+    CHECK(conn_up(&KK[0], 0, 100));
+    ch_req(&C, "shell", 0, 0);
+    char blk[3000];
+
+    memset(blk, 'x', sizeof(blk));
+    chm(&C, M_CH_DATA, 0, 0, 0, blk, 1500, 0);   // window masuk 4096 (DECISIONS: <= 4 KB)
+    chm(&C, M_CH_DATA, 0, 0, 0, blk, 1500, 0);
+    rs_get(&C, &o);
+    CHECK(o.nt == 0 && ssh_state(C.s) == SSH_ST_CONN && g_ssh[C.s].win_in == SSH_WIN_IN - 3000);
+    chm(&C, M_CH_DATA, 0, 0, 0, blk, 1500, 0);
+    CHECK(closed_hard(&C) && strstr(ssh_why(C.s), "window") != 0);
+    ssh_close(C.s);
+    // paket DATA > max packet masuk
+    CHECK(conn_up(&KK[0], 100000, 100));
+    ch_req(&C, "shell", 0, 0);
+    static char big[4200];
+
+    memset(big, 'x', sizeof(big));
+    chm(&C, M_CH_DATA, 0, 0, 0, big, SSH_MAXPKT_IN + 1, 0);
+    CHECK(closed_hard(&C));
+    ssh_close(C.s);
+    // window masuk dikreditkan: 5 x 1000 byte tanpa LF -> WINDOW_ADJUST saat < setengah
+    CHECK(conn_up(&KK[0], 100000, 100));
+    ch_req(&C, "shell", 0, 0);
+    rs_get(&C, &o);
+    int adj = 0;
+    uint32_t added = 0;
+
+    for (int i = 0; i < 20; i++) {
+        chm(&C, M_CH_DATA, 0, 0, 0, big, 1000, 0);
+        cl_flush(&C);
+        while (cl_recv(&C) > 0) {
+            if (C.pl[0] == M_CH_WINADJ) {
+                adj++;
+                added += get32(C.pl + 5);
+            }
+        }
+        CHECK(ssh_state(C.s) == SSH_ST_CONN);
+    }
+    CHECK(adj > 0 && added > 0 && g_ssh[C.s].win_in + g_ssh[C.s].win_credit == SSH_WIN_IN);
+    // dibuang sampai LF: 20000 byte lalu LF -> satu ERR baris panjang
+    sh_send("\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "ERR: baris terlalu panjang\nbmahOS> "));
+    ssh_close(C.s);
+    // backpressure: 12 baris "big" sekaligus (12 x 1408 byte); obuf tidak pernah meluap
+    CHECK(conn_up(&KK[0], 1000000, 32768));
+    ch_req(&C, "shell", 0, 0);
+    static char many[12 * 4 + 1];
+
+    many[0] = 0;
+    for (int i = 0; i < 12; i++) {
+        strcat(many, "big\n");
+    }
+    sh_send(many);
+    cl_flush(&C);
+    uint32_t tot = 0;
+
+    while (cl_recv(&C) > 0) {
+        if (C.pl[0] == M_CH_DATA) {
+            tot += get32(C.pl + 5);
+        }
+    }
+    CHECK(tot == 8 + 12 * (1400 + 8) && ssh_state(C.s) == SSH_ST_CONN && g_ssh[C.s].olen <= SSH_OBUF_SIZE);
+    ssh_close(C.s);
+    // ssh_close menolkan semua status kanal
+    CHECK(all_zero(&g_ssh[0], sizeof(g_ssh[0])) || g_ssh[0].used == 0);
+    CHECK(g_ssh[C.s].role == 0 && g_ssh[C.s].ch_open == 0 && g_ssh[C.s].pend_len == 0 && g_ssh[C.s].user[0] == 0);
+    ssh_clear_authkeys();
+    reset_all();
+}
+
+// Tanda tangan cacat: tiap variasi FAILURE dan dihitung (auth_n naik), tidak pernah SUCCESS.
+static void ua_rawsig(cl_t *c, const char *alg, const uint8_t *sigblob, uint32_t sn)
+{
+    uint8_t m[500];
+    wr_t w = { m, 0, sizeof(m), 0 };
+
+    w_u8(&w, M_UA_REQ);
+    w_cstr(&w, "u");
+    w_cstr(&w, "ssh-connection");
+    w_cstr(&w, "publickey");
+    w_u8(&w, 1);
+    w_cstr(&w, alg);
+    w_str(&w, KK[0].blob, 104);
+    w_str(&w, sigblob, sn);
+    cl_send(c, m, w.n);
+}
+
+static void test_badsig(void)
+{
+    reset_all();
+    make_keys();
+    load_keys();
+    uint8_t sb[200];
+    wr_t w;
+    uint8_t r33[33], one[1] = { 1 }, neg[1] = { 0x80 };
+
+    memset(r33, 0x11, sizeof(r33));
+    CHECK(to_auth());
+    int n = 0;
+
+    for (int v = 0; v < 3; v++) {
+        w.p = sb; w.n = 0; w.cap = sizeof(sb); w.err = 0;
+        w_cstr(&w, "ecdsa-sha2-nistp256");
+        uint8_t in[100];
+        wr_t iw = { in, 0, sizeof(in), 0 };
+
+        w_u32(&iw, v == 0 ? 33 : 1);
+        w_bytes(&iw, v == 0 ? r33 : (v == 1 ? neg : one), v == 0 ? 33 : 1);   // r > 32 byte / negatif / ok
+        w_u32(&iw, 1);
+        w_bytes(&iw, one, 1);
+        w_str(&w, in, iw.n);
+        ua_rawsig(&C, "ecdsa-sha2-nistp256", sb, w.n);
+        CHECK(cl_msg(&C) == M_UA_FAILURE && g_ssh[C.s].auth_n == ++n);
+    }
+    ssh_close(C.s);
+    CHECK(to_auth());
+    w.p = sb; w.n = 0; w.cap = sizeof(sb); w.err = 0;
+    w_cstr(&w, "ssh-rsa");   // nama algoritme dalam sig salah
+    w_str(&w, one, 1);
+    ua_rawsig(&C, "ecdsa-sha2-nistp256", sb, w.n);
+    CHECK(cl_msg(&C) == M_UA_FAILURE && g_ssh[C.s].auth_n == 1);
+    ua_rawsig(&C, "ssh-ed25519", sb, w.n);   // alg lain: kunci tidak dikenal, tidak dihitung
+    CHECK(cl_msg(&C) == M_UA_FAILURE && g_ssh[C.s].auth_n == 1);
+    ua_rawsig(&C, "ecdsa-sha2-nistp256", sb, 3);   // sig terpotong untuk kunci terdaftar
+    CHECK(cl_msg(&C) == M_UA_FAILURE && g_ssh[C.s].auth_n == 2);
+    ssh_close(C.s);
+    ssh_clear_authkeys();
+    reset_all();
+}
+
+static int sh_up(const tk_t *k)
+{
+    rs_t o;
+
+    if (!conn_up(k, 1000000, 32768)) {
+        return 0;
+    }
+    ch_req(&C, "shell", 0, 0);
+    rs_get(&C, &o);
+    return rs_is(&o, "bmahOS> ");
+}
+
+// Review: CR/LF/CRLF, EOF dengan sisa baris, validasi perintah, CMD_FAIL.
+static void test_review_shell(void)
+{
+    rs_t o;
+
+    reset_all();
+    make_keys();
+    load_keys();
+    g_ex_calls = 0;
+    ssh_set_exec(ex_stub);
+    ssh_set_audit(au_stub);
+    // CR saja, CRLF = satu baris, CR di akhir paket + LF di paket berikut
+    CHECK(sh_up(&KK[0]));
+    sh_send("status\r");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:status\nbmahOS> ") && g_ex_calls == 1);
+    sh_send("a\r\nb\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:a\nbmahOS> OK:b\nbmahOS> ") && g_ex_calls == 3);
+    sh_send("c\r");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:c\nbmahOS> "));
+    sh_send("\n");
+    rs_get(&C, &o);
+    CHECK(o.dn == 0 && g_ex_calls == 4);
+    sh_send("d\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:d\nbmahOS> ") && g_ex_calls == 5);
+    sh_send("\r\r");   // dua CR = dua baris kosong
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "bmahOS> bmahOS> ") && g_ex_calls == 5);
+    // Temuan VMware: spasi/tab di akhir dibuang ("exit " dari pipa cmd.exe), spasi saja = kosong
+    sh_send("e \t\r\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:e\nbmahOS> ") && g_ex_calls == 6);
+    sh_send("   \n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "bmahOS> ") && g_ex_calls == 6);
+    ssh_close(C.s);
+    // EOF dengan sisa baris tanpa LF: dijalankan dulu; exit-status = kode perintah terakhir
+    CHECK(sh_up(&KK[0]));
+    sh_send("status");
+    chm(&C, M_CH_EOF, 0, 0, 0, 0, 0, 0);
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:status\nbmahOS> ") && o.has_exit && o.code == 0 && o.t[o.nt - 1] == M_CH_CLOSE);
+    ssh_close(C.s);
+    CHECK(sh_up(&KK[0]));
+    sh_send("deny");
+    chm(&C, M_CH_EOF, 0, 0, 0, 0, 0, 0);
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "ERR: ditolak\nbmahOS> ") && o.code == 1 && closed_hard(&C));
+    ssh_close(C.s);
+    CHECK(sh_up(&KK[0]));
+    sh_send("deny\nver\n");
+    chm(&C, M_CH_EOF, 0, 0, 0, 0, 0, 0);
+    rs_get(&C, &o);
+    CHECK(o.has_exit && o.code == 0);
+    ssh_close(C.s);
+    CHECK(sh_up(&KK[0]));
+    sh_send("ver\ndeny\n");
+    chm(&C, M_CH_EOF, 0, 0, 0, 0, 0, 0);
+    rs_get(&C, &o);
+    CHECK(o.has_exit && o.code == 1);
+    ssh_close(C.s);
+    CHECK(sh_up(&KK[0]));   // EOF tanpa perintah: 0; sisa over dibuang
+    char lg[400];
+
+    memset(lg, 'q', sizeof(lg));
+    chm(&C, M_CH_DATA, 0, 0, 0, lg, 300, 0);
+    chm(&C, M_CH_EOF, 0, 0, 0, 0, 0, 0);
+    rs_get(&C, &o);
+    CHECK(o.dn == 0 && o.has_exit && o.code == 0);
+    ssh_close(C.s);
+    // validasi: tab, kontrol, byte tinggi di shell -> ERR tanpa callback, CMD_FAIL, cmd_n tidak naik
+    g_ex_calls = 0;
+    g_au_n = 0;
+    CHECK(sh_up(&KK[0]));
+    int a0 = g_au_n;
+
+    sh_send("a\tb\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "ERR: perintah tidak sah\nbmahOS> ") && g_ex_calls == 0 && ssh_cmd_count(C.s) == 0);
+    CHECK(g_au_n == a0 + 1 && g_au_ev[a0] == SSH_EV_CMD_FAIL && strcmp(g_au_txt[a0], "a?b") == 0);
+    sh_send("x\x80y\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "ERR: perintah tidak sah\nbmahOS> ") && g_ex_calls == 0 && strcmp(g_au_txt[a0 + 1], "x?y") == 0);
+    chm(&C, M_CH_DATA, 0, 0, 0, lg, 300, 0);   // > 256: CMD_FAIL dengan 16 byte pertama
+    sh_send("\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "ERR: baris terlalu panjang\nbmahOS> ") && g_au_ev[a0 + 2] == SSH_EV_CMD_FAIL &&
+          strcmp(g_au_txt[a0 + 2], "qqqqqqqqqqqqqqqq") == 0 && g_ex_calls == 0);
+    sh_send("ver\n");
+    rs_get(&C, &o);
+    CHECK(g_ex_calls == 1 && ssh_cmd_count(C.s) == 1 && g_au_ev[a0 + 3] == SSH_EV_CMD);
+    ssh_close(C.s);
+    // validasi exec: kosong, kontrol, terlalu panjang
+    g_ex_calls = 0;
+    static const char *const bad[] = { "", "ab\001c", "x\x7f" };
+
+    for (unsigned i = 0; i < 3; i++) {
+        g_au_n = 0;
+        CHECK(conn_up(&KK[0], 100000, 32768));
+        ch_req(&C, "exec", 1, bad[i]);
+        rs_get(&C, &o);
+        CHECK(rs_is(&o, "ERR: perintah tidak sah\n") && o.code == 1 && g_ex_calls == 0 && ssh_cmd_count(C.s) == 0);
+        CHECK(g_au_n == 2 && g_au_ev[1] == SSH_EV_CMD_FAIL);
+        ssh_close(C.s);
+    }
+    CHECK(strcmp(g_au_txt[1], "x?") == 0);
+    g_au_n = 0;
+    CHECK(conn_up(&KK[0], 100000, 32768));
+    chm(&C, M_CH_REQ, 0, "exec", 1, lg, 257, 0);
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "ERR: perintah terlalu panjang\n") && g_ex_calls == 0 && g_au_ev[1] == SSH_EV_CMD_FAIL &&
+          strcmp(g_au_txt[1], "qqqqqqqqqqqqqqqq") == 0 && ssh_cmd_count(C.s) == 0);
+    ssh_close(C.s);
+    ssh_set_audit(0);
+    ssh_clear_authkeys();
+    reset_all();
+}
+
+// Konsumsi keluaran sedikit demi sedikit; kembalikan jumlah iterasi terblokir.
+static int slow_drain(cl_t *c, uint32_t step, int disc_at_block, const uint8_t *probe, uint32_t pn)
+{
+    int blocked = 0;
+
+    for (int it = 0; it < 20000; it++) {
+        uint32_t n;
+
+        ssh_out_peek(c->s, &n);
+        if (n == 0) {
+            break;
+        }
+        if (SSH_OBUF_SIZE - g_ssh[c->s].olen < SSH_OUT_RESERVE) {
+            blocked++;
+            if (probe && blocked == 1) {
+                CHECK(ssh_feed(c->s, probe, pn) == 0);   // backpressure: tidak ada yang diterima
+            }
+            if (disc_at_block && blocked == 1) {
+                ssh_fail(&g_ssh[c->s], D_PROTO, "uji", "uji");   // DISCONNECT harus tetap muat
+                CHECK(strcmp(ssh_why(c->s), "uji") == 0);
+                return blocked;
+            }
+        }
+        CHECK(SSH_OBUF_SIZE - g_ssh[c->s].olen >= 500 || g_ssh[c->s].state == SSH_ST_CLOSING);
+        uint32_t m = n < step ? n : step;
+        const uint8_t *pk = ssh_out_peek(c->s, &n);
+
+        memcpy(c->rx + c->rxn, pk, m);
+        c->rxn += m;
+        ssh_out_consume(c->s, m);
+    }
+    return blocked;
+}
+
+// Kirim DATA ke shell TANPA menguras keluaran (agar obuf benar-benar bisa penuh).
+static void sh_send_nd(const char *s)
+{
+    uint8_t m[200];
+    wr_t w = { m, 0, sizeof(m), 0 };
+
+    w_u8(&w, M_CH_DATA);
+    w_u32(&w, 0);
+    w_str(&w, s, (uint32_t)strlen(s));
+    uint32_t t = cl_build(&C, m, w.n, g_pktbuf);
+
+    CHECK(ssh_feed(C.s, g_pktbuf, t) == t);
+}
+
+static void test_review_flow(void)
+{
+    rs_t o;
+
+    reset_all();
+    make_keys();
+    load_keys();
+    ssh_set_exec(ex_stub);
+    // (b) backpressure nyata: 3 x big + exit, klien menguras 100 byte per langkah
+    CHECK(sh_up(&KK[0]));
+    sh_send_nd("big\nbig\nbig\nexit\n");
+    uint8_t probe[200];
+    uint32_t pn;
+    uint8_t ig = M_IGNORE;
+
+    pn = cl_build(&C, &ig, 1, probe);   // IGNORE; dikirim belum, urutan GCM tetap konsisten
+    int blk = slow_drain(&C, 100, 0, probe, pn);
+
+    CHECK(blk > 0);
+    CHECK(ssh_feed(C.s, probe, pn) == pn);   // setelah lega: diterima
+    rs_get(&C, &o);
+    CHECK(o.dn == 3 * (1400 + 8) && o.has_exit && o.code == 0 && o.t[o.nt - 1] == M_CH_CLOSE && closed_hard(&C));
+    ssh_close(C.s);
+    // DISCONNECT muat saat obuf paling penuh
+    CHECK(sh_up(&KK[0]));
+    sh_send_nd("big\nbig\nbig\nbig\n");
+    slow_drain(&C, 100, 1, 0, 0);
+    CHECK(closed_hard(&C) && strstr(ssh_why(C.s), "buffer") == 0);
+    ssh_close(C.s);
+    // (c) ssh_close: inq/pend/ln terisi -> seluruh slot nol
+    CHECK(conn_up(&KK[0], 0, 100));   // window klien 0: prompt tertahan di pend
+    ch_req(&C, "shell", 0, 0);
+    sh_send("ver\nbig\npartial");
+    CHECK(g_ssh[C.s].pend_len > 0);
+    int sl = C.s;
+
+    ssh_close(sl);
+    CHECK(all_zero(&g_ssh[sl], sizeof(g_ssh[sl])));
+    CHECK(conn_up(&KK[0], 0, 100));
+    ch_req(&C, "shell", 0, 0);
+    chm(&C, M_CH_DATA, 0, 0, 0, "abcdef", 6, 0);   // pend tertahan -> inq terisi, ln kosong
+    CHECK(g_ssh[C.s].inq_len > 0 && g_ssh[C.s].pend_len > 0);
+    sl = C.s;
+    ssh_close(sl);
+    CHECK(all_zero(&g_ssh[sl], sizeof(g_ssh[sl])));
+    CHECK(sh_up(&KK[0]));
+    sh_send("par");   // ln terisi
+    CHECK(g_ssh[C.s].ln_n == 3);
+    sl = C.s;
+    ssh_close(sl);
+    CHECK(all_zero(&g_ssh[sl], sizeof(g_ssh[sl])));
+    // (d) CLOSE klien di tengah keluaran exec reboot: flag reboot tetap terbaca
+    CHECK(conn_up(&KK[0], 3, 2));
+    ch_req(&C, "exec", 0, "reboot");
+    rs_get(&C, &o);
+    CHECK(o.dn == 3 && !o.has_exit && !closed_hard(&C));
+    chm(&C, M_CH_CLOSE, 0, 0, 0, 0, 0, 0);
+    rs_get(&C, &o);
+    CHECK(o.nt == 1 && o.t[0] == M_CH_CLOSE && closed_hard(&C));
+    CHECK(ssh_take_reboot(C.s) == 1 && ssh_take_reboot(C.s) == 0);
+    ssh_close(C.s);
+    // (e) GLOBAL_REQUEST keepalive want_reply=1 di tengah keluaran tertunda
+    CHECK(conn_up(&KK[0], 100, 50));
+    ch_req(&C, "exec", 0, "big");
+    rs_get(&C, &o);
+    CHECK(o.dn == 100 && !o.has_exit);
+    uint8_t ka[64];
+    wr_t kw = { ka, 0, sizeof(ka), 0 };
+
+    w_u8(&kw, M_GLOBAL_REQ);
+    w_cstr(&kw, "keepalive@openssh.com");
+    w_u8(&kw, 1);
+    cl_send(&C, ka, kw.n);
+    rs_get(&C, &o);
+    CHECK(o.nt == 1 && o.t[0] == M_REQ_FAILURE);
+    chm(&C, M_CH_WINADJ, 0, 0, 0, 0, 0, 10000);
+    rs_get(&C, &o);
+    int all_a = 1;
+
+    for (uint32_t i = 0; i < o.dn; i++) {
+        all_a &= o.data[i] == 'A';
+    }
+    CHECK(o.dn == 1300 && all_a && o.has_exit && o.code == 0 && o.t[o.nt - 1] == M_CH_CLOSE);
+    ssh_close(C.s);
+    ssh_clear_authkeys();
+    reset_all();
+}
+
 int main(void)
 {
     setup_key();
@@ -2011,6 +3095,14 @@ int main(void)
     test_random();
     test_encode_sig();
     test_sig_canon();
+    test_authkeys();
+    test_auth();
+    test_channel();
+    test_shell();
+    test_window();
+    test_badsig();
+    test_review_shell();
+    test_review_flow();
     return test_done("ssh");
 }
 #endif

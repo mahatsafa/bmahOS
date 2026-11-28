@@ -132,16 +132,26 @@ Server SSH-2 minimal di kernel (net task), primitif BearSSL. Keputusan dan alasa
     kosong, tidak pernah dipakai). Kompresi: `none`.
 - Paket masuk maks 35000 byte; KEXINIT kedua (rekey) -> disconnect; batas 2^28 paket atau 1 GB per arah -> disconnect.
 - Userauth: hanya `publickey` `ecdsa-sha2-nistp256` (query tanpa tanda tangan dijawab PK_OK), kunci dari
-  `SSHADM.PUB` (admin) / `SSHRO.PUB` (read-only), format `authorized_keys`, maks 4 kunci per file. Maks 4 percobaan,
-  batas 10 s sejak TCP ESTABLISHED sampai USERAUTH_SUCCESS. Nama pengguna bebas (dicatat di audit).
+  `SSHADM.PUB` (admin) / `SSHRO.PUB` (read-only), format `authorized_keys` (baris dengan opsi atau tipe lain
+  dilewati), maks 4 kunci per file; kunci yang ada di kedua file -> SSHRO.PUB ditolak seluruhnya, admin tetap jalan (serial
+  `SSH: SSHRO.PUB ditolak: N kunci sama dengan SSHADM.PUB`).
+  Keputusan pengguna 2026-11-28: hanya tanda tangan salah untuk kunci terdaftar yang dihitung (maks 4 ->
+  DISCONNECT); `none`, query PK_OK, dan kunci tak terdaftar tidak dihitung, tetapi maks 32 USERAUTH_REQUEST per
+  koneksi. Batas 10 s sejak TCP ESTABLISHED sampai USERAUTH_SUCCESS; sesudahnya sesi ditutup (RST) bila tidak ada
+  perintah selama `cli_idle` (bawaan 300 s), seperti 7779. Spasi/tab di akhir perintah dibuang. Nama pengguna bebas (maks 32 byte, dicatat di audit).
 - Kanal: satu `session`; `exec` = satu perintah (keluaran, `exit-status` 0 OK / 1 ERR, EOF, CLOSE); `shell` = baris
-  per baris tanpa pty dan tanpa echo, prompt `bmahOS> `, `exit` menutup. Perintah sama dengan 7779/7780 (peran
+  per baris tanpa pty dan tanpa echo, prompt `bmahOS> `, `exit` atau EOF klien menutup (exit-status = perintah
+  terakhir). Akhir baris CR, LF, atau CRLF. Perintah 1..256 byte, hanya 0x20..0x7e (selain itu `ERR: perintah
+  tidak sah` / `terlalu panjang`, audit `cmd-gagal`); keluaran maks 1400 byte. Window masuk 4096, max packet 4096;
+  keluaran mengikuti window/max packet klien. Reboot/`ota coba`: kanal ditutup dulu, reboot setelah di-ACK. Perintah sama dengan 7779/7780 (peran
   menentukan daftar putih), tanpa HMAC per perintah. `pty-req`, `env`, `x11-req`, forwarding, `auth-agent` ditolak.
 - Maks 2 sesi; entropi belum siap -> SYN dibuang; tanpa SSHKEY.DER sah -> port 22 tertutup (RST).
 
-Keadaan SSH-1 (2026-11-25): transport saja. Semua userauth dijawab FAILURE "publickey" dan setiap koneksi diputus
-10 s sejak ESTABLISHED. Perintah `ssh` (admin dan read-only): `ssh: aktif port 22` / `ssh: nonaktif (<alasan>)`, `fp:`,
-`sesi: aktif= maks= konek= kex_ok= gagal= penuh= tanpa_entropi= auth_gagal=`, `stack_net:`; metrics `ssh_*` (7 kunci).
+Keadaan SSH-2 (2026-11-28): login + kanal seperti di atas. Audit kanal `ssh` (login, login-gagal, login-timeout,
+cmd, tolak-peran, cmd-gagal, idle). Serial `SSH: kunci pengguna admin=N ro=N`, `SSH: login peran=.. pengguna=..`.
+Slot TCB layanan kernel 4 -> 6, per IP 2 -> 3 (2 sesi SSH + CLI/TLS + OTA 7781 dari satu IP host). Perintah `ssh` (admin dan read-only): `ssh: aktif port 22` / `ssh: nonaktif (<alasan>)`, `fp:`,
+`sesi: aktif= maks= konek= kex_ok= gagal= penuh= tanpa_entropi= auth_gagal=`, `login: ok= perintah= idle=
+kunci_admin= kunci_ro=`, `stack_net:`; metrics `ssh_*` (10 kunci; SSH-2: + ssh_login, ssh_cmd, ssh_idle).
 
 Membuat kunci (CentOS/Windows; kunci privat pengguna tidak pernah keluar dari klien):
 
