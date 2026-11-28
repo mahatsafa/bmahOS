@@ -602,6 +602,16 @@ S2_OUT="$(set -o pipefail; sshu uro ro@127.0.0.1 uptime 2>&1 | tr -d '\r')"; S2_
 check "F7 SSH-2: ssh exec kunci ro 'uptime' diizinkan, exit 0" \
     '[ "$S2_RC" -eq 0 ] && echo "$S2_OUT" | grep -q "^uptime: "'
 sleep 2.5
+# F7 CLI-Linux: alias ala Linux lewat shell SSH (admin + ro), backspace DEL dibuang.
+S2_OUT="$(set -o pipefail; printf 'cat ISI1.TXT\nps\nwhoami\nuname\nupx\177time\nexit\n' | sshu uadm -T uji@127.0.0.1 2>&1 | tr -d '\r')"; S2_RC=$?
+echo "$S2_OUT" | grep -v '^slot' | head -8 | sed "s/^/info  ssh linux: /"
+check "F7 CLI-Linux: shell admin: cat = baca, ps = tasks, whoami admin, uname, backspace" \
+    '[ "$S2_RC" -eq 0 ] && echo "$S2_OUT" | grep -q "^bmahOS> isi ISI1.TXT ukuran=15:$" && echo "$S2_OUT" | grep -q "^pengisi root 1$" && echo "$S2_OUT" | grep -q "^bmahOS> batas user per 100 tick" && echo "$S2_OUT" | grep -q "^bmahOS> admin$" && echo "$S2_OUT" | grep -q "^bmahOS> bmahOS x86_64 " && echo "$S2_OUT" | grep -q "^bmahOS> uptime: "'
+sleep 2.5
+S2_OUT="$(set -o pipefail; printf 'whoami\ncat ISI1.TXT\nexit\n' | sshu uro -T ro@127.0.0.1 2>&1 | tr -d '\r')"; S2_RC=$?
+check "F7 CLI-Linux: shell ro: whoami ro, cat (= baca) ditolak peran" \
+    'echo "$S2_OUT" | grep -q "^bmahOS> ro$" && echo "$S2_OUT" | grep -q "^bmahOS> ERR: peran read-only$" && ! echo "$S2_OUT" | grep -q "pengisi root"'
+sleep 2.5
 # Shell tanpa pty: baris dari stdin, jeda 12 s di tengah (batas 10 s hanya sebelum login).
 S2_OUT="$(set -o pipefail;  (printf 'ping\n'; sleep 12; printf 'uptime\r\nexit\n') | sshu uadm -T uji@127.0.0.1 2>&1 | tr -d '\r')"; S2_RC=$?
 echo "$S2_OUT" | head -6 | sed "s/^/info  ssh shell: /"

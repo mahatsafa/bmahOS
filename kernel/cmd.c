@@ -90,6 +90,7 @@ void net_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
                  "filter tambah|hapus|kosong waktu sinkron dns <nama> pantau ping|tcp|dns|hapus|syslog "
                  "ota terima\n");
         cmd_puts("berprivilege: pping reboot audit (audit gagal)\n");
+        cmd_puts("ala Linux: cat rm mv ps free dmesg ifconfig date lspci uname whoami clear\n");
         cmd_puts("kirim CHAL, lalu <nonce> <perintah> <hmac>\n");
 #ifdef BMAHOS_LEGACYCTR
         cmd_puts("jalur counter (LEGACYCTR): <counter> <perintah> <hmac>, tanpa pping/reboot\n");

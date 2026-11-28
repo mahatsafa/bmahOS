@@ -1632,6 +1632,15 @@ static int shell_line(ssh_sess_t *s)
             s->ln_cr = 0;
             continue;
         }
+        // F7 CLI-Linux: backspace (DEL 0x7f / BS 0x08) menghapus satu byte baris
+        // (klien tanpa pty mengirim mentah bila terminalnya masih mode raw).
+        if (ch == 0x7f || ch == 0x08) {
+            s->ln_cr = 0;
+            if (s->ln_n > 0 && !s->ln_over) {
+                s->ln_n--;
+            }
+            continue;
+        }
         if (ch != '\n' && ch != '\r') {
             s->ln_cr = 0;
             if (s->ln_n < SSH_CMD_MAX) {

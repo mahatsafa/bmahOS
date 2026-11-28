@@ -2848,6 +2848,13 @@ static void test_review_shell(void)
     sh_send("   \n");
     rs_get(&C, &o);
     CHECK(rs_is(&o, "bmahOS> ") && g_ex_calls == 6);
+    // F7 CLI-Linux: DEL (0x7f) / BS (0x08) menghapus satu byte; di baris kosong diabaikan.
+    sh_send("\x7f" "\b" "stx" "\x7f" "atuq" "\x08" "s\r");   // -> "status"
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "OK:status\nbmahOS> ") && g_ex_calls == 7);
+    sh_send("\x7f\x7f\n");
+    rs_get(&C, &o);
+    CHECK(rs_is(&o, "bmahOS> ") && g_ex_calls == 7);
     ssh_close(C.s);
     // EOF dengan sisa baris tanpa LF: dijalankan dulu; exit-status = kode perintah terakhir
     CHECK(sh_up(&KK[0]));

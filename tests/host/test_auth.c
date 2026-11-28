@@ -746,6 +746,57 @@ static void test_tcp_role(void)
     CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"metric tcp_", 11));
     auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"metrics cpu_", 12, out, sizeof(out), &rb);
     CHECK(strcmp(g_exec, "metrics cpu_") == 0 && g_cli_role_denied == d0 + 4);
+    // F7 CLI-Linux: alias ala Linux di satu titik (peran dicek sesudah diterjemahkan).
+    static const char *const al[][2] = { { "ps", "tasks" }, { "free", "mem" },
+        { "dmesg", "log" }, { "ifconfig", "ip" }, { "date", "waktu" }, { "lspci", "pci" },
+        { "lspci 40", "pci 40" } };
+    all = 1;
+    for (size_t i = 0; i < sizeof(al) / sizeof(al[0]); i++) {
+        g_exec[0] = 0;
+        auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)al[i][0], (uint32_t)strlen(al[i][0]),
+                      out, sizeof(out), &rb);
+        all &= strcmp(g_exec, al[i][1]) == 0;
+    }
+    CHECK(all && g_cli_role_denied == d0 + 4);
+    // cat/rm/mv = baca/hapus/ganti: admin saja.
+    g_exec[0] = 0;
+    CHECK(auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"cat A.TXT", 9, out, sizeof(out), &rb) == 21 &&
+          auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"rm A.TXT", 8, out, sizeof(out), &rb) == 21 &&
+          auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"mv A B", 6, out, sizeof(out), &rb) == 21 &&
+          g_exec[0] == 0 && g_cli_role_denied == d0 + 7);
+    CHECK(!auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"cat A", 5) &&
+          auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"ps", 2) &&
+          !auth_cmd_allowed(AUTH_ROLE_RO, (const uint8_t *)"psx", 3));
+    auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"cat A.TXT", 9, out, sizeof(out), &rb);
+    CHECK_STR(g_exec, "baca A.TXT");
+    auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"rm A.TXT", 8, out, sizeof(out), &rb);
+    CHECK_STR(g_exec, "hapus A.TXT");
+    auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"mv A B", 6, out, sizeof(out), &rb);
+    CHECK_STR(g_exec, "ganti A B");
+    // Kata pertama harus cocok penuh; bukan alias -> apa adanya.
+    auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"catx A", 6, out, sizeof(out), &rb);
+    CHECK_STR(g_exec, "catx A");
+    auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"ca", 2, out, sizeof(out), &rb);
+    CHECK_STR(g_exec, "ca");
+    // Batas AUTH_ALIAS_MAX: 268 byte "cat ..." -> 269 (muat); 272 -> 273 (tidak diterjemahkan).
+    {
+        static uint8_t lc[272];
+        memset(lc, 'x', sizeof(lc));
+        memcpy(lc, "cat ", 4);
+        auth_tcp_exec(AUTH_ROLE_ADMIN, lc, 268, out, sizeof(out), &rb);
+        CHECK(strncmp(g_exec, "baca xx", 7) == 0);
+        auth_tcp_exec(AUTH_ROLE_ADMIN, lc, 272, out, sizeof(out), &rb);
+        CHECK(strncmp(g_exec, "cat xx", 6) == 0);
+    }
+    // uname/whoami/clear: juga ro; whoami mengikuti peran sesi.
+    uint32_t wn = auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"whoami", 6, out, sizeof(out), &rb);
+    CHECK(wn == 3 && memcmp(out, "ro\n", 3) == 0);
+    wn = auth_tcp_exec(AUTH_ROLE_ADMIN, (const uint8_t *)"whoami", 6, out, sizeof(out), &rb);
+    CHECK(wn == 6 && memcmp(out, "admin\n", 6) == 0 && g_exec_role == AUTH_ROLE_ADMIN);
+    wn = auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"uname -a", 8, out, sizeof(out), &rb);
+    CHECK(wn > 14 && memcmp(out, "bmahOS x86_64 ", 14) == 0 && out[wn - 1] == '\n');
+    wn = auth_tcp_exec(AUTH_ROLE_RO, (const uint8_t *)"clear", 5, out, sizeof(out), &rb);
+    CHECK(wn == 7 && memcmp(out, "\033[H\033[2J", 7) == 0 && g_cli_role_denied == d0 + 7);
     g_disk_rokey = NULL;
     load_key(KEY);
 }

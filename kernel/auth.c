@@ -405,11 +405,74 @@ void auth_reboot_request(void)
     g_priv_reboot_pending = 1;
 }
 
-static void priv_cmd_execute(const volatile uint8_t *cmd, uint32_t len)
+// F7 CLI-Linux: nama perintah ala Linux -> perintah bmahOS, di satu titik
+// (auth_cmd_allowed dan priv_cmd_execute), jadi daftar putih ro, audit dan jalur
+// TCP/TLS/SSH/UDP-nonce sama. Audit mencatat teks asli. Hasil ditulis ke buf
+// (AUTH_ALIAS_MAX); bukan alias -> cmd apa adanya. Kata pertama harus cocok penuh.
+#define AUTH_ALIAS_MAX 272   // SSH_CMD_MAX (256) + selisih alias terpanjang
+static const struct { const char *from, *to; } g_cmd_alias[] = {
+    { "cat", "baca" },   { "rm", "hapus" },    { "mv", "ganti" },
+    { "ps", "tasks" },   { "free", "mem" },    { "dmesg", "log" },
+    { "ifconfig", "ip" }, { "date", "waktu" }, { "lspci", "pci" },
+};
+
+static const volatile uint8_t *auth_alias(const volatile uint8_t *cmd, uint32_t len,
+                                          uint8_t *buf, uint32_t *olen)
 {
+    uint32_t w = 0;
+
+    *olen = len;
+    while (w < len && cmd[w] != ' ') {
+        w++;
+    }
+    for (uint32_t i = 0; i < sizeof(g_cmd_alias) / sizeof(g_cmd_alias[0]); i++) {
+        const char *f = g_cmd_alias[i].from, *t = g_cmd_alias[i].to;
+        uint32_t fl = 0, tl = 0;
+
+        while (f[fl]) {
+            fl++;
+        }
+        while (t[tl]) {
+            tl++;
+        }
+
+        if (w != fl || !net_cmd_is(cmd, w, f) || len - w + tl > AUTH_ALIAS_MAX) {
+            continue;
+        }
+        for (uint32_t k = 0; k < tl; k++) {
+            buf[k] = (uint8_t)t[k];
+        }
+        for (uint32_t k = w; k < len; k++) {
+            buf[tl + k - w] = cmd[k];
+        }
+        *olen = len - w + tl;
+        return buf;
+    }
+    return cmd;
+}
+
+// F7 CLI-Linux: peran sesi untuk `whoami` (UDP nonce = admin).
+static int g_exec_role = AUTH_ROLE_ADMIN;
+
+static void priv_cmd_execute(const volatile uint8_t *cmd0, uint32_t len0)
+{
+    uint8_t abuf[AUTH_ALIAS_MAX];
+    uint32_t len;
+    const volatile uint8_t *cmd = auth_alias(cmd0, len0, abuf, &len);
+
     g_cmd_len = 0;
 
-    if (net_cmd_is(cmd, len, "pping")) {
+    if (net_cmd_is(cmd, len, "uname") || net_cmd_is(cmd, len, "uname -a")) {
+#ifdef BMAHOS_PROD
+        cmd_puts("bmahOS x86_64 PROD\n");
+#else
+        cmd_puts("bmahOS x86_64 dev\n");
+#endif
+    } else if (net_cmd_is(cmd, len, "whoami")) {
+        cmd_puts(g_exec_role == AUTH_ROLE_ADMIN ? "admin\n" : "ro\n");
+    } else if (net_cmd_is(cmd, len, "clear")) {
+        cmd_puts("\033[H\033[2J");   // ANSI: kursor ke kiri atas + hapus layar
+    } else if (net_cmd_is(cmd, len, "pping")) {
         cmd_puts("ppong\n");
     } else if (net_cmd_is(cmd, len, "reboot")) {
         cmd_puts("reboot: dimulai\n");
@@ -706,12 +769,16 @@ static const char *const g_ro_cmds[] = {
     "help", "ping", "uptime", "mem", "log", "irq", "stats", "metrics", "mac",
     "ip", "tasks", "config", "tls", "netcon", "logdisk", "wd", "pci", "acpi", "waktu", "filter", "dns", "pantau",
     "dhcp", "soket", "app", "ota", "cpu", "ssh",
+    "uname", "uname -a", "whoami", "clear",   // F7 CLI-Linux
 };
 
 // D5: juga dipakai net.c untuk menentukan jenis entri audit sebelum exec.
-int auth_cmd_allowed(int role, const uint8_t *cmd, uint32_t len)
+int auth_cmd_allowed(int role, const uint8_t *cmd0, uint32_t len0)
 {
     int allowed = role == AUTH_ROLE_ADMIN;
+    uint8_t abuf[AUTH_ALIAS_MAX];
+    uint32_t len;
+    const uint8_t *cmd = (const uint8_t *)auth_alias(cmd0, len0, abuf, &len);
 
     for (uint32_t i = 0; i < sizeof(g_ro_cmds) / sizeof(g_ro_cmds[0]); i++) {
         allowed |= net_cmd_is(cmd, len, g_ro_cmds[i]);
@@ -734,7 +801,9 @@ uint32_t auth_tcp_exec(int role, const uint8_t *cmd, uint32_t len, uint8_t *out,
         g_cmd_len = 0;
         cmd_puts("ERR: peran read-only\n");
     } else {
+        g_exec_role = role;
         priv_cmd_execute(cmd, len);
+        g_exec_role = AUTH_ROLE_ADMIN;
     }
     *reboot = g_priv_reboot_pending;
     g_priv_reboot_pending = 0;
