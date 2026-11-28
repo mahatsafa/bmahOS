@@ -741,7 +741,9 @@ uint32_t net_tcp_syn_build(uint8_t *p, const volatile uint8_t *dst_mac,
 // C5a: jumlah slot TCB (tabel statis, tanpa heap) dan batas per IP sumber.
 // F7 SSH-2 (keputusan pengguna 2026-11-28): 4 -> 6 slot, supaya 2 sesi SSH + CLI/TLS +
 // OTA 7781 muat; per IP 2 -> 3 (VMware: semua klien dari satu IP host, admin TLS +
-// SSH + OTA).
+// SSH + OTA). Koneksi 7781 tidak dihitung batas per IP (terbukti di VMware: 2 sesi
+// SSH + sesi CLI + 7781 = 4 dari satu IP): 7781 sudah dibatasi `ota terima` (IP sesi,
+// 60 s, satu koneksi).
 #define TCP_MAX_CONN        6
 #define TCP_MAX_PER_IP      3
 // P5-2a: jumlah seluruh slot TCB. Slot 0..TCP_MAX_CONN-1 = layanan kernel
@@ -1754,8 +1756,13 @@ static void net_ssh_audit(int s, int ev, int role, const uint8_t *txt, uint32_t 
         if (t) {
             t->cli_last = timer_ticks;
         }
+        // Jarang (butuh kunci sah) dan penting: selalu ke UART walau frame
+        // pemicunya kena pembatas log B4b (seperti AUDIT sah dan P6).
+        int mute = g_serial_mute;
+        g_serial_mute = 0;
         kprintf("SSH: login peran=%s pengguna=%s sesi=%d\r\n",
                 role == AUTH_ROLE_ADMIN ? "admin" : "ro", ssh_user(s), s);
+        g_serial_mute = mute;
     } else if (ev == SSH_EV_LOGIN_FAIL) {
         aev = AUDIT_LOGIN_FAIL;
     } else if (ev == SSH_EV_CMD) {
@@ -2068,12 +2075,12 @@ static int net_tcp_user_syn(const volatile uint8_t *buf, uint32_t r, uint16_t sp
 }
 
 // P7-2: SYN 7781 yang ditunggu `ota terima`: slot layanan kernel kosong (tanpa
-// penggusuran), batas per IP tetap berlaku. Penuh -> RST (pengirim mengulang).
+// penggusuran). Batas per IP tidak berlaku (F7: ota_listen_ok sudah mengikat IP sesi,
+// jendela 60 s dan satu koneksi). Penuh -> RST (pengirim mengulang).
 static int net_tcp_ota_syn(const volatile uint8_t *buf, uint32_t r, uint16_t sport,
                            uint16_t dport, uint32_t seq)
 {
     tcp_tcb_t *t = 0;
-    uint32_t same_ip = 0;
 
     // Koneksi 7781 lama yang masih menutup (hasilnya sudah dikirim; mis. peer
     // belum mengirim FIN sehingga FIN_WAIT_2 sampai 10 s) diganti: RST lalu
@@ -2090,17 +2097,9 @@ static int net_tcp_ota_syn(const volatile uint8_t *buf, uint32_t r, uint16_t spo
         tcp_tcb_t *e = &g_tcbs[k];
 
         if (e->state == TCP_CLOSED) {
-            if (t == 0) {
-                t = e;
-            }
-            continue;
+            t = e;
+            break;
         }
-        same_ip += e->ip[0] == buf[26] && e->ip[1] == buf[27] && e->ip[2] == buf[28] &&
-                   e->ip[3] == buf[29];
-    }
-    if (same_ip >= TCP_MAX_PER_IP) {
-        g_tcp_src_full++;
-        return 0;
     }
     if (t == 0) {
         g_tcp_busy++;
@@ -2448,7 +2447,7 @@ static int net_tcp_input(volatile uint8_t *buf, uint32_t ihl, uint32_t doff,
                     eq = 0;
                 }
             }
-            same_ip += eq;
+            same_ip += eq && e->app != TCP_APP_OTA;   // F7: 7781 di luar batas per IP
             if (e->state == TCP_SYN_RCVD &&
                 (victim == 0 || e->last < victim->last)) {
                 victim = e;

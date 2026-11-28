@@ -1369,6 +1369,33 @@ check "P7-3: boot ISO: ota coba -> ERR butuh boot dari disk; sah/batal tanpa per
     'echo "$OT_P3" | grep -q "^ERR: ota coba butuh boot dari disk (kini berjalan dari ISO)$" && echo "$OT_P3" | grep -q "^ERR: tidak ada boot percobaan yang berjalan$" && echo "$OT_P3" | grep -q "^ERR: tidak ada percobaan$" && echo "$OT_P3" | grep -q "^ERR: format: ota | ota terima kernel|app <ukuran> <sha16> | ota coba|sah|batal$"'
 check "P7-3: read-only: ota coba/sah/batal -> ERR peran read-only" \
     '[ "$(echo "$OT_P3RO" | grep -c "^ERR: peran read-only$")" -eq 3 ]'
+# F7 OTA-IP: 7781 tidak dihitung batas per IP (VMware: semua klien satu IP host).
+# 2 sesi shell SSH + sesi CLI bmctl + 7781 = 4 TCB dari satu IP (batas 3). Hasil
+# tanda tangan tidak sah = file sampai (dev dan PROD sama); kedua sesi tetap hidup.
+# `ota terima` dari cek OT_F masih menunggu 7781 (60 s): tunggu sampai diam.
+for i in $(seq 1 30); do
+    sleep 2.5
+    $BMT --key "$KEY" ota 2>&1 | grep -q "^terima: diam$" && break
+done
+sleep 2.5
+OI_F0="$($BMT --key "$KEY" "metrics tcp_src_full" 2>&1 | grep -o '^tcp_src_full=[0-9]*')"
+OI_P=()
+for n in 1 2; do
+    (printf 'ping\n'; sleep 14; printf 'ping\nexit\n') | sshu uadm -T uji@127.0.0.1 \
+        > "$WORK/ota-ssh$n.out" 2>&1 &
+    OI_P+=($!)
+done
+sleep 4
+OI_LOGIN="$(grep -ac 'SSH: login peran=admin' "$LOG")"
+OI_OT="$(ota_kirim "$OD/lain.bmo")"
+wait "${OI_P[@]}"
+sleep 2.5
+OI_F1="$($BMT --key "$KEY" "metrics tcp_src_full" 2>&1 | grep -o '^tcp_src_full=[0-9]*')"
+echo "$OI_OT" | sed "s/^/info  ota 2ssh: /"
+check "F7 OTA-IP: 2 sesi SSH + sesi CLI + 7781 (4 TCB satu IP) -> file sampai, ERR tanda tangan" \
+    'echo "$OI_OT" | grep -q "^OK ota: kirim " && echo "$OI_OT" | grep -q "^ERR ota: tanda tangan tidak sah$"'
+check "F7 OTA-IP: kedua sesi SSH hidup (2 pong masing-masing), tcp_src_full tetap, SSH: login di serial" \
+    '[ "$(grep -c pong "$WORK/ota-ssh1.out")" -eq 2 ] && [ "$(grep -c pong "$WORK/ota-ssh2.out")" -eq 2 ] && [ -n "$OI_F0" ] && [ "$OI_F0" = "$OI_F1" ] && [ "$OI_LOGIN" -ge 2 ]'
 
 sleep 1.2
 # P5-4: disk boot pertama tanpa APP.BIN saat boot (P7-4 dev: APP.BIN v5 sudah ditulis
